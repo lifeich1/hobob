@@ -5,7 +5,8 @@ pub struct ScrollWidgetsPlugin();
 
 impl Plugin for ScrollWidgetsPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.add_startup_system(setup.system())
+        app.init_resource::<NoneColor>()
+            .add_startup_system(setup.system())
             .add_system(scroll_sim.system());
     }
 }
@@ -17,13 +18,16 @@ pub struct ScrollProgression(pub usize);
 
 /// A scroll-simulate grid widget.
 ///
+/// Note: currently the entity must have [`Children`][bevy::prelude::Children] component to
+/// activate the system.
+///
 /// The widget will automatically control items' visibilities and push-to/pop-from children to
 /// simulate scroll.
 ///
 /// When children changed, call [`invalidate`][ScrollSimListWidget::invalidate] to notify widget.
 pub struct ScrollSimListWidget {
     pub show_limit: usize,
-    items: Vec<Entity>,
+    pub items: Vec<Entity>,
     current_step: usize,
     step_move: i32,
     invalidate: bool,
@@ -42,6 +46,13 @@ impl Default for ScrollSimListWidget {
 }
 
 impl ScrollSimListWidget {
+    pub fn with_show_limit(show_limit: usize) -> Self {
+        Self {
+            show_limit,
+            ..Default::default()
+        }
+    }
+
     /// Notify data changed.
     pub fn invalidate(&mut self) {
         self.invalidate = true
@@ -55,6 +66,7 @@ impl ScrollSimListWidget {
     }
 }
 
+#[derive(Default)]
 struct NoneColor(Handle<ColorMaterial>);
 
 fn setup(mut materials: ResMut<Assets<ColorMaterial>>, mut none_col: ResMut<NoneColor>) {
@@ -104,6 +116,7 @@ fn scroll_sim(
                 &none_col,
                 target_step,
             );
+            widget.invalidate = false;
         }
         widget.current_step = target_step;
 
@@ -125,7 +138,7 @@ fn fix_draw(
     none_col: &Res<NoneColor>,
     step_move: i32,
 ) {
-    debug!("fix_draw {:?} step move {}", entity, step_move);
+    info!("fix_draw {:?} step move {}", entity, step_move);
 
     let ustep: usize = step_move.abs().try_into().unwrap();
 
@@ -174,7 +187,7 @@ fn totally_redraw(
     none_col: &Res<NoneColor>,
     target_step: usize,
 ) {
-    debug!("totally_redraw {:?} to step {}", entity, target_step);
+    info!("totally_redraw {:?} to step {}", entity, target_step);
 
     for child in children.iter() {
         commands.entity(*child).despawn();
