@@ -125,6 +125,8 @@ fn fix_draw(
     none_col: &Res<NoneColor>,
     step_move: i32,
 ) {
+    debug!("fix_draw {:?} step move {}", entity, step_move);
+
     let ustep: usize = step_move.abs().try_into().unwrap();
 
     let to_drop = children.iter();
@@ -172,6 +174,8 @@ fn totally_redraw(
     none_col: &Res<NoneColor>,
     target_step: usize,
 ) {
+    debug!("totally_redraw {:?} to step {}", entity, target_step);
+
     for child in children.iter() {
         commands.entity(*child).despawn();
     }
