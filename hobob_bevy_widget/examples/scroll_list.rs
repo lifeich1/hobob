@@ -1,4 +1,7 @@
-use bevy::prelude::*;
+use bevy::{
+    prelude::*,
+    app::AppExit,
+};
 use hobob_bevy_widget::scroll::{ScrollSimListWidget, ScrollWidgetsPlugin};
 
 fn main() {
@@ -7,11 +10,32 @@ fn main() {
         .add_plugin(ScrollWidgetsPlugin())
         .init_resource::<AppConfig>()
         .add_startup_system(setup.system())
+        .add_system(handle_input.system())
         .run();
 }
 
-//#[derive(Default)]
-//struct EnFont(Handle<Font>);
+fn handle_input(
+    mut event_exit: EventWriter<AppExit>,
+    keyboard: Res<Input<KeyCode>>,
+    mut list_query: Query<&mut ScrollSimListWidget>,
+) {
+    if keyboard.just_released(KeyCode::Escape) {
+        event_exit.send(AppExit {});
+    }
+
+    let mut step: i32 = 0;
+    if keyboard.just_released(KeyCode::Up) {
+        step = -1;
+    } else if keyboard.just_released(KeyCode::Down) {
+        step = 1;
+    }
+
+    if step != 0 {
+        for mut list in list_query.iter_mut() {
+            list.scroll_to(step);
+        }
+    }
+}
 
 struct AppConfig {
     bg_col: Handle<ColorMaterial>,

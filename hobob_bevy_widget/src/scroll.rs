@@ -190,9 +190,9 @@ fn fix_draw(
         match query.get_component_mut::<Style>(*child) {
             Ok(mut style) => {
                 style.display = Display::Flex;
-                debug!("entity {:?} set display flex");
+                debug!("entity {:?} set display flex", child);
             }
-            Err(e) => debug!("entity {:?} set display flex error: {}", e),
+            Err(e) => debug!("entity {:?} set display flex error: {}", child, e),
         }
         let e = commands
             .spawn_bundle(contain_node_bundle(&none_col))
