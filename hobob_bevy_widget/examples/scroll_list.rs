@@ -21,9 +21,9 @@ fn setup(
 ) {
     commands.spawn_bundle(UiCameraBundle::default());
 
-    let bg_col = materials.add(Color::rgb(0.95, 0.15, 0.15).into());
+    let bg_col = materials.add(Color::rgb(0.15, 0.15, 0.15).into());
     let list_bg_col = materials.add(Color::rgb(0.16, 0.16, 0.16).into());
-    let item_col = materials.add(Color::rgb(0., 0., 0.25).into());
+    let item_col = materials.add(Color::rgb(0.50, 0.50, 0.85).into());
 
     let root = commands
         .spawn_bundle(NodeBundle {

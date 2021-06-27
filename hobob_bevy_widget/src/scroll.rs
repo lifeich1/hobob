@@ -6,7 +6,6 @@ pub struct ScrollWidgetsPlugin();
 impl Plugin for ScrollWidgetsPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.init_resource::<NoneColor>()
-            .add_startup_system(setup.system())
             .add_system(scroll_sim.system());
     }
 }
@@ -66,11 +65,13 @@ impl ScrollSimListWidget {
     }
 }
 
-#[derive(Default)]
 struct NoneColor(Handle<ColorMaterial>);
 
-fn setup(mut materials: ResMut<Assets<ColorMaterial>>, mut none_col: ResMut<NoneColor>) {
-    none_col.0 = materials.add(Color::NONE.into());
+impl FromWorld for NoneColor {
+    fn from_world(world: &mut World) -> Self {
+        let mut materials = world.get_resource_mut::<Assets<ColorMaterial>>().unwrap();
+        Self(materials.add(Color::NONE.into()))
+    }
 }
 
 fn scroll_sim(
@@ -81,6 +82,7 @@ fn scroll_sim(
         &mut ScrollSimListWidget,
         Option<&mut ScrollProgression>,
     )>,
+    mut all_widgets_query: Query<Entity, With<ScrollSimListWidget>>,
     none_col: Res<NoneColor>,
 ) {
     for (entity, children, mut widget, progression) in widgets.iter_mut() {
@@ -105,6 +107,7 @@ fn scroll_sim(
                 &children,
                 &mut widget,
                 &none_col,
+                &mut all_widgets_query,
                 actual_move,
             );
         } else {
@@ -114,6 +117,7 @@ fn scroll_sim(
                 &children,
                 &mut widget,
                 &none_col,
+                &mut all_widgets_query,
                 target_step,
             );
             widget.invalidate = false;
@@ -136,6 +140,7 @@ fn fix_draw(
     children: &Children,
     widget: &mut ScrollSimListWidget,
     none_col: &Res<NoneColor>,
+    query: &mut Query<Entity, With<ScrollSimListWidget>>,
     step_move: i32,
 ) {
     info!("fix_draw {:?} step move {}", entity, step_move);
@@ -152,6 +157,18 @@ fn fix_draw(
         commands.entity(*child).despawn();
     }
 
+    let to_drop = widget.items.iter();
+    let to_drop = if step_move > 0 {
+        to_drop.skip(widget.current_step).take(ustep)
+    } else {
+        to_drop.skip((widget.current_step + widget.show_limit).saturating_sub(ustep)).take(ustep)
+    };
+    for entity in to_drop {
+        if let Ok(mut style) = query.get_component_mut::<Style>(*entity) {
+            style.display = Display::None;
+        }
+    }
+
     let to_add = widget.items.iter();
     let to_add = if step_move > 0 {
         to_add
@@ -164,6 +181,9 @@ fn fix_draw(
     };
     let mut contains: Vec<Entity> = Vec::new();
     for child in to_add {
+        if let Ok(mut style) = query.get_component_mut::<Style>(*child) {
+            style.display = Display::Flex;
+        }
         let e = commands
             .spawn_bundle(contain_node_bundle(&none_col))
             .push_children(&[*child])
@@ -185,9 +205,20 @@ fn totally_redraw(
     children: &Children,
     widget: &mut ScrollSimListWidget,
     none_col: &Res<NoneColor>,
+    query: &mut Query<Entity, With<ScrollSimListWidget>>,
     target_step: usize,
 ) {
     info!("totally_redraw {:?} to step {}", entity, target_step);
+
+    for (idx, entity) in widget.items.iter().enumerate() {
+        if let Ok(mut style) = query.get_component_mut::<Style>(*entity) {
+            style.display = if target_step <= idx && idx < target_step + widget.show_limit {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        }
+    }
 
     for child in children.iter() {
         commands.entity(*child).despawn();
