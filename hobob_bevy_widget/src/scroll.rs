@@ -92,7 +92,7 @@ fn scroll_sim(
 
         // check step_move
         let max_step: usize = widget.items.len().saturating_sub(widget.show_limit);
-        let target_step: usize = ((widget.current_step as i32) - widget.step_move)
+        let target_step: usize = ((widget.current_step as i32) + widget.step_move)
             .max(0)
             .min(max_step as i32)
             .try_into()
