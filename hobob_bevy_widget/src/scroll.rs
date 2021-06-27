@@ -82,7 +82,7 @@ fn scroll_sim(
         &mut ScrollSimListWidget,
         Option<&mut ScrollProgression>,
     )>,
-    mut all_widgets_query: Query<Entity, With<ScrollSimListWidget>>,
+    mut all_widgets_query: Query<(Entity, &mut Style)>,
     none_col: Res<NoneColor>,
 ) {
     for (entity, children, mut widget, progression) in widgets.iter_mut() {
@@ -140,7 +140,7 @@ fn fix_draw(
     children: &Children,
     widget: &mut ScrollSimListWidget,
     none_col: &Res<NoneColor>,
-    query: &mut Query<Entity, With<ScrollSimListWidget>>,
+    query: &mut Query<(Entity, &mut Style)>,
     step_move: i32,
 ) {
     info!("fix_draw {:?} step move {}", entity, step_move);
@@ -161,11 +161,17 @@ fn fix_draw(
     let to_drop = if step_move > 0 {
         to_drop.skip(widget.current_step).take(ustep)
     } else {
-        to_drop.skip((widget.current_step + widget.show_limit).saturating_sub(ustep)).take(ustep)
+        to_drop
+            .skip((widget.current_step + widget.show_limit).saturating_sub(ustep))
+            .take(ustep)
     };
     for entity in to_drop {
-        if let Ok(mut style) = query.get_component_mut::<Style>(*entity) {
-            style.display = Display::None;
+        match query.get_component_mut::<Style>(*entity) {
+            Ok(mut style) => {
+                style.display = Display::None;
+                debug!("entity {:?} set display none", entity);
+            }
+            Err(e) => debug!("entity {:?} set display none error: {}", entity, e),
         }
     }
 
@@ -181,8 +187,12 @@ fn fix_draw(
     };
     let mut contains: Vec<Entity> = Vec::new();
     for child in to_add {
-        if let Ok(mut style) = query.get_component_mut::<Style>(*child) {
-            style.display = Display::Flex;
+        match query.get_component_mut::<Style>(*child) {
+            Ok(mut style) => {
+                style.display = Display::Flex;
+                debug!("entity {:?} set display flex");
+            }
+            Err(e) => debug!("entity {:?} set display flex error: {}", e),
         }
         let e = commands
             .spawn_bundle(contain_node_bundle(&none_col))
@@ -205,18 +215,23 @@ fn totally_redraw(
     children: &Children,
     widget: &mut ScrollSimListWidget,
     none_col: &Res<NoneColor>,
-    query: &mut Query<Entity, With<ScrollSimListWidget>>,
+    query: &mut Query<(Entity, &mut Style)>,
     target_step: usize,
 ) {
     info!("totally_redraw {:?} to step {}", entity, target_step);
 
     for (idx, entity) in widget.items.iter().enumerate() {
-        if let Ok(mut style) = query.get_component_mut::<Style>(*entity) {
-            style.display = if target_step <= idx && idx < target_step + widget.show_limit {
-                Display::Flex
-            } else {
-                Display::None
-            };
+        trace!("try check {} item {:?} style", idx, entity);
+        match query.get_component_mut::<Style>(*entity) {
+            Ok(mut style) => {
+                style.display = if target_step <= idx && idx < target_step + widget.show_limit {
+                    Display::Flex
+                } else {
+                    Display::None
+                };
+                debug!("{} item {:?} set display {:?}", idx, entity, style.display);
+            }
+            Err(e) => debug!("get_component_mut<Style> error: {}", e),
         }
     }
 
