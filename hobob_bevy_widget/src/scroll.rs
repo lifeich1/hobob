@@ -12,6 +12,7 @@ impl Plugin for ScrollWidgetsPlugin {
 /// Scroll progression in [0, 100]
 ///
 /// To watch the progression, attach this component on widgets.
+#[derive(Default)]
 pub struct ScrollProgression(pub usize);
 
 /// A scroll-simulate list widget.
@@ -137,7 +138,9 @@ fn fix_draw(
     let to_drop = if step_move > 0 {
         to_drop.skip(widget.current_step).take(ustep)
     } else {
-        to_drop.skip((widget.current_step + widget.show_limit).saturating_sub(ustep)).take(ustep)
+        to_drop
+            .skip((widget.current_step + widget.show_limit).saturating_sub(ustep))
+            .take(ustep)
     };
     for entity in to_drop {
         match query.get_component_mut::<Style>(*entity) {

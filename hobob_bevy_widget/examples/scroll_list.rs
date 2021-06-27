@@ -1,8 +1,5 @@
-use bevy::{
-    prelude::*,
-    app::AppExit,
-};
-use hobob_bevy_widget::scroll::{ScrollSimListWidget, ScrollWidgetsPlugin};
+use bevy::{app::AppExit, prelude::*};
+use hobob_bevy_widget::scroll::{ScrollProgression, ScrollSimListWidget, ScrollWidgetsPlugin};
 
 fn main() {
     App::build()
@@ -11,7 +8,34 @@ fn main() {
         .init_resource::<AppConfig>()
         .add_startup_system(setup.system())
         .add_system(handle_input.system())
+        .add_system(watch_scroll.system())
         .run();
+}
+
+struct ShowScrollProgressionNode {}
+
+fn watch_scroll(
+    scroll_query: Query<&ScrollProgression, Changed<ScrollProgression>>,
+    mut show_nodes: Query<&mut Text, With<ShowScrollProgressionNode>>,
+    cf: Res<AppConfig>,
+) {
+    for progression in scroll_query.iter().take(1) {
+        debug!("scroll progression changed: {}", progression.0);
+        for mut text in show_nodes.iter_mut() {
+            *text = Text::with_section(
+                format!("{}%", progression.0),
+                TextStyle {
+                    font: cf.en_font.clone(),
+                    font_size: 25.,
+                    color: Color::YELLOW,
+                },
+                TextAlignment {
+                    horizontal: HorizontalAlign::Center,
+                    ..Default::default()
+                },
+            );
+        }
+    }
 }
 
 fn handle_input(
@@ -124,8 +148,40 @@ fn setup(mut commands: Commands, cf: Res<AppConfig>) {
             ..Default::default()
         })
         .insert(ScrollSimListWidget::with_show_limit(4))
+        .insert(ScrollProgression::default())
         .push_children(&children[..])
         .id();
 
     commands.entity(root).push_children(&[list]);
+
+    let progression = commands
+        .spawn_bundle(TextBundle {
+            style: Style {
+                size: Size::new(Val::Auto, Val::Auto),
+                position_type: PositionType::Absolute,
+                position: Rect {
+                    left: Val::Px(10.0),
+                    bottom: Val::Px(10.0),
+                    ..Default::default()
+                },
+                border: Rect::all(Val::Px(20.0)),
+                ..Default::default()
+            },
+            text: Text::with_section(
+                "PH",
+                TextStyle {
+                    font: cf.en_font.clone(),
+                    font_size: 25.,
+                    color: Color::YELLOW,
+                },
+                TextAlignment {
+                    horizontal: HorizontalAlign::Center,
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        })
+        .insert(ShowScrollProgressionNode {})
+        .id();
+    commands.entity(root).push_children(&[progression]);
 }
