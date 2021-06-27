@@ -74,10 +74,9 @@ fn setup(mut commands: Commands, cf: Res<AppConfig>) {
         })
         .id();
 
-    let mut w = ScrollSimListWidget::with_show_limit(4);
-
+    let mut children = Vec::<Entity>::new();
     for i in 0..10 {
-        w.items.push(
+        children.push(
             commands
                 .spawn_bundle(NodeBundle {
                     style: Style {
@@ -124,8 +123,8 @@ fn setup(mut commands: Commands, cf: Res<AppConfig>) {
             material: cf.list_bg_col.clone(),
             ..Default::default()
         })
-        .insert(w)
-        .push_children(&[])
+        .insert(ScrollSimListWidget::with_show_limit(4))
+        .push_children(&children[..])
         .id();
 
     commands.entity(root).push_children(&[list]);
