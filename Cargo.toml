@@ -2,4 +2,5 @@
 
 members = [
     "hobob_bevy_widget",
+    "hobob_app",
 ]

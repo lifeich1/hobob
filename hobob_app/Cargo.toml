@@ -1,0 +1,14 @@
+[package]
+name = "hobob_app"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = "0.5"
+tokio = { version = "1", features = ["full"] }
+
+hobob_bevy_widget = { path = "../hobob_bevy_widget" }
+
+bilibili-api-rs = { path = "../../bilibili-api-rs", features = ["plugin"] }
