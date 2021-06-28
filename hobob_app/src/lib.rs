@@ -12,6 +12,8 @@ lazy_static! {
 
 mod logic;
 mod startup;
+mod widget;
+pub mod ui;
 
 pub struct HobobPlugin {}
 
@@ -127,6 +129,7 @@ impl FromWorld for AppResource {
 }
 
 pub struct ShowScrollProgression {}
+
 
 fn load_cache<P: AsRef<Path>, T: serde::de::DeserializeOwned>(
     p: P,

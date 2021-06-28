@@ -39,6 +39,10 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
         return;
     }
 
+    let followings: Vec<Entity> = cf.followings_uid.iter()
+        .map(|uid| widget::create_following(&mut commands, &app_res, *uid))
+        .collect();
+
     commands.entity(root).with_children(|parent| {
         // node for uid input widget
         parent.spawn_bundle(NodeBundle {
@@ -57,12 +61,14 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                     size: Size::new(Val::Percent(80.0), Val::Percent(80.0)),
                     flex_direction: FlexDirection::ColumnReverse,
                     flex_grow: 100.0,
+                    padding: Rect::all(Val::Px(8.)),
                     ..Default::default()
                 },
                 material: app_res.none_col.clone(),
                 ..Default::default()
             })
-            .insert(scroll::ScrollSimListWidget::default());
+            .insert(scroll::ScrollSimListWidget::default())
+            .push_children(&followings);
 
         parent
             .spawn_bundle(TextBundle {
