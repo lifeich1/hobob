@@ -4,6 +4,7 @@ use hobob_bevy_widget::scroll;
 use tokio::runtime;
 
 mod startup;
+mod logic;
 
 pub struct HobobPlugin {}
 
@@ -52,7 +53,8 @@ impl bevy::prelude::Plugin for HobobPlugin {
             ))
             .insert_resource(ctx)
             .add_plugin(scroll::ScrollWidgetsPlugin())
-            .add_startup_system(startup::ui.system());
+            .add_startup_system(startup::ui.system())
+            .add_system(logic::ui.system());
     }
 }
 
@@ -76,6 +78,7 @@ pub struct AppResource {
     item_bg_col: Handle<ColorMaterial>,
 
     font: Handle<Font>,
+    progression_font_size: f32,
 }
 
 impl FromWorld for AppResource {
@@ -91,6 +94,9 @@ impl FromWorld for AppResource {
             bg_col: materials.add(Color::hex("90d7ec").unwrap().into()),
             item_bg_col: materials.add(Color::hex("7bbfea").unwrap().into()),
             font,
+            progression_font_size: 25.,
         }
     }
 }
+
+pub struct ShowScrollProgression {}

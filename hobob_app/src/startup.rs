@@ -1,5 +1,4 @@
-use super::{AppConfig, AppResource};
-use bevy::prelude::*;
+use super::*;
 use hobob_bevy_widget::scroll;
 
 pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>) {
@@ -63,5 +62,33 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                 ..Default::default()
             })
             .insert(scroll::ScrollSimListWidget::default());
+
+        parent.spawn_bundle(TextBundle {
+            style: Style {
+                size: Size::new(Val::Auto, Val::Auto),
+                position_type: PositionType::Absolute,
+                position: Rect {
+                    right: Val::Px(10.0),
+                    bottom: Val::Px(10.0),
+                    ..Default::default()
+                },
+                border: Rect::all(Val::Px(20.0)),
+                ..Default::default()
+            },
+            text: Text::with_section(
+                "0%",
+                TextStyle {
+                    font: app_res.font.clone(),
+                    font_size: app_res.progression_font_size,
+                    color: app_res.progression_text_col,
+                },
+                TextAlignment {
+                    horizontal: HorizontalAlign::Center,
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        })
+        .insert(ShowScrollProgression {});
     });
 }
