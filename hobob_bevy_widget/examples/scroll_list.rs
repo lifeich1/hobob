@@ -17,23 +17,11 @@ struct ShowScrollProgressionNode {}
 fn watch_scroll(
     scroll_query: Query<&ScrollProgression, Changed<ScrollProgression>>,
     mut show_nodes: Query<&mut Text, With<ShowScrollProgressionNode>>,
-    cf: Res<AppConfig>,
 ) {
     for progression in scroll_query.iter().take(1) {
         debug!("scroll progression changed: {}", progression.0);
         for mut text in show_nodes.iter_mut() {
-            *text = Text::with_section(
-                format!("{}%", progression.0),
-                TextStyle {
-                    font: cf.en_font.clone(),
-                    font_size: 25.,
-                    color: Color::YELLOW,
-                },
-                TextAlignment {
-                    horizontal: HorizontalAlign::Center,
-                    ..Default::default()
-                },
-            );
+            text.sections[0].value = format!("{}%", progression.0);
         }
     }
 }
