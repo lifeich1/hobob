@@ -72,7 +72,7 @@ fn scroll_sim(
         &mut ScrollSimListWidget,
         Option<&mut ScrollProgression>,
     )>,
-    mut all_widgets_query: Query<(Entity, Option<&Children>, &mut Visible, &mut Style)>,
+    mut all_widgets_query: Query<(Option<&Children>, &mut Visible, &mut Style)>,
 ) {
     for (entity, children, mut widget, progression) in widgets.iter_mut() {
         if widget.step_move == 0 && !widget.invalidate {
