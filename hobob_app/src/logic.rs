@@ -1,23 +1,30 @@
 use super::*;
-use hobob_bevy_widget::scroll;
 use bevy::{
     app::AppExit,
     input::{
+        keyboard::{KeyCode, KeyboardInput},
         ElementState,
-        keyboard::{KeyCode, KeyboardInput, },
-    }
+    },
 };
+use hobob_bevy_widget::scroll;
 
 pub fn ui(
     mut _commands: Commands,
     mut keyboard_ev: EventReader<KeyboardInput>,
     mut exit_ev: EventWriter<AppExit>,
     mut show_scroll_progression_query: Query<&mut Text, With<ShowScrollProgression>>,
-    changed_scroll_progression_query: Query<&scroll::ScrollProgression, Changed<scroll::ScrollProgression>>,
+    changed_scroll_progression_query: Query<
+        &scroll::ScrollProgression,
+        Changed<scroll::ScrollProgression>,
+    >,
 ) {
     for ev in keyboard_ev.iter() {
         match ev {
-            KeyboardInput { scan_code: _, key_code: Some(KeyCode::Escape), state: ElementState::Released } => {
+            KeyboardInput {
+                scan_code: _,
+                key_code: Some(KeyCode::Escape),
+                state: ElementState::Released,
+            } => {
                 info!("key ESC released");
                 exit_ev.send(AppExit {});
             }
