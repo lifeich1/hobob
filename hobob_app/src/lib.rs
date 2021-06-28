@@ -1,23 +1,22 @@
 use bevy::prelude::*;
+use bilibili_api_rs::{api, plugin::ApiRuntimePlugin};
 use hobob_bevy_widget::scroll;
-use bilibili_api_rs::{
-    api,
-    plugin::ApiRuntimePlugin,
-};
 use tokio::runtime;
 
 mod startup;
 
-pub struct HobobPlugin{}
-
+pub struct HobobPlugin {}
 
 impl HobobPlugin {
     fn startup_error<T: ToString + std::fmt::Display>(err: T) -> (AppContext, AppConfig) {
         error!("STARTUP ERROR: {}", err);
-        (AppContext::default(), AppConfig{
-            startup_error: Some(err.to_string()),
-            ..Default::default()
-        })
+        (
+            AppContext::default(),
+            AppConfig {
+                startup_error: Some(err.to_string()),
+                ..Default::default()
+            },
+        )
     }
 
     fn setup() -> (AppContext, AppConfig) {
@@ -32,10 +31,13 @@ impl HobobPlugin {
         }
 
         let cf = AppConfig::default();
-        (AppContext{
-            rt: Some(rt.unwrap()),
-            api_ctx: Some(api_ctx.unwrap()),
-        }, cf)
+        (
+            AppContext {
+                rt: Some(rt.unwrap()),
+                api_ctx: Some(api_ctx.unwrap()),
+            },
+            cf,
+        )
     }
 }
 
@@ -45,12 +47,12 @@ impl bevy::prelude::Plugin for HobobPlugin {
         app.init_resource::<AppResource>()
             .insert_resource(cf.clone())
             .add_plugin(ApiRuntimePlugin::new(
-                    ctx.api_ctx.as_ref().unwrap(),
-                    ctx.rt.as_ref().unwrap()))
+                ctx.api_ctx.as_ref().unwrap(),
+                ctx.rt.as_ref().unwrap(),
+            ))
             .insert_resource(ctx)
             .add_plugin(scroll::ScrollWidgetsPlugin())
-            .add_startup_system(startup::ui.system())
-            ;
+            .add_startup_system(startup::ui.system());
     }
 }
 

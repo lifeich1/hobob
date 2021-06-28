@@ -1,13 +1,10 @@
-use bevy::prelude::*;
 use super::{AppConfig, AppResource};
+use bevy::prelude::*;
 use hobob_bevy_widget::scroll;
 
-pub fn ui(
-    mut commands: Commands,
-    app_res: Res<AppResource>,
-    cf: Res<AppConfig>,
-) {
-    let root = commands.spawn_bundle(NodeBundle {
+pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>) {
+    let root = commands
+        .spawn_bundle(NodeBundle {
             style: Style {
                 size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
                 flex_direction: FlexDirection::Column,
@@ -16,23 +13,24 @@ pub fn ui(
             },
             material: app_res.bg_col.clone(),
             ..Default::default()
-        }).id();
+        })
+        .id();
 
     if let Some(e) = cf.startup_error.as_ref() {
         commands.entity(root).with_children(|parent| {
             parent.spawn_bundle(TextBundle {
                 text: Text::with_section(
-                          format!("STARTUP ERROR: {}", e),
-                          TextStyle {
-                              font: app_res.font.clone(),
-                              font_size: 30.,
-                              color: app_res.err_text_col,
-                          },
-                          TextAlignment {
-                              horizontal: HorizontalAlign::Center,
-                              ..Default::default()
-                          },
-                      ),
+                    format!("STARTUP ERROR: {}", e),
+                    TextStyle {
+                        font: app_res.font.clone(),
+                        font_size: 30.,
+                        color: app_res.err_text_col,
+                    },
+                    TextAlignment {
+                        horizontal: HorizontalAlign::Center,
+                        ..Default::default()
+                    },
+                ),
                 ..Default::default()
             });
         });
@@ -50,15 +48,16 @@ pub fn ui(
         });
 
         // followings browser
-        parent.spawn_bundle(NodeBundle {
-            style: Style {
-                size: Size::new(Val::Percent(80.0), Val::Percent(80.0)),
-                flex_direction: FlexDirection::ColumnReverse,
-                flex_grow: 100.0,
+        parent
+            .spawn_bundle(NodeBundle {
+                style: Style {
+                    size: Size::new(Val::Percent(80.0), Val::Percent(80.0)),
+                    flex_direction: FlexDirection::ColumnReverse,
+                    flex_grow: 100.0,
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        })
-        .insert(scroll::ScrollSimListWidget::default());
+            })
+            .insert(scroll::ScrollSimListWidget::default());
     });
 }
