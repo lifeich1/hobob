@@ -118,7 +118,7 @@ fn setup(mut commands: Commands, cf: Res<AppConfig>) {
                             TextStyle {
                                 font: cf.en_font.clone(),
                                 font_size: 15.,
-                                color: Color::BLACK,
+                                color: Color::RED,
                             },
                             TextAlignment {
                                 horizontal: HorizontalAlign::Center,

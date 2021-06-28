@@ -65,14 +65,16 @@ impl ScrollSimListWidget {
     }
 }
 
+type ControlDisplayQuery<'w, 't0, 't1, 't2> = Query<'w, (Entity, Option<&'t0 Children>, &'t1 mut Visible, &'t2 mut Style)>;
+
 fn scroll_sim(
     mut widgets: Query<(
         Entity,
-        &mut Children,
+        &Children,
         &mut ScrollSimListWidget,
         Option<&mut ScrollProgression>,
     )>,
-    mut all_widgets_query: Query<(Entity, &mut Style)>,
+    mut all_widgets_query: ControlDisplayQuery,
 ) {
     for (entity, children, mut widget, progression) in widgets.iter_mut() {
         if widget.step_move == 0 && !widget.invalidate {
@@ -127,7 +129,7 @@ fn fix_draw(
     entity: Entity,
     children: &Children,
     widget: &ScrollSimListWidget,
-    query: &mut Query<(Entity, &mut Style)>,
+    query: &mut ControlDisplayQuery,
     step_move: i32,
 ) {
     info!("fix_draw {:?} step move {}", entity, step_move);
@@ -143,13 +145,7 @@ fn fix_draw(
             .take(ustep)
     };
     for entity in to_drop {
-        match query.get_component_mut::<Style>(*entity) {
-            Ok(mut style) => {
-                style.display = Display::None;
-                debug!("item {:?} set display none", entity);
-            }
-            Err(e) => debug!("item {:?} set display none error: {}", entity, e),
-        }
+        subtree_set_display(*entity, query, Display::None);
     }
 
     let to_add = children.iter();
@@ -163,13 +159,7 @@ fn fix_draw(
             .take(ustep)
     };
     for entity in to_add {
-        match query.get_component_mut::<Style>(*entity) {
-            Ok(mut style) => {
-                style.display = Display::Flex;
-                debug!("item {:?} set display flex", entity);
-            }
-            Err(e) => debug!("item {:?} set display flex error: {}", entity, e),
-        }
+        subtree_set_display(*entity, query, Display::Flex);
     }
 }
 
@@ -177,7 +167,7 @@ fn totally_redraw(
     entity: Entity,
     children: &Children,
     widget: &ScrollSimListWidget,
-    query: &mut Query<(Entity, &mut Style)>,
+    query: &mut ControlDisplayQuery,
     target_step: usize,
 ) {
     info!("totally_redraw {:?} to step {}", entity, target_step);
@@ -185,16 +175,46 @@ fn totally_redraw(
     for (idx, entity) in children.iter().enumerate() {
         trace!("try set {} child {:?} style", idx, entity);
 
-        match query.get_component_mut::<Style>(*entity) {
-            Ok(mut style) => {
-                style.display = if target_step <= idx && idx < target_step + widget.show_limit {
-                    Display::Flex
-                } else {
-                    Display::None
-                };
-                debug!("{} item {:?} set display {:?}", idx, entity, style.display);
-            }
-            Err(e) => debug!("get_component_mut<Style> error: {}", e),
+        subtree_set_display(*entity, query,
+            if target_step <= idx && idx < target_step + widget.show_limit {
+                Display::Flex
+            } else {
+                Display::None
+            });
+    }
+}
+
+fn subtree_set_display(
+    entity: Entity,
+    query: &mut ControlDisplayQuery,
+    val: Display,
+) {
+    match query.get_component_mut::<Style>(entity) {
+        Ok(mut style) => {
+            style.display = val;
+            trace!("entity {:?} set display {:?}", entity, val);
         }
+        Err(e) => {
+            trace!("entity {:?} get_component_mut<Style> error: {}", entity, e);
+            return;
+        }
+    }
+    match query.get_component_mut::<Visible>(entity) {
+        Ok(mut visible) => {
+            let is_visible = matches!(val, Display::Flex);
+            visible.is_visible = is_visible;
+            trace!("entity {:?} set is_visible {:?}", entity, is_visible);
+        }
+        Err(e) => {
+            trace!("entity {:?} get_component_mut<Visible> error: {}", entity, e);
+        }
+    }
+
+    let mut nodes = Vec::<Entity>::new();
+    if let Ok(children) = query.get_component::<Children>(entity) {
+        nodes.extend(children.iter());
+    }
+    for child in nodes {
+        subtree_set_display(child, query, val);
     }
 }
