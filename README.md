@@ -10,7 +10,7 @@ An app for hobo kicked from bibi&lili.
 
 ## Todo
 
-- [ ] scroll-simulate list ui widget for bevy.
+- [x] scroll-simulate list ui widget for bevy.
 - [ ] able to add following, browse living/new-video status of followings.
 - [ ] update followings' status periodly.
 - [ ] jump to browser for receive streaming or video list.
