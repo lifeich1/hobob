@@ -8,6 +8,9 @@ edition = "2018"
 [dependencies]
 bevy = "0.5"
 tokio = { version = "1", features = ["full"] }
+lazy_static = "1.4"
+ron = "*"
+serde = "*"
 
 hobob_bevy_widget = { path = "../hobob_bevy_widget" }
 

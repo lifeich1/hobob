@@ -10,6 +10,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                 size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..Default::default()
             },
             material: app_res.bg_col.clone(),

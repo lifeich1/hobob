@@ -1819,6 +1819,9 @@ dependencies = [
  "bevy",
  "bilibili-api-rs",
  "hobob_bevy_widget",
+ "lazy_static",
+ "ron",
+ "serde",
  "tokio",
 ]
 

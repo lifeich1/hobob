@@ -2,6 +2,13 @@ use bevy::prelude::*;
 use bilibili_api_rs::{api, plugin::ApiRuntimePlugin};
 use hobob_bevy_widget::scroll;
 use tokio::runtime;
+use lazy_static::lazy_static;
+use std::path::{Path, PathBuf};
+
+lazy_static! {
+    static ref CACHE_DIR: Box<Path> = Path::new(".cache").into();
+    static ref FOLLOWING_CACHE: PathBuf = CACHE_DIR.join("followings.ron");
+}
 
 mod startup;
 mod logic;
@@ -31,7 +38,17 @@ impl HobobPlugin {
             return Self::startup_error(e);
         }
 
-        let cf = AppConfig::default();
+        let mut cf = AppConfig::default();
+        match load_cache(& *FOLLOWING_CACHE) {
+            Ok(r) => cf.followings_uid = r,
+            Err(e) => {
+                warn!("open {:?} error: {}", *FOLLOWING_CACHE, e);
+                if let Err(e) = commit_cache(& *FOLLOWING_CACHE, &cf.followings_uid) {
+                    error!("commit cache to {:?} error: {}", *FOLLOWING_CACHE, e);
+                }
+            },
+        }
+        info!("init followings: {:?}", cf.followings_uid);
         (
             AppContext {
                 rt: Some(rt.unwrap()),
@@ -64,9 +81,19 @@ pub struct AppContext {
     api_ctx: Option<api::Context>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct AppConfig {
     startup_error: Option<String>,
+    followings_uid: Vec<u64>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            startup_error: None,
+            followings_uid: vec![15810, 10592068],
+        }
+    }
 }
 
 pub struct AppResource {
@@ -100,3 +127,15 @@ impl FromWorld for AppResource {
 }
 
 pub struct ShowScrollProgression {}
+
+fn load_cache<P: AsRef<Path>, T: serde::de::DeserializeOwned>(p: P) -> Result<T, Box<dyn std::error::Error>> {
+    Ok(ron::de::from_reader::<_, T>(std::fs::File::open(p)?)?)
+}
+
+fn commit_cache<P: AsRef<Path>, T: serde::ser::Serialize>(p: P, value: &T) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(dir) = p.as_ref().parent() {
+        std::fs::DirBuilder::new().recursive(true).create(dir)?;
+    }
+    ron::ser::to_writer(std::fs::File::create(p)?, value)?;
+    Ok(())
+}
