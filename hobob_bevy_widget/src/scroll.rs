@@ -65,7 +65,15 @@ impl ScrollSimListWidget {
     }
 }
 
-type ControlDisplayQuery<'w, 't0, 't1, 't2> = Query<'w, (Entity, Option<&'t0 Children>, &'t1 mut Visible, &'t2 mut Style)>;
+type ControlDisplayQuery<'w, 't0, 't1, 't2> = Query<
+    'w,
+    (
+        Entity,
+        Option<&'t0 Children>,
+        &'t1 mut Visible,
+        &'t2 mut Style,
+    ),
+>;
 
 fn scroll_sim(
     mut widgets: Query<(
@@ -175,20 +183,19 @@ fn totally_redraw(
     for (idx, entity) in children.iter().enumerate() {
         trace!("try set {} child {:?} style", idx, entity);
 
-        subtree_set_display(*entity, query,
+        subtree_set_display(
+            *entity,
+            query,
             if target_step <= idx && idx < target_step + widget.show_limit {
                 Display::Flex
             } else {
                 Display::None
-            });
+            },
+        );
     }
 }
 
-fn subtree_set_display(
-    entity: Entity,
-    query: &mut ControlDisplayQuery,
-    val: Display,
-) {
+fn subtree_set_display(entity: Entity, query: &mut ControlDisplayQuery, val: Display) {
     match query.get_component_mut::<Style>(entity) {
         Ok(mut style) => {
             style.display = val;
@@ -206,7 +213,11 @@ fn subtree_set_display(
             trace!("entity {:?} set is_visible {:?}", entity, is_visible);
         }
         Err(e) => {
-            trace!("entity {:?} get_component_mut<Visible> error: {}", entity, e);
+            trace!(
+                "entity {:?} get_component_mut<Visible> error: {}",
+                entity,
+                e
+            );
         }
     }
 

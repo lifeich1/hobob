@@ -1,4 +1,4 @@
-use bevy::{app::AppExit, prelude::*};
+use bevy::{app::AppExit, input::mouse, prelude::*};
 use hobob_bevy_widget::scroll::{ScrollProgression, ScrollSimListWidget, ScrollWidgetsPlugin};
 
 fn main() {
@@ -40,6 +40,7 @@ fn watch_scroll(
 
 fn handle_input(
     mut event_exit: EventWriter<AppExit>,
+    mut wheel: EventReader<mouse::MouseWheel>,
     keyboard: Res<Input<KeyCode>>,
     mut list_query: Query<&mut ScrollSimListWidget>,
 ) {
@@ -52,6 +53,20 @@ fn handle_input(
         step = -1;
     } else if keyboard.just_released(KeyCode::Down) {
         step = 1;
+    } else if keyboard.just_released(KeyCode::Left) {
+        step = -3;
+    } else if keyboard.just_released(KeyCode::Right) {
+        step = 3;
+    } else {
+        for ev in wheel.iter() {
+            if ev.y.abs() > f32::EPSILON {
+                debug!("wheel {:?}", *ev);
+                step = ev.y.abs().ceil() as i32;
+                if ev.y > 0.0 {
+                    step = -step;
+                }
+            }
+        }
     }
 
     if step != 0 {
