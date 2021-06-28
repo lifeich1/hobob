@@ -3,6 +3,8 @@ use bevy::prelude::*;
 use hobob_bevy_widget::scroll;
 
 pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>) {
+    commands.spawn_bundle(UiCameraBundle::default());
+
     let root = commands
         .spawn_bundle(NodeBundle {
             style: Style {
@@ -44,6 +46,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                 size: Size::new(Val::Auto, Val::Px(100.)),
                 ..Default::default()
             },
+            material: app_res.none_col.clone(),
             ..Default::default()
         });
 
@@ -56,6 +59,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                     flex_grow: 100.0,
                     ..Default::default()
                 },
+                material: app_res.none_col.clone(),
                 ..Default::default()
             })
             .insert(scroll::ScrollSimListWidget::default());

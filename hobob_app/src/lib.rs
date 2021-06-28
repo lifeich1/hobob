@@ -71,6 +71,7 @@ pub struct AppResource {
     err_text_col: Color,
     progression_text_col: Color,
 
+    none_col: Handle<ColorMaterial>,
     bg_col: Handle<ColorMaterial>,
     item_bg_col: Handle<ColorMaterial>,
 
@@ -86,6 +87,7 @@ impl FromWorld for AppResource {
         Self {
             err_text_col: Color::RED,
             progression_text_col: Color::YELLOW,
+            none_col: materials.add(Color::NONE.into()),
             bg_col: materials.add(Color::hex("90d7ec").unwrap().into()),
             item_bg_col: materials.add(Color::hex("7bbfea").unwrap().into()),
             font,
