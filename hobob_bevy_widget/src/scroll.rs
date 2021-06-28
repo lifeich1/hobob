@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{ecs::query::WorldQuery, prelude::*};
 use std::convert::TryInto;
 
 pub struct ScrollWidgetsPlugin();
@@ -65,16 +65,6 @@ impl ScrollSimListWidget {
     }
 }
 
-type ControlDisplayQuery<'w, 't0, 't1, 't2> = Query<
-    'w,
-    (
-        Entity,
-        Option<&'t0 Children>,
-        &'t1 mut Visible,
-        &'t2 mut Style,
-    ),
->;
-
 fn scroll_sim(
     mut widgets: Query<(
         Entity,
@@ -82,7 +72,7 @@ fn scroll_sim(
         &mut ScrollSimListWidget,
         Option<&mut ScrollProgression>,
     )>,
-    mut all_widgets_query: ControlDisplayQuery,
+    mut all_widgets_query: Query<(Entity, Option<&Children>, &mut Visible, &mut Style)>,
 ) {
     for (entity, children, mut widget, progression) in widgets.iter_mut() {
         if widget.step_move == 0 && !widget.invalidate {
@@ -133,11 +123,11 @@ fn scroll_sim(
     }
 }
 
-fn fix_draw(
+fn fix_draw<Q0: WorldQuery>(
     entity: Entity,
     children: &Children,
     widget: &ScrollSimListWidget,
-    query: &mut ControlDisplayQuery,
+    query: &mut Query<Q0>,
     step_move: i32,
 ) {
     info!("fix_draw {:?} step move {}", entity, step_move);
@@ -171,11 +161,11 @@ fn fix_draw(
     }
 }
 
-fn totally_redraw(
+fn totally_redraw<Q0: WorldQuery>(
     entity: Entity,
     children: &Children,
     widget: &ScrollSimListWidget,
-    query: &mut ControlDisplayQuery,
+    query: &mut Query<Q0>,
     target_step: usize,
 ) {
     info!("totally_redraw {:?} to step {}", entity, target_step);
@@ -195,7 +185,7 @@ fn totally_redraw(
     }
 }
 
-fn subtree_set_display(entity: Entity, query: &mut ControlDisplayQuery, val: Display) {
+fn subtree_set_display<Q0: WorldQuery>(entity: Entity, query: &mut Query<Q0>, val: Display) {
     match query.get_component_mut::<Style>(entity) {
         Ok(mut style) => {
             style.display = val;
