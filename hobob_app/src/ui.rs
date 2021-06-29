@@ -1,7 +1,8 @@
 pub mod following {
     pub struct Nickname(pub u64);
+    pub struct HomepageOpenButton(pub u64);
     pub struct Face(pub u64);
-    pub struct LiveRoomOpen(pub u64);
+    pub struct LiveRoomOpenButton(pub u64);
     pub struct LiveRoomTitle(pub u64);
     pub struct VideoInfo(pub u64);
 
@@ -11,9 +12,9 @@ pub mod following {
         pub struct Info {
             uid: u64,
             nickname: String, // Nickname
-            live_room_url: String, // LiveRoomOpen
+            live_room_url: String, // LiveRoomOpenButton
             live_room_title: String, // LiveRoomTitle
-            live_open: bool,
+            live_open: Option<bool>,
             live_entropy: u64,
             face_url: String, // request Face
         }
@@ -25,6 +26,14 @@ pub mod following {
         pub struct NewVideo {
             date_time: String, // VideoInfo
             title: String,
+        }
+    }
+
+    pub mod event {
+        #[derive(Debug)]
+        pub enum Action {
+            RefreshVisible,
+            AddFollowingUid(u64),
         }
     }
 }

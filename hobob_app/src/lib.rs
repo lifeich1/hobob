@@ -73,7 +73,7 @@ impl bevy::prelude::Plugin for HobobPlugin {
             .insert_resource(ctx)
             .add_plugin(scroll::ScrollWidgetsPlugin())
             .add_startup_system(startup::ui.system())
-            .add_system(logic::ui.system());
+            .add_plugin(logic::LogicPlugin());
     }
 }
 
