@@ -63,6 +63,8 @@ impl HobobPlugin {
 
 impl bevy::prelude::Plugin for HobobPlugin {
     fn build(&self, app: &mut AppBuilder) {
+        simple_logger::SimpleLogger::new().init().unwrap();
+
         let (ctx, cf) = Self::setup();
         app.init_resource::<AppResource>()
             .insert_resource(cf.clone())
@@ -72,8 +74,9 @@ impl bevy::prelude::Plugin for HobobPlugin {
             ))
             .insert_resource(ctx)
             .add_plugin(scroll::ScrollWidgetsPlugin())
-            .add_startup_system(startup::ui.system())
-            .add_plugin(logic::LogicPlugin());
+            .add_plugin(ui::ResourcePlugin())
+            .add_plugin(logic::LogicPlugin())
+            .add_startup_system(startup::ui.system());
     }
 }
 
@@ -106,6 +109,12 @@ pub struct AppResource {
     bg_col: Handle<ColorMaterial>,
     item_bg_col: Handle<ColorMaterial>,
 
+    btn_press_col: Handle<ColorMaterial>,
+    btn_hover_col: Handle<ColorMaterial>,
+    btn_none_col: Handle<ColorMaterial>,
+
+    btn_text_col: Color,
+
     font: Handle<Font>,
     progression_font_size: f32,
 }
@@ -122,6 +131,10 @@ impl FromWorld for AppResource {
             none_col: materials.add(Color::NONE.into()),
             bg_col: materials.add(Color::hex("90d7ec").unwrap().into()),
             item_bg_col: materials.add(Color::hex("7bbfea").unwrap().into()),
+            btn_press_col: materials.add(Color::hex("2e3a1f").unwrap().into()),
+            btn_hover_col: materials.add(Color::hex("726930").unwrap().into()),
+            btn_none_col: materials.add(Color::hex("87843b").unwrap().into()),
+            btn_text_col: Color::hex("181d4b").unwrap(),
             font,
             progression_font_size: 25.,
         }

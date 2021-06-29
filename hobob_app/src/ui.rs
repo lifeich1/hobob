@@ -1,3 +1,10 @@
+use bevy::prelude::*;
+
+pub mod add {
+    pub struct RefreshVisible();
+    pub struct AddFollowing();
+}
+
 pub mod following {
     pub struct Nickname(pub u64);
     pub struct HomepageOpenButton(pub u64);
@@ -38,3 +45,10 @@ pub mod following {
     }
 }
 
+pub struct ResourcePlugin();
+
+impl Plugin for ResourcePlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        app.add_event::<following::event::Action>();
+    }
+}

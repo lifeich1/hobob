@@ -1,7 +1,11 @@
 use super::*;
 use hobob_bevy_widget::scroll;
 
-pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>) {
+pub fn ui(
+    mut commands: Commands,
+    app_res: Res<AppResource>,
+    cf: Res<AppConfig>,
+) {
     commands.spawn_bundle(UiCameraBundle::default());
 
     let root = commands
@@ -44,6 +48,33 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
         .collect();
 
     commands.entity(root).with_children(|parent| {
+        parent.spawn_bundle(ButtonBundle {
+            style: Style {
+                size: Size::new(Val::Px(100.0), Val::Px(35.0)),
+                margin: Rect::all(Val::Px(8.)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..Default::default()
+            },
+            material: app_res.btn_none_col.clone(),
+            ..Default::default()
+        })
+        .insert(ui::add::RefreshVisible())
+        .with_children(|parent| {
+            parent.spawn_bundle(TextBundle {
+                text: Text::with_section(
+                    "Refresh",
+                    TextStyle {
+                        font: app_res.font.clone(),
+                        font_size: 15.0,
+                        color: app_res.btn_text_col.clone(),
+                    },
+                    Default::default(),
+                ),
+                ..Default::default()
+            });
+        });
+
         // node for uid input widget
         parent.spawn_bundle(NodeBundle {
             style: Style {
