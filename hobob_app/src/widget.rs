@@ -36,7 +36,7 @@ pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid
                 format!("#{}", uid),
                 TextStyle {
                     font: app_res.font.clone(),
-                    font_size: 15.,
+                    font_size: 20.,
                     color: Color::BLUE,
                 },
                 TextAlignment {

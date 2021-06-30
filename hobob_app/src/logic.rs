@@ -191,12 +191,12 @@ fn live_info_api_result(
                     ];
                 }
                 if let Some(true) = info.live_open {
-                    text.sections[0].value = String::from("LIVE ON");
+                    text.sections[0].value = app_res.live_on_text.clone();
                     text.sections[0].style.color = Color::BLUE;
                     text.sections[1].value = info.live_entropy.to_string();
                     text.sections[1].style.color = Color::RED;
                 } else {
-                    text.sections[0].value = String::from("LIVE OFF");
+                    text.sections[0].value = app_res.live_off_text.clone();
                     text.sections[0].style.color = Color::GRAY;
                     text.sections[1].value = info.live_entropy.to_string();
                     text.sections[1].style.color = Color::GRAY;

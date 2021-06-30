@@ -117,6 +117,9 @@ pub struct AppResource {
 
     btn_text_col: Color,
 
+    live_on_text: String,
+    live_off_text: String,
+
     font: Handle<Font>,
     progression_font_size: f32,
 }
@@ -124,7 +127,18 @@ pub struct AppResource {
 impl FromWorld for AppResource {
     fn from_world(world: &mut World) -> Self {
         let asset_server = world.get_resource::<AssetServer>().unwrap();
-        let font: Handle<Font> = asset_server.load("fonts/FiraMono-Medium.ttf");
+        let mut font: Handle<Font> = asset_server.load("fonts/FiraMono-Medium.ttf");
+
+        let mut live_on_text = String::from("LIVE ON");
+        let mut live_off_text = String::from("LIVE OFF");
+
+        if std::path::Path::new("assets/fonts/SourceHanSans-Bold.otf").is_file() {
+            info!("use SourceHanSans-Bold");
+            font = asset_server.load("fonts/SourceHanSans-Bold.otf");
+
+            live_on_text = String::from("直播中");
+            live_off_text = String::from("未直播");
+        }
 
         let mut materials = world.get_resource_mut::<Assets<ColorMaterial>>().unwrap();
         Self {
@@ -138,8 +152,10 @@ impl FromWorld for AppResource {
             btn_none_col: materials.add(Color::hex("87843b").unwrap().into()),
             btn_text_col: Color::hex("181d4b").unwrap(),
             face_none_img: materials.add(Color::WHITE.into()),
-            font,
             progression_font_size: 25.,
+            font,
+            live_on_text,
+            live_off_text,
         }
     }
 }
