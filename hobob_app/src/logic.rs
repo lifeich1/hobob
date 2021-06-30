@@ -1,6 +1,7 @@
 use super::*;
 use bevy::{
     app::AppExit,
+    tasks::{IoTaskPool, Task},
     input::{
         keyboard::{KeyCode, KeyboardInput},
         ElementState,
@@ -11,12 +12,17 @@ use hobob_bevy_widget::scroll;
 use serde_json::json;
 use ui::following::{event::ParsedApiResult, data::{Data, self}};
 use chrono::naive::NaiveDateTime;
+use futures_lite::future;
+use futures_util::StreamExt;
+use std::io::Write;
 
 pub struct LogicPlugin();
 
 impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app
+            .add_system(show_face.system())
+            .add_system(download_face.system())
             .add_system(video_info_api_result.system())
             .add_system(live_info_api_result.system())
             .add_system(first_parse_api_result.system())
@@ -299,6 +305,78 @@ fn button_refresh(
             Interaction::None => {
                 *material = app_res.btn_none_col.clone();
             }
+        }
+    }
+}
+
+struct DownloadFace(u64, Option<std::path::PathBuf>, Option<String>);
+
+#[tokio::main]
+async fn do_download<T: AsRef<Path>>(url: &str, p: T) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = reqwest::get(url)
+        .await?
+        .bytes_stream();
+    let mut f = std::fs::File::create(p.as_ref())?;
+    while let Some(item) = stream.next().await {
+        f.write_all(item?.as_ref())?;
+    }
+    Ok(())
+}
+
+fn download_face(
+    mut commands: Commands,
+    task_pool: Res<IoTaskPool>,
+    mut result_chan: EventReader<ParsedApiResult>,
+    cf: Res<AppConfig>,
+) {
+    for ParsedApiResult{ uid, data } in result_chan.iter() {
+        if let Data::Info(info) = data {
+            if info.face_url.len() > 0 {
+                let id = *uid;
+                let url = info.face_url.clone();
+                let dir = cf.face_cache_dir.clone();
+                let task = task_pool.spawn(async move {
+                    let filename = &url[url.rfind('/').map(|x| x + 1).unwrap_or(0)..];
+                    let p = Path::new(&dir).join(filename);
+                    if !p.is_file() {
+                        if let Err(e) = do_download(&url, &p) {
+                            info!("dir: {}", dir);
+                            error!("download {} to {:?} error: {}", url, p, e);
+                            return DownloadFace(id, None, Some(e.to_string()));
+                        }
+                    }
+                    DownloadFace(id, Some(p), None)
+                });
+                commands.spawn().insert(task);
+            }
+        }
+    }
+}
+
+fn show_face(
+    mut commands: Commands,
+    mut tasks_query: Query<(Entity, &mut Task<DownloadFace>)>,
+    mut face_query: Query<(Entity, &mut Handle<ColorMaterial>, &ui::following::Face)>,
+    asset_server: Res<AssetServer>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for (entity, mut task) in tasks_query.iter_mut() {
+        if let Some(result) = future::block_on(future::poll_once(&mut *task)) {
+            match result.1 {
+                Some(path) => {
+                    for (entity, mut material, face) in face_query.iter_mut() {
+                        if face.0 != result.0 {
+                            continue;
+                        }
+
+                        *material = materials.add(asset_server.load(path).into());
+                        commands.entity(entity).remove::<ui::following::Face>();
+                        break;
+                    }
+                }
+                None => (), // TODO alert
+            }
+            commands.entity(entity).despawn();
         }
     }
 }

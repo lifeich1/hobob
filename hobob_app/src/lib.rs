@@ -8,6 +8,7 @@ use tokio::runtime;
 lazy_static! {
     static ref CACHE_DIR: Box<Path> = Path::new(".cache").into();
     static ref FOLLOWING_CACHE: PathBuf = CACHE_DIR.join("followings.ron");
+    static ref FACE_CACHE_DIR: PathBuf = CACHE_DIR.join("face");
 }
 
 mod logic;
@@ -37,6 +38,9 @@ impl HobobPlugin {
 
         let api_ctx = api::Context::new();
         if let Err(e) = api_ctx {
+            return Self::startup_error(e);
+        }
+        if let Err(e) = std::fs::DirBuilder::new().recursive(true).create(& *FACE_CACHE_DIR) {
             return Self::startup_error(e);
         }
 
@@ -90,6 +94,7 @@ pub struct AppContext {
 pub struct AppConfig {
     startup_error: Option<String>,
     followings_uid: Vec<u64>,
+    face_cache_dir: String,
 }
 
 impl Default for AppConfig {
@@ -97,6 +102,7 @@ impl Default for AppConfig {
         Self {
             startup_error: None,
             followings_uid: vec![15810, 10592068],
+            face_cache_dir: FACE_CACHE_DIR.to_str().unwrap().to_string(),
         }
     }
 }
