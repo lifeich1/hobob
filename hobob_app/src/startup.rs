@@ -66,7 +66,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                         TextStyle {
                             font: app_res.font.clone(),
                             font_size: 15.0,
-                            color: app_res.btn_text_col.clone(),
+                            color: app_res.btn_text_col,
                         },
                         Default::default(),
                     ),

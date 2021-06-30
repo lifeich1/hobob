@@ -67,7 +67,7 @@ impl bevy::prelude::Plugin for HobobPlugin {
 
         let (ctx, cf) = Self::setup();
         app.init_resource::<AppResource>()
-            .insert_resource(cf.clone())
+            .insert_resource(cf)
             .add_plugin(ApiRuntimePlugin::new(
                 ctx.api_ctx.as_ref().unwrap(),
                 ctx.rt.as_ref().unwrap(),
