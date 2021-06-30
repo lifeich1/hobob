@@ -63,7 +63,7 @@ impl HobobPlugin {
 
 impl bevy::prelude::Plugin for HobobPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        simple_logger::SimpleLogger::new().init().unwrap();
+        //simple_logger::SimpleLogger::new().init().unwrap();
 
         let (ctx, cf) = Self::setup();
         app.init_resource::<AppResource>()
@@ -109,6 +109,8 @@ pub struct AppResource {
     bg_col: Handle<ColorMaterial>,
     item_bg_col: Handle<ColorMaterial>,
 
+    face_none_img: Handle<ColorMaterial>,
+
     btn_press_col: Handle<ColorMaterial>,
     btn_hover_col: Handle<ColorMaterial>,
     btn_none_col: Handle<ColorMaterial>,
@@ -135,6 +137,7 @@ impl FromWorld for AppResource {
             btn_hover_col: materials.add(Color::hex("726930").unwrap().into()),
             btn_none_col: materials.add(Color::hex("87843b").unwrap().into()),
             btn_text_col: Color::hex("181d4b").unwrap(),
+            face_none_img: materials.add(Color::WHITE.into()),
             font,
             progression_font_size: 25.,
         }
