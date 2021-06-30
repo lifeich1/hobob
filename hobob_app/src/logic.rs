@@ -9,12 +9,15 @@ use bevy::{
 use bilibili_api_rs::plugin::{ApiRequestEvent, ApiTaskResultEvent};
 use hobob_bevy_widget::scroll;
 use serde_json::json;
+use ui::following::{event::ParsedApiResult, data::{Data, self}};
 
 pub struct LogicPlugin();
 
 impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.add_system(ui.system())
+        app
+            .add_system(first_parse_api_result.system())
+            .add_system(ui.system())
             .add_system(handle_actions.system())
             .add_system(button_refresh.system())
             .add_system(nickname_api_result.system());
@@ -84,52 +87,70 @@ fn refresh_visible(
     }
 }
 
-fn first_parse_api_result(ev: &ApiTaskResultEvent) -> Option<(&serde_json::Value, u64, &str)> {
-    let resp = match ev.result.as_ref() {
-        Ok(r) => r,
-        Err(e) => {
-            error!("api error: {}", e);
-            return None;
+fn first_parse_api_result(
+    mut raw_result: EventReader<ApiTaskResultEvent>,
+    mut parsed: EventWriter<ParsedApiResult>,
+) {
+    for ev in raw_result.iter() {
+        let resp = match ev.result.as_ref() {
+            Ok(r) => r,
+            Err(e) => {
+                error!("api error: {}", e);
+                continue;
+            }
+        };
+        let uid = match ev.tag["uid"].as_u64() {
+            Some(u) => u,
+            None => {
+                debug!("result without uid: {:?}", ev);
+                continue;
+            }
+        };
+        let cmd = match ev.tag["cmd"].as_str() {
+            Some(s) => s,
+            None => {
+                debug!("result without cmd: {:?}", ev);
+                continue;
+            }
+        };
+        match cmd {
+            "refresh" => parsed.send(ParsedApiResult {
+                uid,
+                data: Data::Info(data::Info {
+                    nickname: resp["name"].as_str().unwrap_or_default().to_string(),
+                    live_room_url: resp["live_room"]["url"].as_str().unwrap_or_default().to_string(),
+                    live_room_title: resp["live_room"]["title"].as_str().unwrap_or_default().to_string(),
+                    live_open: resp["live_room"]["liveStatus"].as_i64().map(|x| x != 0),
+                    live_entropy: resp["live_room"]["online"].as_u64().unwrap_or_default(),
+                    face_url: resp["face"].as_str().unwrap_or_default().to_string(),
+                }),
+            }),
+            _ => error!("result with unimplemented cmd: {}", cmd),
         }
-    };
-    let uid = match ev.tag["uid"].as_u64() {
-        Some(u) => u,
-        None => {
-            debug!("result without uid: {:?}", ev);
-            return None;
-        }
-    };
-    let cmd = match ev.tag["cmd"].as_str() {
-        Some(s) => s,
-        None => {
-            debug!("result without cmd: {:?}", ev);
-            return None;
-        }
-    };
-    Some((resp, uid, cmd))
+    }
 }
 
 fn nickname_api_result(
     mut nickname_query: Query<(&mut Text, &ui::following::Nickname)>,
-    mut result_chan: EventReader<ApiTaskResultEvent>,
+    mut result_chan: EventReader<ParsedApiResult>,
 ) {
-    for ev in result_chan.iter() {
-        if let Some((resp, uid, cmd)) = first_parse_api_result(ev) {
+    for ParsedApiResult{ uid, data } in result_chan.iter() {
+        if let Data::Info(info) = data {
             for (mut text, nickname) in nickname_query.iter_mut() {
-                if nickname.0 != uid {
+                if nickname.0 != *uid {
                     continue;
                 }
-                match cmd {
-                    "refresh" => match resp["name"].as_str() {
-                        Some(s) => text.sections[0].value = s.to_string(),
-                        None => error!("result without 'name': {}", resp),
-                    },
-                    _ => error!("result with unimplemented cmd: {:?}", ev),
-                }
+                text.sections[0].value = info.nickname.clone();
                 break;
             }
         }
     }
+}
+
+fn live_info_api_result(
+    mut livetitle_query: Query<(&mut Text, &ui::following::LiveRoomTitle)>,
+    mut result_chan: EventReader<ParsedApiResult>,
+) {
 }
 
 fn button_refresh(

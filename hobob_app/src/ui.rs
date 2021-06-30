@@ -16,31 +16,48 @@ pub mod following {
     pub mod data {
         use bevy::prelude::*;
 
+        #[derive(Debug)]
         pub struct Info {
-            uid: u64,
-            nickname: String,        // Nickname
-            live_room_url: String,   // LiveRoomOpenButton
-            live_room_title: String, // LiveRoomTitle
-            live_open: Option<bool>,
-            live_entropy: u64,
-            face_url: String, // request Face
+            pub nickname: String,        // Nickname
+            pub live_room_url: String,   // LiveRoomOpenButton
+            pub live_room_title: String, // LiveRoomTitle
+            pub live_open: Option<bool>,
+            pub live_entropy: u64,
+            pub face_url: String, // request Face
         }
 
+        #[derive(Debug)]
         pub struct Face {
-            face: Handle<ColorMaterial>, // Face
+            pub face: Handle<ColorMaterial>, // Face
         }
 
+        #[derive(Debug)]
         pub struct NewVideo {
-            date_time: String, // VideoInfo
-            title: String,
+            pub date_time: String, // VideoInfo
+            pub title: String,
+        }
+
+        #[derive(Debug)]
+        pub enum Data {
+            Info(Info),
+            Face(Face),
+            NewVideo(NewVideo),
         }
     }
 
     pub mod event {
+        use super::data;
+
         #[derive(Debug)]
         pub enum Action {
             RefreshVisible,
             AddFollowingUid(u64),
+        }
+
+        #[derive(Debug)]
+        pub struct ParsedApiResult {
+            pub uid: u64,
+            pub data: data::Data,
         }
     }
 }
@@ -49,6 +66,8 @@ pub struct ResourcePlugin();
 
 impl Plugin for ResourcePlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.add_event::<following::event::Action>();
+        app
+            .add_event::<following::event::Action>()
+            .add_event::<following::event::ParsedApiResult>();
     }
 }
