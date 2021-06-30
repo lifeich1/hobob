@@ -100,7 +100,7 @@ pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid
         .spawn_bundle(NodeBundle {
             style: Style {
                 size: Size::new(Val::Percent(100.), Val::Percent(20.)),
-                border: Rect::all(Val::Px(8.)),
+                // TODO replace margin with a span node
                 margin: Rect::all(Val::Px(8.)),
                 flex_direction: FlexDirection::Row,
                 ..Default::default()
