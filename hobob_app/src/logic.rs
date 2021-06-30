@@ -16,6 +16,7 @@ pub struct LogicPlugin();
 impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app
+            .add_system(live_info_api_result.system())
             .add_system(first_parse_api_result.system())
             .add_system(ui.system())
             .add_system(handle_actions.system())
@@ -150,7 +151,60 @@ fn nickname_api_result(
 fn live_info_api_result(
     mut livetitle_query: Query<(&mut Text, &ui::following::LiveRoomTitle)>,
     mut result_chan: EventReader<ParsedApiResult>,
+    app_res: Res<AppResource>,
 ) {
+    for ParsedApiResult{ uid, data } in result_chan.iter() {
+        if let Data::Info(info) = data {
+            if matches!(info.live_open, None) {
+                continue;
+            }
+            for (mut text, livetitle) in livetitle_query.iter_mut() {
+                if livetitle.0 != *uid {
+                    continue;
+                }
+                if text.sections.len() != 3 {
+                    text.sections = vec![
+                        TextSection {
+                            value: "".to_string(),
+                            style: TextStyle {
+                                font: app_res.font.clone(),
+                                font_size: 15.0,
+                                color: Color::WHITE,
+                            },
+                        },
+                        TextSection {
+                            value: "".to_string(),
+                            style: TextStyle {
+                                font: app_res.font.clone(),
+                                font_size: 10.0,
+                                color: Color::RED,
+                            },
+                        },
+                        TextSection {
+                            value: "".to_string(),
+                            style: TextStyle {
+                                font: app_res.font.clone(),
+                                font_size: 15.0,
+                                color: Color::BLUE,
+                            },
+                        },
+                    ];
+                }
+                if let Some(true) = info.live_open {
+                    text.sections[0].value = String::from("LIVE ON");
+                    text.sections[0].style.color = Color::BLUE;
+                    text.sections[1].value = info.live_entropy.to_string();
+                    text.sections[1].style.color = Color::RED;
+                } else {
+                    text.sections[0].value = String::from("LIVE OFF");
+                    text.sections[0].style.color = Color::GRAY;
+                    text.sections[1].value = info.live_entropy.to_string();
+                    text.sections[1].style.color = Color::GRAY;
+                }
+                text.sections[2].value = info.live_room_title.clone();
+            }
+        }
+    }
 }
 
 fn button_refresh(

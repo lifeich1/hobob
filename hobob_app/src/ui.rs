@@ -9,7 +9,7 @@ pub mod following {
     pub struct Nickname(pub u64);
     pub struct HomepageOpenButton(pub u64);
     pub struct Face(pub u64);
-    pub struct LiveRoomOpenButton(pub u64);
+    pub struct LiveRoomOpenButton(pub u64, pub String);
     pub struct LiveRoomTitle(pub u64);
     pub struct VideoInfo(pub u64);
 
