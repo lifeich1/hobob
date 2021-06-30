@@ -6,8 +6,8 @@ use bevy::{
         ElementState,
     },
 };
-use hobob_bevy_widget::scroll;
 use bilibili_api_rs::plugin::{ApiRequestEvent, ApiTaskResultEvent};
+use hobob_bevy_widget::scroll;
 use serde_json::json;
 
 pub struct LogicPlugin();
@@ -56,11 +56,13 @@ fn handle_actions(
     mut action_chan: EventReader<ui::following::event::Action>,
     mut api_req_chan: EventWriter<ApiRequestEvent>,
     api_ctx: Res<api::Context>,
-    visible_nickname_query: Query<(&ui::following::Nickname, &Visible)>
+    visible_nickname_query: Query<(&ui::following::Nickname, &Visible)>,
 ) {
     for action in action_chan.iter() {
         match action {
-            ui::following::event::Action::RefreshVisible => refresh_visible(&mut api_req_chan, &api_ctx, &visible_nickname_query),
+            ui::following::event::Action::RefreshVisible => {
+                refresh_visible(&mut api_req_chan, &api_ctx, &visible_nickname_query)
+            }
             _ => error!("trigger not implemented action {:?}", action),
         }
     }
@@ -69,7 +71,7 @@ fn handle_actions(
 fn refresh_visible(
     api_req_chan: &mut EventWriter<ApiRequestEvent>,
     api_ctx: &Res<api::Context>,
-    visible_nickname_query: &Query<(&ui::following::Nickname, &Visible)>
+    visible_nickname_query: &Query<(&ui::following::Nickname, &Visible)>,
 ) {
     for (nickname, visible) in visible_nickname_query.iter() {
         if visible.is_visible {
@@ -81,7 +83,6 @@ fn refresh_visible(
         }
     }
 }
-
 
 fn first_parse_api_result(ev: &ApiTaskResultEvent) -> Option<(&serde_json::Value, u64, &str)> {
     let resp = match ev.result.as_ref() {
@@ -96,18 +97,17 @@ fn first_parse_api_result(ev: &ApiTaskResultEvent) -> Option<(&serde_json::Value
         None => {
             debug!("result without uid: {:?}", ev);
             return None;
-        },
+        }
     };
     let cmd = match ev.tag["cmd"].as_str() {
         Some(s) => s,
         None => {
             debug!("result without cmd: {:?}", ev);
             return None;
-        },
+        }
     };
     Some((resp, uid, cmd))
 }
-
 
 fn nickname_api_result(
     mut nickname_query: Query<(&mut Text, &ui::following::Nickname)>,
@@ -120,12 +120,10 @@ fn nickname_api_result(
                     continue;
                 }
                 match cmd {
-                    "refresh" => {
-                        match resp["name"].as_str() {
-                            Some(s) => text.sections[0].value = s.to_string(),
-                            None => error!("result without 'name': {}", resp),
-                        }
-                    }
+                    "refresh" => match resp["name"].as_str() {
+                        Some(s) => text.sections[0].value = s.to_string(),
+                        None => error!("result without 'name': {}", resp),
+                    },
                     _ => error!("result with unimplemented cmd: {:?}", ev),
                 }
                 break;
@@ -138,7 +136,11 @@ fn button_refresh(
     app_res: Res<AppResource>,
     mut interaction_query: Query<
         (&Interaction, &mut Handle<ColorMaterial>),
-        (With<Button>, Changed<Interaction>, With<ui::add::RefreshVisible>)
+        (
+            With<Button>,
+            Changed<Interaction>,
+            With<ui::add::RefreshVisible>,
+        ),
     >,
     mut action_chan: EventWriter<ui::following::event::Action>,
 ) {

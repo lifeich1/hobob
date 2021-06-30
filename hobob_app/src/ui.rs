@@ -18,8 +18,8 @@ pub mod following {
 
         pub struct Info {
             uid: u64,
-            nickname: String, // Nickname
-            live_room_url: String, // LiveRoomOpenButton
+            nickname: String,        // Nickname
+            live_room_url: String,   // LiveRoomOpenButton
             live_room_title: String, // LiveRoomTitle
             live_open: Option<bool>,
             live_entropy: u64,
