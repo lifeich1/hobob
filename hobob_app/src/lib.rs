@@ -119,6 +119,7 @@ pub struct AppResource {
 
     live_on_text: String,
     live_off_text: String,
+    no_video_text: String,
 
     font: Handle<Font>,
     progression_font_size: f32,
@@ -131,6 +132,7 @@ impl FromWorld for AppResource {
 
         let mut live_on_text = String::from("LIVE ON");
         let mut live_off_text = String::from("LIVE OFF");
+        let mut no_video_text = String::from("no videos");
 
         if std::path::Path::new("assets/fonts/SourceHanSans-Bold.otf").is_file() {
             info!("use SourceHanSans-Bold");
@@ -138,6 +140,7 @@ impl FromWorld for AppResource {
 
             live_on_text = String::from("直播中");
             live_off_text = String::from("未直播");
+            no_video_text = String::from("无上传视频");
         }
 
         let mut materials = world.get_resource_mut::<Assets<ColorMaterial>>().unwrap();
@@ -156,6 +159,7 @@ impl FromWorld for AppResource {
             font,
             live_on_text,
             live_off_text,
+            no_video_text,
         }
     }
 }

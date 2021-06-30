@@ -12,7 +12,9 @@ lazy_static = "1.4"
 ron = "*"
 serde = "1"
 serde_json = "1"
-simple_logger = "1.11"
+chrono = "0.4"
+
+# simple_logger = "1.11"
 
 hobob_bevy_widget = { path = "../hobob_bevy_widget" }
 

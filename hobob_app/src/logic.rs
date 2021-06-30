@@ -10,12 +10,14 @@ use bilibili_api_rs::plugin::{ApiRequestEvent, ApiTaskResultEvent};
 use hobob_bevy_widget::scroll;
 use serde_json::json;
 use ui::following::{event::ParsedApiResult, data::{Data, self}};
+use chrono::naive::NaiveDateTime;
 
 pub struct LogicPlugin();
 
 impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app
+            .add_system(video_info_api_result.system())
             .add_system(live_info_api_result.system())
             .add_system(first_parse_api_result.system())
             .add_system(ui.system())
@@ -84,6 +86,10 @@ fn refresh_visible(
                 req: api_ctx.new_user(uid).get_info(),
                 tag: json!({"uid": uid, "cmd": "refresh"}).into(),
             });
+            api_req_chan.send(ApiRequestEvent {
+                req: api_ctx.new_user(uid).video_list(1),
+                tag: json!({"uid": uid, "cmd": "new-video"}).into(),
+            });
         }
     }
 }
@@ -91,6 +97,7 @@ fn refresh_visible(
 fn first_parse_api_result(
     mut raw_result: EventReader<ApiTaskResultEvent>,
     mut parsed: EventWriter<ParsedApiResult>,
+    app_res: Res<AppResource>,
 ) {
     for ev in raw_result.iter() {
         let resp = match ev.result.as_ref() {
@@ -126,6 +133,27 @@ fn first_parse_api_result(
                     face_url: resp["face"].as_str().unwrap_or_default().to_string(),
                 }),
             }),
+            "new-video" => if let Some(list) = resp["list"]["vlist"].as_array() {
+                let v = list.iter().reduce(|a, b| {
+                    let t1 = a["created"].as_i64().unwrap_or_default();
+                    let t2 = b["created"].as_i64().unwrap_or_default();
+                    if t1 > t2 { a } else { b }
+                });
+                parsed.send(ParsedApiResult {
+                    uid,
+                    data: Data::NewVideo(match v {
+                        Some(vid) => data::NewVideo {
+                            title: vid["title"].as_str().unwrap_or("N/A").to_string(),
+                            date_time: NaiveDateTime::from_timestamp(vid["created"].as_i64().unwrap_or_default(), 0)
+                                .format("%Y-%m-%d %H:%M ").to_string(),
+                        },
+                        None => data::NewVideo {
+                            title: app_res.no_video_text.clone(),
+                            date_time: Default::default(),
+                        },
+                    }),
+                });
+            }
             _ => error!("result with unimplemented cmd: {}", cmd),
         }
     }
@@ -202,6 +230,45 @@ fn live_info_api_result(
                     text.sections[1].style.color = Color::GRAY;
                 }
                 text.sections[2].value = info.live_room_title.clone();
+            }
+        }
+    }
+}
+
+fn video_info_api_result(
+    mut videoinfo_query: Query<(&mut Text, &ui::following::VideoInfo)>,
+    mut result_chan: EventReader<ParsedApiResult>,
+    app_res: Res<AppResource>,
+) {
+    for ParsedApiResult{ uid, data } in result_chan.iter() {
+        if let Data::NewVideo(info) = data {
+            for (mut text, videoinfo) in videoinfo_query.iter_mut() {
+                if videoinfo.0 != *uid {
+                    continue;
+                }
+
+                if text.sections.len() != 2 {
+                    text.sections = vec![
+                        TextSection {
+                            value: "".to_string(),
+                            style: TextStyle {
+                                font: app_res.font.clone(),
+                                font_size: 15.0,
+                                color: Color::GRAY,
+                            },
+                        },
+                        TextSection {
+                            value: "".to_string(),
+                            style: TextStyle {
+                                font: app_res.font.clone(),
+                                font_size: 15.0,
+                                color: Color::BLACK,
+                            },
+                        },
+                    ];
+                }
+                text.sections[0].value = info.date_time.clone();
+                text.sections[1].value = info.title.clone();
             }
         }
     }
