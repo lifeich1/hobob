@@ -313,13 +313,15 @@ struct DownloadFace(u64, Option<std::path::PathBuf>, Option<String>);
 
 #[tokio::main]
 async fn do_download<T: AsRef<Path>>(url: &str, p: T) -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = reqwest::get(url)
-        .await?
-        .bytes_stream();
-    let mut f = std::fs::File::create(p.as_ref())?;
-    while let Some(item) = stream.next().await {
-        f.write_all(item?.as_ref())?;
-    }
+    let bytes = reqwest::get(url).await?
+        .bytes()
+        .await?;
+    image::io::Reader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()?
+        .decode()?
+        .resize(256, 256, image::imageops::FilterType::CatmullRom)
+        .save(p)?;
+
     Ok(())
 }
 
@@ -340,7 +342,6 @@ fn download_face(
                     let p = Path::new(&dir).join(filename);
                     if !p.is_file() {
                         if let Err(e) = do_download(&url, &p) {
-                            info!("dir: {}", dir);
                             error!("download {} to {:?} error: {}", url, p, e);
                             return DownloadFace(id, None, Some(e.to_string()));
                         }
