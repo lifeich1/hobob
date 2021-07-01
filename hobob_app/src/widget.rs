@@ -1,6 +1,28 @@
 use super::*;
 
 pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid: u64) -> Entity {
+    let span = commands
+        .spawn_bundle(NodeBundle {
+            style: Style {
+                size: Size::new(Val::Percent(100.), Val::Px(8.)),
+                ..Default::default()
+            },
+            material: app_res.none_col.clone(),
+            ..Default::default()
+        })
+        .id();
+    let item_layout = commands
+        .spawn_bundle(NodeBundle {
+            style: Style {
+                size: Size::new(Val::Auto, Val::Percent(20.)),
+                flex_grow: 100.0,
+                flex_direction: FlexDirection::Row,
+                ..Default::default()
+            },
+            material: app_res.item_bg_col.clone(),
+            ..Default::default()
+        })
+        .id();
     let face = commands
         .spawn_bundle(ImageBundle {
             style: Style {
@@ -95,19 +117,19 @@ pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid
 
     commands.entity(description_layout)
         .push_children(&[nickname, videoinfo, livetitle]);
+    commands.entity(item_layout)
+        .push_children(&[face, description_layout]);
 
     commands
         .spawn_bundle(NodeBundle {
             style: Style {
                 size: Size::new(Val::Percent(100.), Val::Percent(20.)),
-                // TODO replace margin with a span node
-                margin: Rect::all(Val::Px(8.)),
-                flex_direction: FlexDirection::Row,
+                flex_direction: FlexDirection::Column,
                 ..Default::default()
             },
-            material: app_res.item_bg_col.clone(),
+            material: app_res.none_col.clone(),
             ..Default::default()
         })
-        .push_children(&[face, description_layout])
+        .push_children(&[item_layout, span])
         .id()
 }
