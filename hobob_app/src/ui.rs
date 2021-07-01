@@ -2,7 +2,14 @@ use bevy::prelude::*;
 
 pub mod add {
     pub struct RefreshVisible();
-    pub struct AddFollowing();
+    pub struct AddFollowing(String);
+}
+
+pub mod filter {
+    pub enum FilterType {
+        LiveEntropy,
+        VideoPub,
+    }
 }
 
 pub mod following {

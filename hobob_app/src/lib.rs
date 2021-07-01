@@ -1,4 +1,7 @@
-use bevy::prelude::*;
+use bevy::{
+    prelude::*,
+    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+};
 use bilibili_api_rs::{api, plugin::ApiRuntimePlugin};
 use hobob_bevy_widget::scroll;
 use lazy_static::lazy_static;
@@ -74,6 +77,8 @@ impl bevy::prelude::Plugin for HobobPlugin {
 
         let (ctx, cf) = Self::setup();
         app.init_resource::<AppResource>()
+            .add_plugin(FrameTimeDiagnosticsPlugin::default())
+            .add_plugin(LogDiagnosticsPlugin::default())
             .insert_resource(cf)
             .add_plugin(ApiRuntimePlugin::new(
                 ctx.api_ctx.as_ref().unwrap(),
