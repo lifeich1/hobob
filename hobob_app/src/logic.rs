@@ -20,6 +20,7 @@ pub struct LogicPlugin();
 impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app
+            .add_system(jump_button_system.system())
             .init_resource::<FaceTaskPool>()
             .add_system(show_face.system())
             .add_system(download_face.system())
@@ -184,6 +185,7 @@ fn nickname_api_result(
 
 fn live_info_api_result(
     mut livetitle_query: Query<(&mut Text, &ui::following::LiveRoomTitle)>,
+    mut livebutton_query: Query<&mut ui::following::LiveRoomOpenButton>,
     mut result_chan: EventReader<ParsedApiResult>,
     app_res: Res<AppResource>,
 ) {
@@ -191,6 +193,13 @@ fn live_info_api_result(
         if let Data::Info(info) = data {
             if matches!(info.live_open, None) {
                 continue;
+            }
+            for mut button in livebutton_query.iter_mut() {
+                if button.0 != *uid {
+                    continue;
+                }
+                button.1 = info.live_room_url.clone();
+                break;
             }
             for (mut text, livetitle) in livetitle_query.iter_mut() {
                 if livetitle.0 != *uid {
@@ -236,6 +245,7 @@ fn live_info_api_result(
                     text.sections[1].style.color = Color::GRAY;
                 }
                 text.sections[2].value = info.live_room_title.clone();
+                break;
             }
         }
     }
@@ -400,6 +410,60 @@ fn show_face(
                 None => (), // TODO alert
             }
             commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn jump_button_system(
+    app_res: Res<AppResource>,
+    button_query: Query<
+        (&Interaction, &ui::following::HoverPressShow,
+         Option<&ui::following::HomepageOpenButton>,
+         Option<&ui::following::LiveRoomOpenButton>),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut shower_query: Query<(&ui::following::HoverPressShower, &mut Handle<ColorMaterial>)>,
+) {
+    for (interaction, show, opt_home, opt_live) in button_query.iter() {
+        let (uid, url) = match (opt_home, opt_live) {
+            (Some(home), None) => (home.0, format!("https://space.bilibili.com/{}/", home.0)),
+            (None, Some(live)) => (live.0, live.1.to_string()),
+            _ => panic!("HoverPressShow widget invalid status: {:?} {:?}", opt_home, opt_live),
+        };
+        if url.len() == 0 {
+            continue;
+        }
+        let entity = show.0;
+        let shower = shower_query.get_component::<ui::following::HoverPressShower>(entity)
+            .expect("entity in shower_query must have component HoverPressShower");
+        if shower.0 != uid {
+            panic!("HoverPressShow(er) uid mismatch: {} {}", shower.0, uid);
+        }
+
+        match interaction {
+            Interaction::Clicked => {
+                let open_cmd = if cfg!(target_os = "linux") {
+                    "xdg-open"
+                } else {
+                    "open"
+                };
+                let start = std::process::Command::new(open_cmd)
+                    .arg(&url)
+                    .spawn();
+                match start {
+                    Ok(_) => info!("open url ok: {}", url),
+                    Err(e) => error!("open url error: {}", e),
+                }
+            }
+            Interaction::Hovered | Interaction::None => {
+                let mut material = shower_query.get_component_mut::<Handle<ColorMaterial>>(entity)
+                    .expect("entity in shower_query must have component Handle<ColorMaterial>");
+                *material = if let Interaction::None = interaction {
+                    app_res.item_bg_col.clone()
+                } else {
+                    app_res.item_to_jump_bg_col.clone()
+                };
+            }
         }
     }
 }

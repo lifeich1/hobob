@@ -114,6 +114,7 @@ pub struct AppResource {
     none_col: Handle<ColorMaterial>,
     bg_col: Handle<ColorMaterial>,
     item_bg_col: Handle<ColorMaterial>,
+    item_to_jump_bg_col: Handle<ColorMaterial>,
 
     face_none_img: Handle<ColorMaterial>,
 
@@ -156,6 +157,7 @@ impl FromWorld for AppResource {
             none_col: materials.add(Color::NONE.into()),
             bg_col: materials.add(Color::hex("90d7ec").unwrap().into()),
             item_bg_col: materials.add(Color::hex("7bbfea").unwrap().into()),
+            item_to_jump_bg_col: materials.add(Color::WHITE.into()),
             btn_press_col: materials.add(Color::hex("2e3a1f").unwrap().into()),
             btn_hover_col: materials.add(Color::hex("726930").unwrap().into()),
             btn_none_col: materials.add(Color::hex("87843b").unwrap().into()),

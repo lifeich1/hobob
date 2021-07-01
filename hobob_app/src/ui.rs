@@ -6,12 +6,19 @@ pub mod add {
 }
 
 pub mod following {
+    use bevy::prelude::*;
+
     pub struct Nickname(pub u64);
+    #[derive(Debug)]
     pub struct HomepageOpenButton(pub u64);
     pub struct Face(pub u64);
+    #[derive(Debug)]
     pub struct LiveRoomOpenButton(pub u64, pub String);
     pub struct LiveRoomTitle(pub u64);
     pub struct VideoInfo(pub u64);
+
+    pub struct HoverPressShow(pub Entity);
+    pub struct HoverPressShower(pub u64);
 
     pub mod data {
         use bevy::prelude::*;
