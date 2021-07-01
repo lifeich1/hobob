@@ -1,26 +1,28 @@
 use super::*;
 use bevy::{
     app::AppExit,
-    tasks::{Task, TaskPool, TaskPoolBuilder},
     input::{
         keyboard::{KeyCode, KeyboardInput},
         ElementState,
     },
+    tasks::{Task, TaskPool, TaskPoolBuilder},
 };
 use bilibili_api_rs::plugin::{ApiRequestEvent, ApiTaskResultEvent};
-use hobob_bevy_widget::scroll;
-use serde_json::json;
-use ui::following::{event::ParsedApiResult, data::{Data, self}};
 use chrono::naive::NaiveDateTime;
 use futures_lite::future;
+use hobob_bevy_widget::scroll;
+use serde_json::json;
 use std::ops::Deref;
+use ui::following::{
+    data::{self, Data},
+    event::ParsedApiResult,
+};
 
 pub struct LogicPlugin();
 
 impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app
-            .add_system(jump_button_system.system())
+        app.add_system(jump_button_system.system())
             .init_resource::<FaceTaskPool>()
             .add_system(show_face.system())
             .add_system(download_face.system())
@@ -133,33 +135,49 @@ fn first_parse_api_result(
                 uid,
                 data: Data::Info(data::Info {
                     nickname: resp["name"].as_str().unwrap_or_default().to_string(),
-                    live_room_url: resp["live_room"]["url"].as_str().unwrap_or_default().to_string(),
-                    live_room_title: resp["live_room"]["title"].as_str().unwrap_or_default().to_string(),
+                    live_room_url: resp["live_room"]["url"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    live_room_title: resp["live_room"]["title"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
                     live_open: resp["live_room"]["liveStatus"].as_i64().map(|x| x != 0),
                     live_entropy: resp["live_room"]["online"].as_u64().unwrap_or_default(),
                     face_url: resp["face"].as_str().unwrap_or_default().to_string(),
                 }),
             }),
-            "new-video" => if let Some(list) = resp["list"]["vlist"].as_array() {
-                let v = list.iter().reduce(|a, b| {
-                    let t1 = a["created"].as_i64().unwrap_or_default();
-                    let t2 = b["created"].as_i64().unwrap_or_default();
-                    if t1 > t2 { a } else { b }
-                });
-                parsed.send(ParsedApiResult {
-                    uid,
-                    data: Data::NewVideo(match v {
-                        Some(vid) => data::NewVideo {
-                            title: vid["title"].as_str().unwrap_or("N/A").to_string(),
-                            date_time: NaiveDateTime::from_timestamp(vid["created"].as_i64().unwrap_or_default(), 0)
-                                .format("%Y-%m-%d %H:%M ").to_string(),
-                        },
-                        None => data::NewVideo {
-                            title: app_res.no_video_text.clone(),
-                            date_time: Default::default(),
-                        },
-                    }),
-                });
+            "new-video" => {
+                if let Some(list) = resp["list"]["vlist"].as_array() {
+                    let v = list.iter().reduce(|a, b| {
+                        let t1 = a["created"].as_i64().unwrap_or_default();
+                        let t2 = b["created"].as_i64().unwrap_or_default();
+                        if t1 > t2 {
+                            a
+                        } else {
+                            b
+                        }
+                    });
+                    parsed.send(ParsedApiResult {
+                        uid,
+                        data: Data::NewVideo(match v {
+                            Some(vid) => data::NewVideo {
+                                title: vid["title"].as_str().unwrap_or("N/A").to_string(),
+                                date_time: NaiveDateTime::from_timestamp(
+                                    vid["created"].as_i64().unwrap_or_default(),
+                                    0,
+                                )
+                                .format("%Y-%m-%d %H:%M ")
+                                .to_string(),
+                            },
+                            None => data::NewVideo {
+                                title: app_res.no_video_text.clone(),
+                                date_time: Default::default(),
+                            },
+                        }),
+                    });
+                }
             }
             _ => error!("result with unimplemented cmd: {}", cmd),
         }
@@ -170,7 +188,7 @@ fn nickname_api_result(
     mut nickname_query: Query<(&mut Text, &ui::following::Nickname)>,
     mut result_chan: EventReader<ParsedApiResult>,
 ) {
-    for ParsedApiResult{ uid, data } in result_chan.iter() {
+    for ParsedApiResult { uid, data } in result_chan.iter() {
         if let Data::Info(info) = data {
             for (mut text, nickname) in nickname_query.iter_mut() {
                 if nickname.0 != *uid {
@@ -189,7 +207,7 @@ fn live_info_api_result(
     mut result_chan: EventReader<ParsedApiResult>,
     app_res: Res<AppResource>,
 ) {
-    for ParsedApiResult{ uid, data } in result_chan.iter() {
+    for ParsedApiResult { uid, data } in result_chan.iter() {
         if let Data::Info(info) = data {
             if matches!(info.live_open, None) {
                 continue;
@@ -256,7 +274,7 @@ fn video_info_api_result(
     mut result_chan: EventReader<ParsedApiResult>,
     app_res: Res<AppResource>,
 ) {
-    for ParsedApiResult{ uid, data } in result_chan.iter() {
+    for ParsedApiResult { uid, data } in result_chan.iter() {
         if let Data::NewVideo(info) = data {
             for (mut text, videoinfo) in videoinfo_query.iter_mut() {
                 if videoinfo.0 != *uid {
@@ -325,7 +343,11 @@ pub struct FaceTaskPool(TaskPool);
 
 impl FromWorld for FaceTaskPool {
     fn from_world(_world: &mut World) -> Self {
-        Self(TaskPoolBuilder::new().thread_name("face".to_string()).build())
+        Self(
+            TaskPoolBuilder::new()
+                .thread_name("face".to_string())
+                .build(),
+        )
     }
 }
 
@@ -339,9 +361,7 @@ impl Deref for FaceTaskPool {
 
 #[tokio::main]
 async fn do_download<T: AsRef<Path>>(url: &str, p: T) -> Result<(), Box<dyn std::error::Error>> {
-    let bytes = reqwest::get(url).await?
-        .bytes()
-        .await?;
+    let bytes = reqwest::get(url).await?.bytes().await?;
     debug!("downloaded {}", url);
     let t = image::io::Reader::new(std::io::Cursor::new(bytes));
     debug!("read bytes {}", url);
@@ -363,7 +383,7 @@ fn download_face(
     mut result_chan: EventReader<ParsedApiResult>,
     cf: Res<AppConfig>,
 ) {
-    for ParsedApiResult{ uid, data } in result_chan.iter() {
+    for ParsedApiResult { uid, data } in result_chan.iter() {
         if let Data::Info(info) = data {
             if info.face_url.len() > 0 {
                 let id = *uid;
@@ -417,9 +437,12 @@ fn show_face(
 fn jump_button_system(
     app_res: Res<AppResource>,
     button_query: Query<
-        (&Interaction, &ui::following::HoverPressShow,
-         Option<&ui::following::HomepageOpenButton>,
-         Option<&ui::following::LiveRoomOpenButton>),
+        (
+            &Interaction,
+            &ui::following::HoverPressShow,
+            Option<&ui::following::HomepageOpenButton>,
+            Option<&ui::following::LiveRoomOpenButton>,
+        ),
         (Changed<Interaction>, With<Button>),
     >,
     mut shower_query: Query<(&ui::following::HoverPressShower, &mut Handle<ColorMaterial>)>,
@@ -428,13 +451,17 @@ fn jump_button_system(
         let (uid, url) = match (opt_home, opt_live) {
             (Some(home), None) => (home.0, format!("https://space.bilibili.com/{}/", home.0)),
             (None, Some(live)) => (live.0, live.1.to_string()),
-            _ => panic!("HoverPressShow widget invalid status: {:?} {:?}", opt_home, opt_live),
+            _ => panic!(
+                "HoverPressShow widget invalid status: {:?} {:?}",
+                opt_home, opt_live
+            ),
         };
         if url.len() == 0 {
             continue;
         }
         let entity = show.0;
-        let shower = shower_query.get_component::<ui::following::HoverPressShower>(entity)
+        let shower = shower_query
+            .get_component::<ui::following::HoverPressShower>(entity)
             .expect("entity in shower_query must have component HoverPressShower");
         if shower.0 != uid {
             panic!("HoverPressShow(er) uid mismatch: {} {}", shower.0, uid);
@@ -447,16 +474,15 @@ fn jump_button_system(
                 } else {
                     "open"
                 };
-                let start = std::process::Command::new(open_cmd)
-                    .arg(&url)
-                    .spawn();
+                let start = std::process::Command::new(open_cmd).arg(&url).spawn();
                 match start {
                     Ok(_) => info!("open url ok: {}", url),
                     Err(e) => error!("open url error: {}", e),
                 }
             }
             Interaction::Hovered | Interaction::None => {
-                let mut material = shower_query.get_component_mut::<Handle<ColorMaterial>>(entity)
+                let mut material = shower_query
+                    .get_component_mut::<Handle<ColorMaterial>>(entity)
                     .expect("entity in shower_query must have component Handle<ColorMaterial>");
                 *material = if let Interaction::None = interaction {
                     app_res.item_bg_col.clone()

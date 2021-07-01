@@ -73,8 +73,7 @@ pub struct ResourcePlugin();
 
 impl Plugin for ResourcePlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app
-            .add_event::<following::event::Action>()
+        app.add_event::<following::event::Action>()
             .add_event::<following::event::ParsedApiResult>();
     }
 }

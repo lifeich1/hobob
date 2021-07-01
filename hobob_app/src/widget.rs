@@ -182,21 +182,29 @@ pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid
         })
         .id();
 
-    commands.entity(homepage)
+    commands
+        .entity(homepage)
         .insert(ui::following::HoverPressShow(item_layout))
         .push_children(&[nickname]);
-    commands.entity(homepage_layout)
+    commands
+        .entity(homepage_layout)
         .push_children(&[homepage, homepage_span]);
 
-    commands.entity(liveroom)
+    commands
+        .entity(liveroom)
         .insert(ui::following::HoverPressShow(item_layout))
         .push_children(&[livetitle]);
-    commands.entity(liveroom_layout)
+    commands
+        .entity(liveroom_layout)
         .push_children(&[liveroom, liveroom_span]);
 
-    commands.entity(description_layout)
-        .push_children(&[homepage_layout, videoinfo, liveroom_layout]);
-    commands.entity(item_layout)
+    commands.entity(description_layout).push_children(&[
+        homepage_layout,
+        videoinfo,
+        liveroom_layout,
+    ]);
+    commands
+        .entity(item_layout)
         .insert(ui::following::HoverPressShower(uid))
         .push_children(&[face, description_layout]);
 

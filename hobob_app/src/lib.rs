@@ -40,7 +40,10 @@ impl HobobPlugin {
         if let Err(e) = api_ctx {
             return Self::startup_error(e);
         }
-        if let Err(e) = std::fs::DirBuilder::new().recursive(true).create(& *FACE_CACHE_DIR) {
+        if let Err(e) = std::fs::DirBuilder::new()
+            .recursive(true)
+            .create(&*FACE_CACHE_DIR)
+        {
             return Self::startup_error(e);
         }
 
