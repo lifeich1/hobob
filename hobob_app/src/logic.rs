@@ -3,6 +3,7 @@ use bevy::{
     app::AppExit,
     input::{
         keyboard::{KeyCode, KeyboardInput},
+        mouse::{MouseScrollUnit, MouseWheel},
         ElementState,
     },
     tasks::{Task, TaskPool, TaskPoolBuilder},
@@ -29,23 +30,21 @@ impl Plugin for LogicPlugin {
             .add_system(video_info_api_result.system())
             .add_system(live_info_api_result.system())
             .add_system(first_parse_api_result.system())
-            .add_system(ui.system())
+            .add_system(input.system())
+            .add_system(show_scroll_progression.system())
             .add_system(handle_actions.system())
             .add_system(button_refresh.system())
             .add_system(nickname_api_result.system());
     }
 }
 
-fn ui(
-    mut _commands: Commands,
+fn input(
     mut keyboard_ev: EventReader<KeyboardInput>,
+    mut mousewheel: EventReader<MouseWheel>,
     mut exit_ev: EventWriter<AppExit>,
-    mut show_scroll_progression_query: Query<&mut Text, With<ShowScrollProgression>>,
-    changed_scroll_progression_query: Query<
-        &scroll::ScrollProgression,
-        Changed<scroll::ScrollProgression>,
-    >,
+    mut scroll_widget_query: Query<&mut scroll::ScrollSimListWidget>,
 ) {
+    let mut scroll_move: i32 = 0;
     for ev in keyboard_ev.iter() {
         match ev {
             KeyboardInput {
@@ -56,10 +55,52 @@ fn ui(
                 info!("key ESC released");
                 exit_ev.send(AppExit {});
             }
+            KeyboardInput {
+                scan_code: _,
+                key_code: Some(k @ (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right)),
+                state: ElementState::Released,
+            } => {
+                scroll_move = match k {
+                    KeyCode::Up => -1,
+                    KeyCode::Down => 1,
+                    KeyCode::Left => -4,
+                    KeyCode::Right => 4,
+                    _ => panic!("match scroll_move at unexpected key: {:?}", k),
+                };
+            }
             _ => (),
         }
     }
 
+    if scroll_move == 0 {
+        for ev in mousewheel.iter() {
+            if let MouseWheel {
+                unit: MouseScrollUnit::Line,
+                x: _,
+                y,
+            } = ev
+            {
+                if y.abs() > f32::EPSILON {
+                    scroll_move -= (y.abs().ceil() * y.signum()) as i32;
+                }
+            }
+        }
+    }
+
+    if scroll_move != 0 {
+        for mut widget in scroll_widget_query.iter_mut() {
+            widget.scroll_to(scroll_move);
+        }
+    }
+}
+
+fn show_scroll_progression(
+    mut show_scroll_progression_query: Query<&mut Text, With<ShowScrollProgression>>,
+    changed_scroll_progression_query: Query<
+        &scroll::ScrollProgression,
+        Changed<scroll::ScrollProgression>,
+    >,
+) {
     for p in changed_scroll_progression_query.iter() {
         for mut text in show_scroll_progression_query.iter_mut() {
             text.sections[0].value = format!("{}%", p.0);
@@ -308,6 +349,7 @@ fn video_info_api_result(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn button_refresh(
     app_res: Res<AppResource>,
     mut interaction_query: Query<
@@ -385,7 +427,7 @@ fn download_face(
 ) {
     for ParsedApiResult { uid, data } in result_chan.iter() {
         if let Data::Info(info) = data {
-            if info.face_url.len() > 0 {
+            if !info.face_url.is_empty() {
                 let id = *uid;
                 let url = info.face_url.clone();
                 let dir = cf.face_cache_dir.clone();
@@ -427,13 +469,17 @@ fn show_face(
                         break;
                     }
                 }
-                None => (), // TODO alert
+                None => error!(
+                    "pull face: {}",
+                    result.2.expect("should return error description")
+                ), // TODO alert in ui
             }
             commands.entity(entity).despawn();
         }
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn jump_button_system(
     app_res: Res<AppResource>,
     button_query: Query<
@@ -456,7 +502,7 @@ fn jump_button_system(
                 opt_home, opt_live
             ),
         };
-        if url.len() == 0 {
+        if url.is_empty() {
             continue;
         }
         let entity = show.0;
