@@ -1,7 +1,7 @@
 use super::*;
 use bevy::{
     app::AppExit,
-    tasks::{IoTaskPool, Task},
+    tasks::{Task, TaskPool, TaskPoolBuilder},
     input::{
         keyboard::{KeyCode, KeyboardInput},
         ElementState,
@@ -13,14 +13,14 @@ use serde_json::json;
 use ui::following::{event::ParsedApiResult, data::{Data, self}};
 use chrono::naive::NaiveDateTime;
 use futures_lite::future;
-use futures_util::StreamExt;
-use std::io::Write;
+use std::ops::Deref;
 
 pub struct LogicPlugin();
 
 impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app
+            .init_resource::<FaceTaskPool>()
             .add_system(show_face.system())
             .add_system(download_face.system())
             .add_system(video_info_api_result.system())
@@ -311,23 +311,45 @@ fn button_refresh(
 
 struct DownloadFace(u64, Option<std::path::PathBuf>, Option<String>);
 
+pub struct FaceTaskPool(TaskPool);
+
+impl FromWorld for FaceTaskPool {
+    fn from_world(_world: &mut World) -> Self {
+        Self(TaskPoolBuilder::new().thread_name("face".to_string()).build())
+    }
+}
+
+impl Deref for FaceTaskPool {
+    type Target = TaskPool;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[tokio::main]
 async fn do_download<T: AsRef<Path>>(url: &str, p: T) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = reqwest::get(url).await?
         .bytes()
         .await?;
-    image::io::Reader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()?
-        .decode()?
-        .resize(256, 256, image::imageops::FilterType::CatmullRom)
-        .save(p)?;
+    debug!("downloaded {}", url);
+    let t = image::io::Reader::new(std::io::Cursor::new(bytes));
+    debug!("read bytes {}", url);
+    let t = t.with_guessed_format()?;
+    debug!("guess format {}", url);
+    let t = t.decode()?;
+    debug!("decoded {}", url);
+    let t = t.thumbnail(256, 256);
+    debug!("thumbnailed {}", url);
+    t.save(p)?;
+    debug!("saved {}", url);
 
     Ok(())
 }
 
 fn download_face(
     mut commands: Commands,
-    task_pool: Res<IoTaskPool>,
+    task_pool: Res<FaceTaskPool>,
     mut result_chan: EventReader<ParsedApiResult>,
     cf: Res<AppConfig>,
 ) {
