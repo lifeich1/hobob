@@ -18,6 +18,7 @@ use ui::following::{
     data::{self, Data},
     event::ParsedApiResult,
 };
+use clipboard::{ClipboardProvider, ClipboardContext};
 
 pub struct LogicPlugin();
 
@@ -42,23 +43,26 @@ fn input(
     mut keyboard_ev: EventReader<KeyboardInput>,
     mut mousewheel: EventReader<MouseWheel>,
     mut exit_ev: EventWriter<AppExit>,
+    keyboard: Res<Input<KeyCode>>,
     mut scroll_widget_query: Query<&mut scroll::ScrollSimListWidget>,
+    mut adding_following_query: Query<&mut Text, With<ui::add::AddFollowing>>, 
 ) {
     let mut scroll_move: i32 = 0;
+    let mut text_edit = Vec::<KeyCode>::new();
     for ev in keyboard_ev.iter() {
         match ev {
             KeyboardInput {
-                scan_code: _,
                 key_code: Some(KeyCode::Escape),
                 state: ElementState::Released,
+                ..
             } => {
                 info!("key ESC released");
                 exit_ev.send(AppExit {});
             }
             KeyboardInput {
-                scan_code: _,
                 key_code: Some(k @ (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right)),
                 state: ElementState::Released,
+                ..
             } => {
                 scroll_move = match k {
                     KeyCode::Up => -1,
@@ -68,8 +72,21 @@ fn input(
                     _ => panic!("match scroll_move at unexpected key: {:?}", k),
                 };
             }
+            KeyboardInput {
+                key_code: Some(k @ (KeyCode::Key0 | KeyCode::Key1 | KeyCode::Key2 | KeyCode::Key3 |
+                                  KeyCode::Key4 | KeyCode::Key5 | KeyCode::Key6 | KeyCode::Key7 |
+                                  KeyCode::Key8 | KeyCode::Key9 | KeyCode::Back | KeyCode::Paste)),
+                state: ElementState::Pressed,
+                ..
+            } => {
+                text_edit.push(*k);
+            }
             _ => (),
         }
+    }
+
+    if keyboard.pressed(KeyCode::LControl) && keyboard.just_pressed(KeyCode::V) {
+        text_edit.push(KeyCode::Paste);
     }
 
     if scroll_move == 0 {
@@ -92,6 +109,40 @@ fn input(
             widget.scroll_to(scroll_move);
         }
     }
+
+    if !text_edit.is_empty() {
+        for mut text in adding_following_query.iter_mut() {
+            let v = &mut text.sections[0].value;
+            for k in text_edit.iter() {
+                match k {
+                    KeyCode::Key0 => v.push('0'),
+                    KeyCode::Key1 => v.push('1'),
+                    KeyCode::Key2 => v.push('2'),
+                    KeyCode::Key3 => v.push('3'),
+                    KeyCode::Key4 => v.push('4'),
+                    KeyCode::Key5 => v.push('5'),
+                    KeyCode::Key6 => v.push('6'),
+                    KeyCode::Key7 => v.push('7'),
+                    KeyCode::Key8 => v.push('8'),
+                    KeyCode::Key9 => v.push('9'),
+                    KeyCode::Back => {
+                        v.pop();
+                    }
+                    KeyCode::Paste => {
+                        match try_get_pasted() {
+                            Ok(s) => v.push_str(s.as_str()),
+                            Err(e) => error!("get content from clipboard error: {}", e),
+                        }
+                    }
+                    _ => panic!("match text edit op at unexpected key: {:?}", k),
+                }
+            }
+        }
+    }
+}
+
+fn try_get_pasted() -> Result<String, Box<dyn std::error::Error>> {
+    ClipboardContext::new()?.get_contents()
 }
 
 fn show_scroll_progression(

@@ -2,7 +2,8 @@ use bevy::prelude::*;
 
 pub mod add {
     pub struct RefreshVisible();
-    pub struct AddFollowing(String);
+    pub struct AddFollowing();
+    pub struct AddFollowingButton();
 }
 
 pub mod filter {

@@ -47,31 +47,102 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
 
     commands.entity(root).with_children(|parent| {
         parent
-            .spawn_bundle(ButtonBundle {
+            .spawn_bundle(NodeBundle {
                 style: Style {
-                    size: Size::new(Val::Px(100.0), Val::Px(35.0)),
+                    size: Size::new(Val::Percent(100.0), Val::Px(35.0)),
                     margin: Rect::all(Val::Px(8.)),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
+                    flex_direction: FlexDirection::Row,
                     ..Default::default()
                 },
-                material: app_res.btn_none_col.clone(),
+                material: app_res.none_col.clone(),
                 ..Default::default()
             })
-            .insert(ui::add::RefreshVisible())
             .with_children(|parent| {
-                parent.spawn_bundle(TextBundle {
-                    text: Text::with_section(
-                        "Refresh",
-                        TextStyle {
-                            font: app_res.font.clone(),
-                            font_size: 15.0,
-                            color: app_res.btn_text_col,
+                parent
+                    .spawn_bundle(NodeBundle {
+                        style: Style {
+                            size: Size::new(Val::Px(400.0), Val::Percent(100.0)),
+                            justify_content: JustifyContent::Center,
+                            flex_direction: FlexDirection::Row,
+                            ..Default::default()
                         },
-                        Default::default(),
-                    ),
-                    ..Default::default()
-                });
+                        material: app_res.textedit_bg_col.clone(),
+                        ..Default::default()
+                    })
+                    .with_children(|parent| {
+                        parent
+                            .spawn_bundle(TextBundle {
+                                text: Text::with_section(
+                                    "",
+                                    TextStyle {
+                                        font: app_res.font.clone(),
+                                        font_size: 15.0,
+                                        color: Color::BLACK,
+                                    },
+                                    Default::default(),
+                                ),
+                                ..Default::default()
+                            })
+                            .insert(ui::add::AddFollowing());
+                    });
+                parent
+                    .spawn_bundle(ButtonBundle {
+                        style: Style {
+                            size: Size::new(Val::Px(50.0), Val::Percent(100.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            margin: Rect {
+                                right: Val::Px(4.0),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        material: app_res.btn_none_col.clone(),
+                        ..Default::default()
+                    })
+                    .insert(ui::add::AddFollowingButton())
+                    .with_children(|parent| {
+                        parent.spawn_bundle(TextBundle {
+                            text: Text::with_section(
+                                "Add",
+                                TextStyle {
+                                    font: app_res.font.clone(),
+                                    font_size: 15.0,
+                                    color: app_res.btn_text_col,
+                                },
+                                Default::default(),
+                            ),
+                            ..Default::default()
+                        });
+                    });
+                parent
+                    .spawn_bundle(ButtonBundle {
+                        style: Style {
+                            size: Size::new(Val::Px(100.0), Val::Percent(100.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..Default::default()
+                        },
+                        material: app_res.btn_none_col.clone(),
+                        ..Default::default()
+                    })
+                    .insert(ui::add::RefreshVisible())
+                    .with_children(|parent| {
+                        parent.spawn_bundle(TextBundle {
+                            text: Text::with_section(
+                                "Refresh",
+                                TextStyle {
+                                    font: app_res.font.clone(),
+                                    font_size: 15.0,
+                                    color: app_res.btn_text_col,
+                                },
+                                Default::default(),
+                            ),
+                            ..Default::default()
+                        });
+                    });
             });
 
         // node for uid input widget
