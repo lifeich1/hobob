@@ -13,7 +13,9 @@ An app for hobo kicked from bibi&lili.
 - [x] scroll-simulate list ui widget for bevy.
 - [x] browse living/new-video status of followings.
 - [x] download & cache face images.
-- [ ] jump to browser for receive streaming or video list.
+- [x] jump to browser for receive streaming or video list.
 - [ ] able to add following.
+- [ ] add filterto sort followings by differ orders.
 - [ ] update followings' status periodly.
+- [ ] cache barely change in months info like nickname, live url etc.
 - [ ] modify following privilege in gui.
