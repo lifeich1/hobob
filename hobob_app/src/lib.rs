@@ -120,7 +120,7 @@ impl AppConfig {
         if self.followings_uid.iter().any(|x| *x == uid) {
             return false;
         }
-        self.followings_uid.push(uid);
+        self.followings_uid.insert(0, uid);
         if let Err(e) = commit_cache(&*FOLLOWING_CACHE, &self.followings_uid) {
             error!("commit cache to {:?} error: {}", *FOLLOWING_CACHE, e);
         }

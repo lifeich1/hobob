@@ -189,7 +189,7 @@ fn handle_actions(
                 refresh_visible(&mut api_req_chan, &api_ctx, &visible_nickname_query)
             }
             ui::following::event::Action::AddFollowingUid(uid) => {
-                add_following(*uid, &mut cf, &app_res, &mut commands, &mut scroll_widget_query)
+                add_following(*uid, &mut cf, &app_res, &mut commands, &mut scroll_widget_query, &mut api_req_chan, &api_ctx)
             }
         }
     }
@@ -201,6 +201,8 @@ fn add_following(
     app_res: &Res<AppResource>,
     commands: &mut Commands,
     scroll_widget_query: &mut Query<(Entity, &mut scroll::ScrollSimListWidget)>,
+    api_req_chan: &mut EventWriter<ApiRequestEvent>,
+    api_ctx: &Res<api::Context>,
 ) {
     if !cf.add_following(uid) {
         info!("already following {}", uid);
@@ -209,7 +211,8 @@ fn add_following(
     for (entity, mut scroll_widget) in scroll_widget_query.iter_mut() {
         let widget = widget::create_following(commands, app_res, uid);
         commands.entity(entity).insert_children(0, &[widget]);
-        scroll_widget.invalidate().scroll_to(0);
+        scroll_widget.scroll_to_top();
+        refresh_user_info(api_req_chan, api_ctx, uid);
     }
 }
 
@@ -220,17 +223,24 @@ fn refresh_visible(
 ) {
     for (nickname, visible) in visible_nickname_query.iter() {
         if visible.is_visible {
-            let uid: u64 = nickname.0;
-            api_req_chan.send(ApiRequestEvent {
-                req: api_ctx.new_user(uid).get_info(),
-                tag: json!({"uid": uid, "cmd": "refresh"}).into(),
-            });
-            api_req_chan.send(ApiRequestEvent {
-                req: api_ctx.new_user(uid).video_list(1),
-                tag: json!({"uid": uid, "cmd": "new-video"}).into(),
-            });
+            refresh_user_info(api_req_chan, api_ctx, nickname.0);
         }
     }
+}
+
+fn refresh_user_info(
+    api_req_chan: &mut EventWriter<ApiRequestEvent>,
+    api_ctx: &Res<api::Context>,
+    uid: u64,
+) {
+    api_req_chan.send(ApiRequestEvent {
+        req: api_ctx.new_user(uid).get_info(),
+        tag: json!({"uid": uid, "cmd": "refresh"}).into(),
+    });
+    api_req_chan.send(ApiRequestEvent {
+        req: api_ctx.new_user(uid).video_list(1),
+        tag: json!({"uid": uid, "cmd": "new-video"}).into(),
+    });
 }
 
 fn first_parse_api_result(
@@ -359,7 +369,7 @@ fn live_info_api_result(
                             value: "".to_string(),
                             style: TextStyle {
                                 font: app_res.font.clone(),
-                                font_size: 15.0,
+                                font_size: 16.0,
                                 color: Color::WHITE,
                             },
                         },
@@ -367,7 +377,7 @@ fn live_info_api_result(
                             value: "".to_string(),
                             style: TextStyle {
                                 font: app_res.font.clone(),
-                                font_size: 10.0,
+                                font_size: 15.0,
                                 color: Color::RED,
                             },
                         },

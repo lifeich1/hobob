@@ -26,6 +26,7 @@ pub struct ScrollSimListWidget {
     current_step: usize,
     step_move: i32,
     invalidate: bool,
+    to_top: bool,
 }
 
 impl Default for ScrollSimListWidget {
@@ -35,6 +36,7 @@ impl Default for ScrollSimListWidget {
             current_step: 0,
             step_move: 0,
             invalidate: true,
+            to_top: false,
         }
     }
 }
@@ -66,6 +68,11 @@ impl ScrollSimListWidget {
         self.step_move = step;
         self
     }
+
+    pub fn scroll_to_top(&mut self) {
+        self.to_top = true;
+        self.invalidate();
+    }
 }
 
 fn scroll_sim(
@@ -90,6 +97,13 @@ fn scroll_sim(
             .try_into()
             .unwrap();
         widget.step_move = 0;
+
+        let target_step: usize = if widget.to_top {
+            widget.to_top = false;
+            0_usize
+        } else {
+            target_step
+        };
 
         let actual_move: i32 = target_step as i32 - widget.current_step as i32;
         if actual_move == 0 && !widget.invalidate {
