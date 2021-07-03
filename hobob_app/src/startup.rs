@@ -64,7 +64,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                     .spawn_bundle(NodeBundle {
                         style: Style {
                             size: Size::new(Val::Px(400.0), Val::Percent(100.0)),
-                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
                             flex_direction: FlexDirection::Row,
                             ..Default::default()
                         },
