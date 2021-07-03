@@ -169,6 +169,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                 ..Default::default()
             })
             .insert(scroll::ScrollSimListWidget::default())
+            .insert(scroll::ScrollProgression::default())
             .push_children(&followings);
 
         parent
