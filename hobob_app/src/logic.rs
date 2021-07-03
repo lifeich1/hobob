@@ -208,8 +208,8 @@ fn add_following(
     }
     for (entity, mut scroll_widget) in scroll_widget_query.iter_mut() {
         let widget = widget::create_following(commands, app_res, uid);
-        commands.entity(entity).push_children(&[widget]);
-        scroll_widget.invalidate();
+        commands.entity(entity).insert_children(0, &[widget]);
+        scroll_widget.invalidate().scroll_to(0);
     }
 }
 

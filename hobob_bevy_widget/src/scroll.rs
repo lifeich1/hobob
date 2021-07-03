@@ -47,21 +47,24 @@ impl ScrollSimListWidget {
         }
     }
 
-    pub fn show_limit(&mut self, show_limit: usize) {
+    pub fn show_limit(&mut self, show_limit: usize) -> &mut Self {
         self.invalidate();
         self.show_limit = show_limit;
+        self
     }
 
     /// Trigger reset visibilites
-    pub fn invalidate(&mut self) {
+    pub fn invalidate(&mut self) -> &mut Self {
         self.invalidate = true;
+        self
     }
 
     /// Make widget do scrolling.
     ///
     /// `step`: negative for up, otherwise down.
-    pub fn scroll_to(&mut self, step: i32) {
+    pub fn scroll_to(&mut self, step: i32) -> &mut Self {
         self.step_move = step;
+        self
     }
 }
 
