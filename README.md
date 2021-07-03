@@ -19,3 +19,4 @@ An app for hobo kicked from bibi&lili.
 - [ ] update followings' status periodly.
 - [ ] cache barely change in months info like nickname, live url etc.
 - [ ] modify following privilege in gui.
+- [ ] show error messages in gui.
