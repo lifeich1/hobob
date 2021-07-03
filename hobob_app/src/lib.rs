@@ -1,6 +1,6 @@
 use bevy::{
-    prelude::*,
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    prelude::*,
 };
 use bilibili_api_rs::{api, plugin::ApiRuntimePlugin};
 use hobob_bevy_widget::scroll;
@@ -112,6 +112,19 @@ impl Default for AppConfig {
             followings_uid: vec![15810, 10592068],
             face_cache_dir: FACE_CACHE_DIR.to_str().unwrap().to_string(),
         }
+    }
+}
+
+impl AppConfig {
+    fn add_following(&mut self, uid: u64) -> bool {
+        if self.followings_uid.iter().any(|x| *x == uid) {
+            return false;
+        }
+        self.followings_uid.push(uid);
+        if let Err(e) = commit_cache(&*FOLLOWING_CACHE, &self.followings_uid) {
+            error!("commit cache to {:?} error: {}", *FOLLOWING_CACHE, e);
+        }
+        true
     }
 }
 

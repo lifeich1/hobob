@@ -10,6 +10,7 @@ use bevy::{
 };
 use bilibili_api_rs::plugin::{ApiRequestEvent, ApiTaskResultEvent};
 use chrono::naive::NaiveDateTime;
+use clipboard::{ClipboardContext, ClipboardProvider};
 use futures_lite::future;
 use hobob_bevy_widget::scroll;
 use serde_json::json;
@@ -18,7 +19,6 @@ use ui::following::{
     data::{self, Data},
     event::ParsedApiResult,
 };
-use clipboard::{ClipboardProvider, ClipboardContext};
 
 pub struct LogicPlugin();
 
@@ -26,6 +26,7 @@ impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.add_system(jump_button_system.system())
             .init_resource::<FaceTaskPool>()
+            .add_system(button_add_following.system())
             .add_system(show_face.system())
             .add_system(download_face.system())
             .add_system(video_info_api_result.system())
@@ -45,7 +46,7 @@ fn input(
     mut exit_ev: EventWriter<AppExit>,
     keyboard: Res<Input<KeyCode>>,
     mut scroll_widget_query: Query<&mut scroll::ScrollSimListWidget>,
-    mut adding_following_query: Query<&mut Text, With<ui::add::AddFollowing>>, 
+    mut adding_following_query: Query<&mut Text, With<ui::add::AddFollowing>>,
 ) {
     let mut scroll_move: i32 = 0;
     let mut text_edit = Vec::<KeyCode>::new();
@@ -73,9 +74,23 @@ fn input(
                 };
             }
             KeyboardInput {
-                key_code: Some(k @ (KeyCode::Key0 | KeyCode::Key1 | KeyCode::Key2 | KeyCode::Key3 |
-                                  KeyCode::Key4 | KeyCode::Key5 | KeyCode::Key6 | KeyCode::Key7 |
-                                  KeyCode::Key8 | KeyCode::Key9 | KeyCode::Back | KeyCode::Paste)),
+                key_code:
+                    Some(
+                        k
+                        @
+                        (KeyCode::Key0
+                        | KeyCode::Key1
+                        | KeyCode::Key2
+                        | KeyCode::Key3
+                        | KeyCode::Key4
+                        | KeyCode::Key5
+                        | KeyCode::Key6
+                        | KeyCode::Key7
+                        | KeyCode::Key8
+                        | KeyCode::Key9
+                        | KeyCode::Back
+                        | KeyCode::Paste),
+                    ),
                 state: ElementState::Pressed,
                 ..
             } => {
@@ -128,12 +143,10 @@ fn input(
                     KeyCode::Back => {
                         v.pop();
                     }
-                    KeyCode::Paste => {
-                        match try_get_pasted() {
-                            Ok(s) => v.push_str(s.as_str()),
-                            Err(e) => error!("get content from clipboard error: {}", e),
-                        }
-                    }
+                    KeyCode::Paste => match try_get_pasted() {
+                        Ok(s) => v.push_str(s.as_str()),
+                        Err(e) => error!("get content from clipboard error: {}", e),
+                    },
                     _ => panic!("match text edit op at unexpected key: {:?}", k),
                 }
             }
@@ -159,19 +172,44 @@ fn show_scroll_progression(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_actions(
     mut action_chan: EventReader<ui::following::event::Action>,
     mut api_req_chan: EventWriter<ApiRequestEvent>,
     api_ctx: Res<api::Context>,
     visible_nickname_query: Query<(&ui::following::Nickname, &Visible)>,
+    mut cf: ResMut<AppConfig>,
+    app_res: Res<AppResource>,
+    mut commands: Commands,
+    mut scroll_widget_query: Query<(Entity, &mut scroll::ScrollSimListWidget)>,
 ) {
     for action in action_chan.iter() {
         match action {
             ui::following::event::Action::RefreshVisible => {
                 refresh_visible(&mut api_req_chan, &api_ctx, &visible_nickname_query)
             }
-            _ => error!("trigger not implemented action {:?}", action),
+            ui::following::event::Action::AddFollowingUid(uid) => {
+                add_following(*uid, &mut cf, &app_res, &mut commands, &mut scroll_widget_query)
+            }
         }
+    }
+}
+
+fn add_following(
+    uid: u64,
+    cf: &mut ResMut<AppConfig>,
+    app_res: &Res<AppResource>,
+    commands: &mut Commands,
+    scroll_widget_query: &mut Query<(Entity, &mut scroll::ScrollSimListWidget)>,
+) {
+    if !cf.add_following(uid) {
+        info!("already following {}", uid);
+        return;
+    }
+    for (entity, mut scroll_widget) in scroll_widget_query.iter_mut() {
+        let widget = widget::create_following(commands, app_res, uid);
+        commands.entity(entity).push_children(&[widget]);
+        scroll_widget.invalidate();
     }
 }
 
@@ -419,6 +457,51 @@ fn button_refresh(
                 info!("button refresh trigger!");
                 *material = app_res.btn_press_col.clone();
                 action_chan.send(ui::following::event::Action::RefreshVisible);
+            }
+            Interaction::Hovered => {
+                *material = app_res.btn_hover_col.clone();
+            }
+            Interaction::None => {
+                *material = app_res.btn_none_col.clone();
+            }
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn button_add_following(
+    app_res: Res<AppResource>,
+    mut interaction_query: Query<
+        (&Interaction, &mut Handle<ColorMaterial>),
+        (
+            With<Button>,
+            Changed<Interaction>,
+            With<ui::add::AddFollowingButton>,
+        ),
+    >,
+    add_query: Query<&Text, With<ui::add::AddFollowing>>,
+    mut action_chan: EventWriter<ui::following::event::Action>,
+) {
+    for (interaction, mut material) in interaction_query.iter_mut() {
+        match *interaction {
+            Interaction::Clicked => {
+                let mut uid: Option<u64> = None;
+                for add in add_query.iter() {
+                    if !add.sections.is_empty() {
+                        uid = add.sections[0].value.parse::<u64>().ok();
+                        if uid.is_some() {
+                            break;
+                        }
+                    }
+                }
+                match uid {
+                    Some(id) => {
+                        info!("button add following trigger: {}", id);
+                        action_chan.send(ui::following::event::Action::AddFollowingUid(id));
+                    }
+                    None => info!("parse input error: button add following"),
+                }
+                *material = app_res.btn_press_col.clone();
             }
             Interaction::Hovered => {
                 *material = app_res.btn_hover_col.clone();
