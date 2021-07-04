@@ -61,9 +61,69 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
             })
             .with_children(|parent| {
                 parent
+                    .spawn_bundle(ButtonBundle {
+                        style: Style {
+                            size: Size::new(Val::Px(100.0), Val::Percent(100.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            margin: Rect {
+                                right: Val::Px(8.0),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        material: app_res.btn_none_col.clone(),
+                        ..Default::default()
+                    })
+                    .insert(ui::filter::ReorderButton(ui::filter::Filter::VideoPub))
+                    .with_children(|parent| {
+                        parent.spawn_bundle(TextBundle {
+                            text: Text::with_section(
+                                "By Video Pubdate",
+                                TextStyle {
+                                    font: app_res.font.clone(),
+                                    font_size: 15.0,
+                                    color: app_res.btn_text_col,
+                                },
+                                Default::default(),
+                            ),
+                            ..Default::default()
+                        });
+                    });
+                parent
+                    .spawn_bundle(ButtonBundle {
+                        style: Style {
+                            size: Size::new(Val::Px(100.0), Val::Percent(100.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            margin: Rect {
+                                right: Val::Px(8.0),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        material: app_res.btn_none_col.clone(),
+                        ..Default::default()
+                    })
+                    .insert(ui::filter::ReorderButton(ui::filter::Filter::LiveEntropy))
+                    .with_children(|parent| {
+                        parent.spawn_bundle(TextBundle {
+                            text: Text::with_section(
+                                "By Live Entropy",
+                                TextStyle {
+                                    font: app_res.font.clone(),
+                                    font_size: 15.0,
+                                    color: app_res.btn_text_col,
+                                },
+                                Default::default(),
+                            ),
+                            ..Default::default()
+                        });
+                    });
+                parent
                     .spawn_bundle(NodeBundle {
                         style: Style {
-                            size: Size::new(Val::Px(400.0), Val::Percent(100.0)),
+                            size: Size::new(Val::Px(300.0), Val::Percent(100.0)),
                             align_items: AlignItems::Center,
                             flex_direction: FlexDirection::Row,
                             ..Default::default()
@@ -145,10 +205,10 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                     });
             });
 
-        // node for uid input widget
+        // span between list & dashboard
         parent.spawn_bundle(NodeBundle {
             style: Style {
-                size: Size::new(Val::Auto, Val::Px(100.)),
+                size: Size::new(Val::Auto, Val::Px(40.)),
                 ..Default::default()
             },
             material: app_res.none_col.clone(),

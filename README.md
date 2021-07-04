@@ -15,7 +15,7 @@ An app for hobo kicked from bibi&lili.
 - [x] download & cache face images.
 - [x] jump to browser for receive streaming or video list.
 - [x] able to add following.
-- [ ] add filterto sort followings by differ orders.
+- [x] add filterto sort followings by differ orders.
 - [ ] update followings' status periodly.
 - [ ] cache barely change in months info like nickname, live url etc.
 - [ ] modify following privilege in gui.

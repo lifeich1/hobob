@@ -218,6 +218,8 @@ pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid
             material: app_res.none_col.clone(),
             ..Default::default()
         })
+        .insert(ui::following::data::SortKey::default())
+        .insert(ui::following::data::Uid(uid))
         .push_children(&[item_layout, span])
         .id()
 }

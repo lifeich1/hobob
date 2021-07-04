@@ -7,10 +7,12 @@ pub mod add {
 }
 
 pub mod filter {
-    pub enum FilterType {
+    pub enum Filter {
         LiveEntropy,
         VideoPub,
     }
+
+    pub struct ReorderButton(pub Filter);
 }
 
 pub mod following {
@@ -32,6 +34,9 @@ pub mod following {
         use bevy::prelude::*;
 
         #[derive(Debug)]
+        pub struct Uid(pub u64);
+
+        #[derive(Debug)]
         pub struct Info {
             pub nickname: String,        // Nickname
             pub live_room_url: String,   // LiveRoomOpenButton
@@ -39,6 +44,12 @@ pub mod following {
             pub live_open: Option<bool>,
             pub live_entropy: u64,
             pub face_url: String, // request Face
+        }
+
+        #[derive(Debug, Default)]
+        pub struct SortKey {
+            pub live_entropy: u64,
+            pub video_pub_ts: u64,
         }
 
         #[derive(Debug)]
@@ -50,6 +61,7 @@ pub mod following {
         pub struct NewVideo {
             pub date_time: String, // VideoInfo
             pub title: String,
+            pub timestamp_sec: u64,
         }
 
         #[derive(Debug)]

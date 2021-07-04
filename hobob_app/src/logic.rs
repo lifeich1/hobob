@@ -26,6 +26,8 @@ impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.add_system(jump_button_system.system())
             .init_resource::<FaceTaskPool>()
+            .add_system(on_filter_button.system())
+            .add_system(sort_key_api_result.system())
             .add_system(button_add_following.system())
             .add_system(show_face.system())
             .add_system(download_face.system())
@@ -310,16 +312,36 @@ fn first_parse_api_result(
                                 )
                                 .format("%Y-%m-%d %H:%M ")
                                 .to_string(),
+                                timestamp_sec: vid["created"].as_u64().unwrap_or_default(),
                             },
                             None => data::NewVideo {
                                 title: app_res.no_video_text.clone(),
                                 date_time: Default::default(),
+                                timestamp_sec: Default::default(),
                             },
                         }),
                     });
                 }
             }
             _ => error!("result with unimplemented cmd: {}", cmd),
+        }
+    }
+}
+
+fn sort_key_api_result(
+    mut sort_key_query: Query<(&mut ui::following::data::SortKey, &ui::following::data::Uid)>,
+    mut result_chan: EventReader<ParsedApiResult>,
+) {
+    for ParsedApiResult { uid, data } in result_chan.iter() {
+        if let Data::Face(_) = data {
+            continue;
+        }
+        if let Some((mut key, _)) = sort_key_query.iter_mut().find(|(_, id)| id.0 == *uid) {
+            match data {
+                Data::Info(info) => key.live_entropy = info.live_entropy,
+                Data::NewVideo(vid) => key.video_pub_ts = vid.timestamp_sec,
+                _ => panic!("unimplement handler of {:?}", data),
+            }
         }
     }
 }
@@ -443,6 +465,58 @@ fn video_info_api_result(
                 }
                 text.sections[0].value = info.date_time.clone();
                 text.sections[1].value = info.title.clone();
+            }
+        }
+    }
+}
+
+fn on_filter_button(
+    app_res: Res<AppResource>,
+    mut children_query: Query<(&mut Children, &mut scroll::ScrollSimListWidget)>,
+    key_query: Query<&ui::following::data::SortKey>,
+    mut interaction_query: Query<(&Interaction, &mut Handle<ColorMaterial>, &ui::filter::ReorderButton)>
+) {
+    for (interaction, mut material, reorder_type) in interaction_query.iter_mut() {
+        match *interaction {
+            Interaction::Hovered => {
+                *material = app_res.btn_hover_col.clone();
+            }
+            Interaction::None => {
+                *material = app_res.btn_none_col.clone();
+            }
+            Interaction::Clicked => {
+                *material = app_res.btn_press_col.clone();
+                for (mut children, mut widget) in children_query.iter_mut() {
+                    let mut idx: Vec<(usize, u64)> = match reorder_type.0 {
+                        ui::filter::Filter::LiveEntropy => children.iter().map(|entity| {
+                            key_query.get_component::<ui::following::data::SortKey>(*entity)
+                                .unwrap()
+                                .live_entropy
+                        }).enumerate().collect(),
+                        ui::filter::Filter::VideoPub => children.iter().map(|entity| {
+                            key_query.get_component::<ui::following::data::SortKey>(*entity)
+                                .unwrap()
+                                .video_pub_ts
+                        }).enumerate().collect(),
+                    };
+                    idx.sort_by(|a, b| a.1.cmp(&b.1).reverse());
+                    let mut swap_from: Vec<usize> = idx.iter().map(|x| x.0).collect();
+                    let mut swap_to = Vec::<usize>::new();
+                    swap_to.resize(swap_from.len(), 0);
+                    for (i, x) in swap_from.iter().enumerate() {
+                        swap_to[*x] = i;
+                    }
+                    for i in 0..children.len() {
+                        if i < swap_from[i] {
+                            children.swap(i, swap_from[i]);
+                            if swap_to[i] > i {
+                                swap_from[swap_to[i]] = swap_from[i];
+                                swap_to[swap_from[i]] = swap_to[i];
+                            }
+                        }
+                    }
+                    widget.scroll_to_top();
+                }
             }
         }
     }
