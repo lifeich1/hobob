@@ -7,6 +7,7 @@ use bevy::{
         ElementState,
     },
     tasks::{Task, TaskPool, TaskPoolBuilder},
+    utils::Duration,
 };
 use bilibili_api_rs::plugin::{ApiRequestEvent, ApiTaskResultEvent};
 use chrono::naive::NaiveDateTime;
@@ -14,7 +15,7 @@ use clipboard::{ClipboardContext, ClipboardProvider};
 use futures_lite::future;
 use hobob_bevy_widget::scroll;
 use serde_json::json;
-use std::ops::Deref;
+use std::{collections::VecDeque, ops::Deref};
 use ui::following::{
     data::{self, Data},
     event::ParsedApiResult,
@@ -26,6 +27,8 @@ impl Plugin for LogicPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.add_system(jump_button_system.system())
             .init_resource::<FaceTaskPool>()
+            .insert_resource(AutoRefreshTimer::default())
+            .add_system(periodly_refresh_all.system())
             .add_system(on_filter_button.system())
             .add_system(sort_key_api_result.system())
             .add_system(button_add_following.system())
@@ -39,6 +42,40 @@ impl Plugin for LogicPlugin {
             .add_system(handle_actions.system())
             .add_system(button_refresh.system())
             .add_system(nickname_api_result.system());
+    }
+}
+
+struct AutoRefreshTimer {
+    timer: Timer,
+    queue: VecDeque<u64>,
+}
+
+impl AutoRefreshTimer {
+    fn refill(&mut self, cf: &Res<AppConfig>) -> &mut Self {
+        if self.queue.is_empty() {
+            self.queue.extend(cf.followings_uid.clone());
+        }
+        self
+    }
+
+    fn drain(&mut self, max_size: usize) -> std::collections::vec_deque::Drain<u64> {
+        self.queue.drain(..self.queue.len().min(max_size))
+    }
+}
+
+impl Default for AutoRefreshTimer {
+    fn default() -> Self {
+        let mut timer = Timer::from_seconds(30., true);
+        timer.tick(
+            timer
+                .duration()
+                .checked_sub(Duration::from_millis(100))
+                .expect("there must be a pretty large refresh timer"),
+        );
+        Self {
+            timer,
+            queue: Default::default(),
+        }
     }
 }
 
@@ -190,9 +227,15 @@ fn handle_actions(
             ui::following::event::Action::RefreshVisible => {
                 refresh_visible(&mut api_req_chan, &api_ctx, &visible_nickname_query)
             }
-            ui::following::event::Action::AddFollowingUid(uid) => {
-                add_following(*uid, &mut cf, &app_res, &mut commands, &mut scroll_widget_query, &mut api_req_chan, &api_ctx)
-            }
+            ui::following::event::Action::AddFollowingUid(uid) => add_following(
+                *uid,
+                &mut cf,
+                &app_res,
+                &mut commands,
+                &mut scroll_widget_query,
+                &mut api_req_chan,
+                &api_ctx,
+            ),
         }
     }
 }
@@ -230,11 +273,27 @@ fn refresh_visible(
     }
 }
 
+fn periodly_refresh_all(
+    time: Res<Time>,
+    mut timer: ResMut<AutoRefreshTimer>,
+    mut api_req_chan: EventWriter<ApiRequestEvent>,
+    api_ctx: Res<api::Context>,
+    cf: Res<AppConfig>,
+) {
+    if timer.timer.tick(time.delta()).just_finished() {
+        info!("refresh a batch of userinfo");
+        for uid in timer.refill(&cf).drain(cf.refresh_batch_size) {
+            refresh_user_info(&mut api_req_chan, &api_ctx, uid);
+        }
+    }
+}
+
 fn refresh_user_info(
     api_req_chan: &mut EventWriter<ApiRequestEvent>,
     api_ctx: &Res<api::Context>,
     uid: u64,
 ) {
+    info!("refresh userinfo of {}", uid);
     api_req_chan.send(ApiRequestEvent {
         req: api_ctx.new_user(uid).get_info(),
         tag: json!({"uid": uid, "cmd": "refresh"}).into(),
@@ -474,7 +533,11 @@ fn on_filter_button(
     app_res: Res<AppResource>,
     mut children_query: Query<(&mut Children, &mut scroll::ScrollSimListWidget)>,
     key_query: Query<&ui::following::data::SortKey>,
-    mut interaction_query: Query<(&Interaction, &mut Handle<ColorMaterial>, &ui::filter::ReorderButton)>
+    mut interaction_query: Query<(
+        &Interaction,
+        &mut Handle<ColorMaterial>,
+        &ui::filter::ReorderButton,
+    )>,
 ) {
     for (interaction, mut material, reorder_type) in interaction_query.iter_mut() {
         match *interaction {
@@ -488,16 +551,26 @@ fn on_filter_button(
                 *material = app_res.btn_press_col.clone();
                 for (mut children, mut widget) in children_query.iter_mut() {
                     let mut idx: Vec<(usize, u64)> = match reorder_type.0 {
-                        ui::filter::Filter::LiveEntropy => children.iter().map(|entity| {
-                            key_query.get_component::<ui::following::data::SortKey>(*entity)
-                                .unwrap()
-                                .live_entropy
-                        }).enumerate().collect(),
-                        ui::filter::Filter::VideoPub => children.iter().map(|entity| {
-                            key_query.get_component::<ui::following::data::SortKey>(*entity)
-                                .unwrap()
-                                .video_pub_ts
-                        }).enumerate().collect(),
+                        ui::filter::Filter::LiveEntropy => children
+                            .iter()
+                            .map(|entity| {
+                                key_query
+                                    .get_component::<ui::following::data::SortKey>(*entity)
+                                    .unwrap()
+                                    .live_entropy
+                            })
+                            .enumerate()
+                            .collect(),
+                        ui::filter::Filter::VideoPub => children
+                            .iter()
+                            .map(|entity| {
+                                key_query
+                                    .get_component::<ui::following::data::SortKey>(*entity)
+                                    .unwrap()
+                                    .video_pub_ts
+                            })
+                            .enumerate()
+                            .collect(),
                     };
                     idx.sort_by(|a, b| a.1.cmp(&b.1).reverse());
                     let mut swap_from: Vec<usize> = idx.iter().map(|x| x.0).collect();

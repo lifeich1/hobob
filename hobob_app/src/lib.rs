@@ -103,6 +103,7 @@ pub struct AppConfig {
     startup_error: Option<String>,
     followings_uid: Vec<u64>,
     face_cache_dir: String,
+    refresh_batch_size: usize,
 }
 
 impl Default for AppConfig {
@@ -111,6 +112,7 @@ impl Default for AppConfig {
             startup_error: None,
             followings_uid: vec![15810, 10592068],
             face_cache_dir: FACE_CACHE_DIR.to_str().unwrap().to_string(),
+            refresh_batch_size: 30,
         }
     }
 }
