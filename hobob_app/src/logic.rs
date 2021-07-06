@@ -397,7 +397,13 @@ fn sort_key_api_result(
         }
         if let Some((mut key, _)) = sort_key_query.iter_mut().find(|(_, id)| id.0 == *uid) {
             match data {
-                Data::Info(info) => key.live_entropy = info.live_entropy,
+                Data::Info(info) => {
+                    key.live_entropy = if let Some(true) = info.live_open {
+                        info.live_entropy
+                    } else {
+                        0
+                    }
+                }
                 Data::NewVideo(vid) => key.video_pub_ts = vid.timestamp_sec,
                 _ => panic!("unimplement handler of {:?}", data),
             }
