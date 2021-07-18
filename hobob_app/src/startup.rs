@@ -259,6 +259,6 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                 ),
                 ..Default::default()
             })
-            .insert(ShowScrollProgression {});
+            .insert(ui::ShowScrollProgression {});
     });
 }

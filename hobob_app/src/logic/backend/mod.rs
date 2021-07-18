@@ -4,13 +4,17 @@ use hobob_bevy_widget::scroll;
 use serde_json::json;
 
 mod face;
+mod parser;
+mod timer;
 
 pub struct ModPlugin();
 
 impl Plugin for ModPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.add_system(handle_actions.system())
-            .add_plugin(face::ModPlugin());
+            .add_plugin(face::ModPlugin())
+            .add_plugin(timer::ModPlugin())
+            .add_plugin(parser::ModPlugin());
     }
 }
 

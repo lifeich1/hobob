@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+pub struct ShowScrollProgression {}
+
 pub mod add {
     pub struct RefreshVisible();
     pub struct AddFollowing();

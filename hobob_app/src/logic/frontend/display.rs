@@ -126,7 +126,7 @@ fn live_info_api_result(
 }
 
 fn show_scroll_progression(
-    mut show_scroll_progression_query: Query<&mut Text, With<ShowScrollProgression>>,
+    mut show_scroll_progression_query: Query<&mut Text, With<ui::ShowScrollProgression>>,
     changed_scroll_progression_query: Query<
         &scroll::ScrollProgression,
         Changed<scroll::ScrollProgression>,
