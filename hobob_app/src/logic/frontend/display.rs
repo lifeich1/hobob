@@ -23,36 +23,31 @@ fn video_info_api_result(
     mut result_chan: EventReader<ParsedApiResult>,
     app_res: Res<AppResource>,
 ) {
-    for ParsedApiResult { uid, data } in result_chan.iter() {
-        if let Data::NewVideo(info) = data {
-            for (mut text, videoinfo) in videoinfo_query.iter_mut() {
-                if videoinfo.0 != *uid {
-                    continue;
-                }
-
-                if text.sections.len() != 2 {
-                    text.sections = vec![
-                        TextSection {
-                            value: "".to_string(),
-                            style: TextStyle {
-                                font: app_res.font.clone(),
-                                font_size: 15.0,
-                                color: Color::GRAY,
-                            },
+    for ParsedApiResult { uid, data } in result_chan.iter().filter(|ParsedApiResult { data, .. }| matches!(data, Data::NewVideo(_))) {
+        let 
+        if let Some((mut text, _)) in videoinfo_query.iter_mut().find(|(_, videoinfo)| videoinfo.0 == *uid) {
+            if text.sections.len() != 2 {
+                text.sections = vec![
+                    TextSection {
+                        value: "".to_string(),
+                        style: TextStyle {
+                            font: app_res.font.clone(),
+                            font_size: 15.0,
+                            color: Color::GRAY,
                         },
-                        TextSection {
-                            value: "".to_string(),
-                            style: TextStyle {
-                                font: app_res.font.clone(),
-                                font_size: 15.0,
-                                color: Color::BLACK,
-                            },
+                    },
+                    TextSection {
+                        value: "".to_string(),
+                        style: TextStyle {
+                            font: app_res.font.clone(),
+                            font_size: 15.0,
+                            color: Color::BLACK,
                         },
-                    ];
-                }
-                text.sections[0].value = info.date_time.clone();
-                text.sections[1].value = info.title.clone();
+                    },
+                ];
             }
+            text.sections[0].value = info.date_time.clone();
+            text.sections[1].value = info.title.clone();
         }
     }
 }
@@ -63,64 +58,62 @@ fn live_info_api_result(
     mut result_chan: EventReader<ParsedApiResult>,
     app_res: Res<AppResource>,
 ) {
-    for ParsedApiResult { uid, data } in result_chan.iter() {
-        if let Data::Info(info) = data {
-            if matches!(info.live_open, None) {
+    for ParsedApiResult { uid, data } in result_chan.iter().filter(|ParsedApiResult { data, .. }| matches!(data, Data::Info(_))) {
+        if matches!(info.live_open, None) {
+            continue;
+        }
+        for mut button in livebutton_query.iter_mut() {
+            if button.0 != *uid {
                 continue;
             }
-            for mut button in livebutton_query.iter_mut() {
-                if button.0 != *uid {
-                    continue;
-                }
-                button.1 = info.live_room_url.clone();
-                break;
+            button.1 = info.live_room_url.clone();
+            break;
+        }
+        for (mut text, livetitle) in livetitle_query.iter_mut() {
+            if livetitle.0 != *uid {
+                continue;
             }
-            for (mut text, livetitle) in livetitle_query.iter_mut() {
-                if livetitle.0 != *uid {
-                    continue;
-                }
-                if text.sections.len() != 3 {
-                    text.sections = vec![
-                        TextSection {
-                            value: "".to_string(),
-                            style: TextStyle {
-                                font: app_res.font.clone(),
-                                font_size: 16.0,
-                                color: Color::WHITE,
-                            },
+            if text.sections.len() != 3 {
+                text.sections = vec![
+                    TextSection {
+                        value: "".to_string(),
+                        style: TextStyle {
+                            font: app_res.font.clone(),
+                            font_size: 16.0,
+                            color: Color::WHITE,
                         },
-                        TextSection {
-                            value: "".to_string(),
-                            style: TextStyle {
-                                font: app_res.font.clone(),
-                                font_size: 15.0,
-                                color: Color::RED,
-                            },
+                    },
+                    TextSection {
+                        value: "".to_string(),
+                        style: TextStyle {
+                            font: app_res.font.clone(),
+                            font_size: 15.0,
+                            color: Color::RED,
                         },
-                        TextSection {
-                            value: "".to_string(),
-                            style: TextStyle {
-                                font: app_res.font.clone(),
-                                font_size: 15.0,
-                                color: Color::BLUE,
-                            },
+                    },
+                    TextSection {
+                        value: "".to_string(),
+                        style: TextStyle {
+                            font: app_res.font.clone(),
+                            font_size: 15.0,
+                            color: Color::BLUE,
                         },
+                    },
                     ];
-                }
-                if let Some(true) = info.live_open {
-                    text.sections[0].value = app_res.live_on_text.clone();
-                    text.sections[0].style.color = Color::BLUE;
-                    text.sections[1].value = info.live_entropy.to_string();
-                    text.sections[1].style.color = Color::RED;
-                } else {
-                    text.sections[0].value = app_res.live_off_text.clone();
-                    text.sections[0].style.color = Color::GRAY;
-                    text.sections[1].value = info.live_entropy.to_string();
-                    text.sections[1].style.color = Color::GRAY;
-                }
-                text.sections[2].value = info.live_room_title.clone();
-                break;
             }
+            if let Some(true) = info.live_open {
+                text.sections[0].value = app_res.live_on_text.clone();
+                text.sections[0].style.color = Color::BLUE;
+                text.sections[1].value = info.live_entropy.to_string();
+                text.sections[1].style.color = Color::RED;
+            } else {
+                text.sections[0].value = app_res.live_off_text.clone();
+                text.sections[0].style.color = Color::GRAY;
+                text.sections[1].value = info.live_entropy.to_string();
+                text.sections[1].style.color = Color::GRAY;
+            }
+            text.sections[2].value = info.live_room_title.clone();
+            break;
         }
     }
 }

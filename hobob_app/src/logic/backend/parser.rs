@@ -42,6 +42,7 @@ fn first_parse_api_result(
                 continue;
             }
         };
+        debug!("api result: cmd {} uid {}", cmd, uid);
         match cmd {
             "refresh" => parsed.send(ParsedApiResult {
                 uid,
@@ -102,10 +103,10 @@ fn sort_key_api_result(
     mut sort_key_query: Query<(&mut ui::following::data::SortKey, &ui::following::data::Uid)>,
     mut result_chan: EventReader<ParsedApiResult>,
 ) {
-    for ParsedApiResult { uid, data } in result_chan.iter() {
-        if let Data::Face(_) = data {
-            continue;
-        }
+    for ParsedApiResult { uid, data } in result_chan
+        .iter()
+        .filter(|ParsedApiResult { data, .. }| matches!(data, Data::Info(_) | Data::NewVideo(_)))
+    {
         if let Some((mut key, _)) = sort_key_query.iter_mut().find(|(_, id)| id.0 == *uid) {
             match data {
                 Data::Info(info) => {

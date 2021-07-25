@@ -96,14 +96,12 @@ fn show_face(
         if let Some(result) = future::block_on(future::poll_once(&mut *task)) {
             match result.1 {
                 Some(path) => {
-                    for (entity, mut material, face) in face_query.iter_mut() {
-                        if face.0 != result.0 {
-                            continue;
-                        }
-
+                    let uid = result.0;
+                    if let Some((entity, mut material, _)) =
+                        face_query.iter_mut().find(|(_, _, face)| face.0 == uid)
+                    {
                         *material = materials.add(asset_server.load(path).into());
                         commands.entity(entity).remove::<ui::following::Face>();
-                        break;
                     }
                 }
                 None => error!(
