@@ -1,7 +1,4 @@
-use crate::{
-    ui::following::{data::Data, event::ParsedApiResult},
-    *,
-};
+use crate::{ui::following::event::ParsedApiResult, *};
 use bevy::tasks::{Task, TaskPool, TaskPoolBuilder};
 use futures_lite::future;
 use std::ops::Deref;
