@@ -60,3 +60,43 @@ fn periodly_refresh_all(
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn check_queue_drain() {
+        fn check_system(cf: Res<AppConfig>) {
+            let mut a = AutoRefreshTimer::default();
+
+            for _ in 0..5 {
+                a.refill(&cf);
+                assert_eq!(a.drain(30).cmp(0..30), Ordering::Equal);
+
+                a.refill(&cf);
+                assert_eq!(a.drain(30).cmp(30..60), Ordering::Equal);
+
+                a.refill(&cf);
+                assert_eq!(a.drain(30).cmp(60..90), Ordering::Equal);
+
+                a.refill(&cf);
+                assert_eq!(a.drain(30).cmp(90..100), Ordering::Equal);
+            }
+            assert_eq!(a.drain(30).count(), 0);
+        }
+        let mut cf = AppConfig::default();
+        cf.followings_uid = (0..100).collect();
+
+        let mut world = World::default();
+        world.insert_resource(cf);
+
+        let mut schedule = Schedule::default();
+        let mut update = SystemStage::parallel();
+        update.add_system(check_system.system());
+        schedule.add_stage("update", update);
+        schedule.run(&mut world);
+    }
+}
