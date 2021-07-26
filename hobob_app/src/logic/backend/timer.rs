@@ -61,7 +61,6 @@ fn periodly_refresh_all(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

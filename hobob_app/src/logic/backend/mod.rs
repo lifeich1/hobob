@@ -52,10 +52,11 @@ fn refresh_visible(
     api_ctx: &Res<api::Context>,
     visible_nickname_query: &Query<(&ui::following::Nickname, &Visible)>,
 ) {
-    for (nickname, visible) in visible_nickname_query.iter() {
-        if visible.is_visible {
-            refresh_user_info(api_req_chan, api_ctx, nickname.0);
-        }
+    for (nickname, _) in visible_nickname_query
+        .iter()
+        .filter(|(_, visible)| visible.is_visible)
+    {
+        refresh_user_info(api_req_chan, api_ctx, nickname.0);
     }
 }
 

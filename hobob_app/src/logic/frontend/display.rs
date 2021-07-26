@@ -1,8 +1,5 @@
 use crate::{
-    ui::{
-        self,
-        following::event::ParsedApiResult,
-    },
+    ui::{self, following::event::ParsedApiResult},
     *,
 };
 use hobob_bevy_widget::scroll;
