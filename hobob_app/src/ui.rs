@@ -72,6 +72,29 @@ pub mod following {
             Face(Face),
             NewVideo(NewVideo),
         }
+
+        impl Data {
+            pub fn as_info(&self) -> Option<&Info> {
+                match self {
+                    Self::Info(v) => Some(v),
+                    _ => None,
+                }
+            }
+
+            pub fn as_face(&self) -> Option<&Face> {
+                match self {
+                    Self::Face(v) => Some(v),
+                    _ => None,
+                }
+            }
+
+            pub fn as_new_video(&self) -> Option<&NewVideo> {
+                match self {
+                    Self::NewVideo(v) => Some(v),
+                    _ => None,
+                }
+            }
+        }
     }
 
     pub mod event {

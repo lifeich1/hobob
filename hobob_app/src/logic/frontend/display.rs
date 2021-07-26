@@ -1,7 +1,7 @@
 use crate::{
     ui::{
         self,
-        following::{data::Data, event::ParsedApiResult},
+        following::event::ParsedApiResult,
     },
     *,
 };
@@ -23,9 +23,14 @@ fn video_info_api_result(
     mut result_chan: EventReader<ParsedApiResult>,
     app_res: Res<AppResource>,
 ) {
-    for ParsedApiResult { uid, data } in result_chan.iter().filter(|ParsedApiResult { data, .. }| matches!(data, Data::NewVideo(_))) {
-        let 
-        if let Some((mut text, _)) in videoinfo_query.iter_mut().find(|(_, videoinfo)| videoinfo.0 == *uid) {
+    for (uid, info) in result_chan
+        .iter()
+        .filter_map(|ParsedApiResult { uid, data }| data.as_new_video().map(|v| (uid, v)))
+    {
+        if let Some((mut text, _)) = videoinfo_query
+            .iter_mut()
+            .find(|(_, videoinfo)| videoinfo.0 == *uid)
+        {
             if text.sections.len() != 2 {
                 text.sections = vec![
                     TextSection {
@@ -58,21 +63,18 @@ fn live_info_api_result(
     mut result_chan: EventReader<ParsedApiResult>,
     app_res: Res<AppResource>,
 ) {
-    for ParsedApiResult { uid, data } in result_chan.iter().filter(|ParsedApiResult { data, .. }| matches!(data, Data::Info(_))) {
-        if matches!(info.live_open, None) {
-            continue;
-        }
-        for mut button in livebutton_query.iter_mut() {
-            if button.0 != *uid {
-                continue;
-            }
+    for (uid, info) in result_chan
+        .iter()
+        .filter_map(|ParsedApiResult { uid, data }| data.as_info().map(|v| (uid, v)))
+        .filter(|(_, info)| matches!(info.live_open, Some(_)))
+    {
+        if let Some(mut button) = livebutton_query.iter_mut().find(|b| b.0 == *uid) {
             button.1 = info.live_room_url.clone();
-            break;
         }
-        for (mut text, livetitle) in livetitle_query.iter_mut() {
-            if livetitle.0 != *uid {
-                continue;
-            }
+        if let Some((mut text, _)) = livetitle_query
+            .iter_mut()
+            .find(|(_, livetitle)| livetitle.0 == *uid)
+        {
             if text.sections.len() != 3 {
                 text.sections = vec![
                     TextSection {
@@ -99,7 +101,7 @@ fn live_info_api_result(
                             color: Color::BLUE,
                         },
                     },
-                    ];
+                ];
             }
             if let Some(true) = info.live_open {
                 text.sections[0].value = app_res.live_on_text.clone();
@@ -113,7 +115,6 @@ fn live_info_api_result(
                 text.sections[1].style.color = Color::GRAY;
             }
             text.sections[2].value = info.live_room_title.clone();
-            break;
         }
     }
 }
@@ -125,7 +126,7 @@ fn show_scroll_progression(
         Changed<scroll::ScrollProgression>,
     >,
 ) {
-    for p in changed_scroll_progression_query.iter() {
+    if let Some(p) = changed_scroll_progression_query.iter().last() {
         for mut text in show_scroll_progression_query.iter_mut() {
             text.sections[0].value = format!("{}%", p.0);
         }
@@ -136,15 +137,15 @@ fn nickname_api_result(
     mut nickname_query: Query<(&mut Text, &ui::following::Nickname)>,
     mut result_chan: EventReader<ParsedApiResult>,
 ) {
-    for ParsedApiResult { uid, data } in result_chan.iter() {
-        if let Data::Info(info) = data {
-            for (mut text, nickname) in nickname_query.iter_mut() {
-                if nickname.0 != *uid {
-                    continue;
-                }
-                text.sections[0].value = info.nickname.clone();
-                break;
-            }
+    for (uid, info) in result_chan
+        .iter()
+        .filter_map(|ParsedApiResult { uid, data }| data.as_info().map(|v| (uid, v)))
+    {
+        if let Some((mut text, _)) = nickname_query
+            .iter_mut()
+            .find(|(_, nickname)| nickname.0 == *uid)
+        {
+            text.sections[0].value = info.nickname.clone();
         }
     }
 }
