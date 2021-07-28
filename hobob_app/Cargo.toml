@@ -19,8 +19,6 @@ futures-util = "0.3"
 image = "0.23"
 clipboard = "0.5"
 
-# simple_logger = "1.11"
-
 hobob_bevy_widget = { path = "../hobob_bevy_widget" }
 
 bilibili-api-rs = { path = "../../bilibili-api-rs", features = ["plugin"] }

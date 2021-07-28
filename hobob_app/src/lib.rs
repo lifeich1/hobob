@@ -76,8 +76,6 @@ impl HobobPlugin {
 
 impl bevy::prelude::Plugin for HobobPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        //simple_logger::SimpleLogger::new().init().unwrap();
-
         let (ctx, cf) = Self::setup();
         app.init_resource::<AppResource>()
             .add_plugin(FrameTimeDiagnosticsPlugin::default())
