@@ -1,8 +1,14 @@
 use super::*;
-use hobob_bevy_widget::scroll;
+use hobob_bevy_widget::{scroll, button};
 
 pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>) {
     commands.spawn_bundle(UiCameraBundle::default());
+
+    let default_button_bg = button::ButtonBackgroundGroup {
+        clicked: app_res.btn_press_col.clone(),
+        hovered: app_res.btn_hover_col.clone(),
+        none: app_res.btn_none_col.clone(),
+    };
 
     let root = commands
         .spawn_bundle(NodeBundle {
@@ -188,6 +194,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                         material: app_res.btn_none_col.clone(),
                         ..Default::default()
                     })
+                    .insert(default_button_bg.clone())
                     .insert(ui::add::RefreshVisible())
                     .with_children(|parent| {
                         parent.spawn_bundle(TextBundle {

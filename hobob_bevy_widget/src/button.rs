@@ -8,6 +8,7 @@ impl Plugin for SimpleButtonHelper {
     }
 }
 
+#[derive(Clone)]
 pub struct ButtonBackgroundGroup {
     pub clicked: Handle<ColorMaterial>,
     pub hovered: Handle<ColorMaterial>,

@@ -313,9 +313,8 @@ fn button_add_following(
 
 #[allow(clippy::type_complexity)]
 fn button_refresh(
-    app_res: Res<AppResource>,
-    mut interaction_query: Query<
-        (&Interaction, &mut Handle<ColorMaterial>),
+    interaction_query: Query<
+        &Interaction,
         (
             With<Button>,
             Changed<Interaction>,
@@ -324,19 +323,8 @@ fn button_refresh(
     >,
     mut action_chan: EventWriter<ui::following::event::Action>,
 ) {
-    for (interaction, mut material) in interaction_query.iter_mut() {
-        match *interaction {
-            Interaction::Clicked => {
-                info!("button refresh trigger!");
-                *material = app_res.btn_press_col.clone();
-                action_chan.send(ui::following::event::Action::RefreshVisible);
-            }
-            Interaction::Hovered => {
-                *material = app_res.btn_hover_col.clone();
-            }
-            Interaction::None => {
-                *material = app_res.btn_none_col.clone();
-            }
-        }
+    if let Some(_) = interaction_query.iter().find(|i| matches!(*i, Interaction::Clicked)) {
+        info!("button refresh trigger!");
+        action_chan.send(ui::following::event::Action::RefreshVisible);
     }
 }
