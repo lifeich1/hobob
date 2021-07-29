@@ -59,7 +59,7 @@ pub mod following {
             pub face: Handle<ColorMaterial>, // Face
         }
 
-        #[derive(Debug)]
+        #[derive(Debug, Default)]
         pub struct NewVideo {
             pub date_time: String, // VideoInfo
             pub title: String,

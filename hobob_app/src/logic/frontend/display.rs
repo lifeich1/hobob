@@ -49,7 +49,11 @@ fn video_info_api_result(
                 ];
             }
             text.sections[0].value = info.date_time.clone();
-            text.sections[1].value = info.title.clone();
+            text.sections[1].value = if info.title.is_empty() {
+                app_res.no_video_text.clone()
+            } else {
+                info.title.clone()
+            };
         }
     }
 }
@@ -123,10 +127,11 @@ fn show_scroll_progression(
         Changed<scroll::ScrollProgression>,
     >,
 ) {
-    if let Some(p) = changed_scroll_progression_query.iter().last() {
-        for mut text in show_scroll_progression_query.iter_mut() {
-            text.sections[0].value = format!("{}%", p.0);
-        }
+    if let Ok(p) = changed_scroll_progression_query.single() {
+        let mut text = show_scroll_progression_query
+            .single_mut()
+            .expect("there must be only one scroll progression display pad");
+        text.sections[0].value = format!("{}%", p.0);
     }
 }
 
