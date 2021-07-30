@@ -142,22 +142,22 @@ fn input(
 
 #[allow(clippy::type_complexity)]
 fn jump_button_system(
-    app_res: Res<AppResource>,
     button_query: Query<
         (
             &Interaction,
-            &ui::following::HoverPressShow,
             Option<&ui::following::HomepageOpenButton>,
             Option<&ui::following::LiveRoomOpenButton>,
         ),
         (Changed<Interaction>, With<Button>),
     >,
-    mut shower_query: Query<(&ui::following::HoverPressShower, &mut Handle<ColorMaterial>)>,
 ) {
-    for (interaction, show, opt_home, opt_live) in button_query.iter() {
-        let (uid, url) = match (opt_home, opt_live) {
-            (Some(home), None) => (home.0, format!("https://space.bilibili.com/{}/", home.0)),
-            (None, Some(live)) => (live.0, live.1.to_string()),
+    for (_, opt_home, opt_live) in button_query
+        .iter()
+        .filter(|(interaction, _, _)| matches!(interaction, Interaction::Clicked))
+    {
+        let url = match (opt_home, opt_live) {
+            (Some(home), None) => format!("https://space.bilibili.com/{}/", home.0),
+            (None, Some(live)) => live.1.to_string(),
             _ => panic!(
                 "HoverPressShow widget invalid status: {:?} {:?}",
                 opt_home, opt_live
@@ -166,111 +166,76 @@ fn jump_button_system(
         if url.is_empty() {
             continue;
         }
-        let entity = show.0;
-        let shower = shower_query
-            .get_component::<ui::following::HoverPressShower>(entity)
-            .expect("entity in shower_query must have component HoverPressShower");
-        if shower.0 != uid {
-            panic!("HoverPressShow(er) uid mismatch: {} {}", shower.0, uid);
-        }
 
-        match interaction {
-            Interaction::Clicked => {
-                let open_cmd = if cfg!(target_os = "linux") {
-                    "xdg-open"
-                } else {
-                    "open"
-                };
-                let start = std::process::Command::new(open_cmd).arg(&url).spawn();
-                match start {
-                    Ok(_) => info!("open url ok: {}", url),
-                    Err(e) => error!("open url error: {}", e),
-                }
-            }
-            Interaction::Hovered | Interaction::None => {
-                let mut material = shower_query
-                    .get_component_mut::<Handle<ColorMaterial>>(entity)
-                    .expect("entity in shower_query must have component Handle<ColorMaterial>");
-                *material = if let Interaction::None = interaction {
-                    app_res.item_bg_col.clone()
-                } else {
-                    app_res.item_to_jump_bg_col.clone()
-                };
-            }
+        let open_cmd = if cfg!(target_os = "linux") {
+            "xdg-open"
+        } else {
+            "open"
+        };
+        let start = std::process::Command::new(open_cmd).arg(&url).spawn();
+        match start {
+            Ok(_) => info!("open url ok: {}", url),
+            Err(e) => error!("open url error: {}", e),
         }
     }
 }
 
 fn on_filter_button(
-    app_res: Res<AppResource>,
     mut children_query: Query<(&mut Children, &mut scroll::ScrollSimListWidget)>,
     key_query: Query<&ui::following::data::SortKey>,
-    mut interaction_query: Query<(
-        &Interaction,
-        &mut Handle<ColorMaterial>,
-        &ui::filter::ReorderButton,
-    )>,
+    interaction_query: Query<(&Interaction, &ui::filter::ReorderButton)>,
 ) {
-    for (interaction, mut material, reorder_type) in interaction_query.iter_mut() {
-        match *interaction {
-            Interaction::Hovered => {
-                *material = app_res.btn_hover_col.clone();
+    for (_, reorder_type) in interaction_query
+        .iter()
+        .filter(|(interaction, _)| matches!(interaction, Interaction::Clicked))
+    {
+        for (mut children, mut widget) in children_query.iter_mut() {
+            let mut idx: Vec<(usize, u64)> = match reorder_type.0 {
+                ui::filter::Filter::LiveEntropy => children
+                    .iter()
+                    .map(|entity| {
+                        key_query
+                            .get_component::<ui::following::data::SortKey>(*entity)
+                            .unwrap()
+                            .live_entropy
+                    })
+                    .enumerate()
+                    .collect(),
+                ui::filter::Filter::VideoPub => children
+                    .iter()
+                    .map(|entity| {
+                        key_query
+                            .get_component::<ui::following::data::SortKey>(*entity)
+                            .unwrap()
+                            .video_pub_ts
+                    })
+                    .enumerate()
+                    .collect(),
+            };
+            idx.sort_by(|a, b| a.1.cmp(&b.1).reverse());
+            let mut swap_from: Vec<usize> = idx.iter().map(|x| x.0).collect();
+            let mut swap_to = Vec::<usize>::new();
+            swap_to.resize(swap_from.len(), 0);
+            for (i, x) in swap_from.iter().enumerate() {
+                swap_to[*x] = i;
             }
-            Interaction::None => {
-                *material = app_res.btn_none_col.clone();
-            }
-            Interaction::Clicked => {
-                *material = app_res.btn_press_col.clone();
-                for (mut children, mut widget) in children_query.iter_mut() {
-                    let mut idx: Vec<(usize, u64)> = match reorder_type.0 {
-                        ui::filter::Filter::LiveEntropy => children
-                            .iter()
-                            .map(|entity| {
-                                key_query
-                                    .get_component::<ui::following::data::SortKey>(*entity)
-                                    .unwrap()
-                                    .live_entropy
-                            })
-                            .enumerate()
-                            .collect(),
-                        ui::filter::Filter::VideoPub => children
-                            .iter()
-                            .map(|entity| {
-                                key_query
-                                    .get_component::<ui::following::data::SortKey>(*entity)
-                                    .unwrap()
-                                    .video_pub_ts
-                            })
-                            .enumerate()
-                            .collect(),
-                    };
-                    idx.sort_by(|a, b| a.1.cmp(&b.1).reverse());
-                    let mut swap_from: Vec<usize> = idx.iter().map(|x| x.0).collect();
-                    let mut swap_to = Vec::<usize>::new();
-                    swap_to.resize(swap_from.len(), 0);
-                    for (i, x) in swap_from.iter().enumerate() {
-                        swap_to[*x] = i;
+            for i in 0..children.len() {
+                if i < swap_from[i] {
+                    children.swap(i, swap_from[i]);
+                    if swap_to[i] > i {
+                        swap_from[swap_to[i]] = swap_from[i];
+                        swap_to[swap_from[i]] = swap_to[i];
                     }
-                    for i in 0..children.len() {
-                        if i < swap_from[i] {
-                            children.swap(i, swap_from[i]);
-                            if swap_to[i] > i {
-                                swap_from[swap_to[i]] = swap_from[i];
-                                swap_to[swap_from[i]] = swap_to[i];
-                            }
-                        }
-                    }
-                    widget.scroll_to_top();
                 }
             }
+            widget.scroll_to_top();
         }
     }
 }
 #[allow(clippy::type_complexity)]
 fn button_add_following(
-    app_res: Res<AppResource>,
-    mut interaction_query: Query<
-        (&Interaction, &mut Handle<ColorMaterial>),
+    interaction_query: Query<
+        &Interaction,
         (
             With<Button>,
             Changed<Interaction>,
@@ -280,33 +245,23 @@ fn button_add_following(
     add_query: Query<&Text, With<ui::add::AddFollowing>>,
     mut action_chan: EventWriter<ui::following::event::Action>,
 ) {
-    for (interaction, mut material) in interaction_query.iter_mut() {
-        match *interaction {
-            Interaction::Clicked => {
-                let mut uid: Option<u64> = None;
-                for add in add_query.iter() {
-                    if !add.sections.is_empty() {
-                        uid = add.sections[0].value.parse::<u64>().ok();
-                        if uid.is_some() {
-                            break;
-                        }
-                    }
-                }
-                match uid {
-                    Some(id) => {
-                        info!("button add following trigger: {}", id);
-                        action_chan.send(ui::following::event::Action::AddFollowingUid(id));
-                    }
-                    None => info!("parse input error: button add following"),
-                }
-                *material = app_res.btn_press_col.clone();
+    if interaction_query
+        .iter()
+        .any(|interaction| matches!(interaction, Interaction::Clicked))
+    {
+        let mut uid: Option<u64> = None;
+        let add = add_query
+            .single()
+            .expect("must be exactly one 'add' textedit");
+        if !add.sections.is_empty() {
+            uid = add.sections[0].value.parse::<u64>().ok();
+        }
+        match uid {
+            Some(id) => {
+                info!("button add following trigger: {}", id);
+                action_chan.send(ui::following::event::Action::AddFollowingUid(id));
             }
-            Interaction::Hovered => {
-                *material = app_res.btn_hover_col.clone();
-            }
-            Interaction::None => {
-                *material = app_res.btn_none_col.clone();
-            }
+            None => error!("parse input error: button add following"),
         }
     }
 }
@@ -323,7 +278,10 @@ fn button_refresh(
     >,
     mut action_chan: EventWriter<ui::following::event::Action>,
 ) {
-    if let Some(_) = interaction_query.iter().find(|i| matches!(*i, Interaction::Clicked)) {
+    if interaction_query
+        .iter()
+        .any(|i| matches!(*i, Interaction::Clicked))
+    {
         info!("button refresh trigger!");
         action_chan.send(ui::following::event::Action::RefreshVisible);
     }

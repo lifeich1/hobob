@@ -1,6 +1,13 @@
 use super::*;
+use hobob_bevy_widget::button;
 
 pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid: u64) -> Entity {
+    let link_button_bg = button::ButtonBackgroundGroup {
+        clicked: app_res.item_to_jump_bg_col.clone(),
+        hovered: app_res.item_to_jump_bg_col.clone(),
+        none: app_res.item_bg_col.clone(),
+    };
+
     let span = commands
         .spawn_bundle(NodeBundle {
             style: Style {
@@ -125,6 +132,7 @@ pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid
             ..Default::default()
         })
         .insert(ui::following::HomepageOpenButton(uid))
+        .insert(link_button_bg.clone())
         .id();
     let homepage_layout = commands
         .spawn_bundle(NodeBundle {
@@ -158,6 +166,7 @@ pub fn create_following(commands: &mut Commands, app_res: &Res<AppResource>, uid
             ..Default::default()
         })
         .insert(ui::following::LiveRoomOpenButton(uid, String::new()))
+        .insert(link_button_bg)
         .id();
     let liveroom_layout = commands
         .spawn_bundle(NodeBundle {

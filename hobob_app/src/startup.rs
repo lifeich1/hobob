@@ -1,5 +1,5 @@
 use super::*;
-use hobob_bevy_widget::{scroll, button};
+use hobob_bevy_widget::{button, scroll};
 
 pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>) {
     commands.spawn_bundle(UiCameraBundle::default());
@@ -82,6 +82,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                         ..Default::default()
                     })
                     .insert(ui::filter::ReorderButton(ui::filter::Filter::VideoPub))
+                    .insert(default_button_bg.clone())
                     .with_children(|parent| {
                         parent.spawn_bundle(TextBundle {
                             text: Text::with_section(
@@ -112,6 +113,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                         ..Default::default()
                     })
                     .insert(ui::filter::ReorderButton(ui::filter::Filter::LiveEntropy))
+                    .insert(default_button_bg.clone())
                     .with_children(|parent| {
                         parent.spawn_bundle(TextBundle {
                             text: Text::with_section(
@@ -169,6 +171,7 @@ pub fn ui(mut commands: Commands, app_res: Res<AppResource>, cf: Res<AppConfig>)
                         ..Default::default()
                     })
                     .insert(ui::add::AddFollowingButton())
+                    .insert(default_button_bg.clone())
                     .with_children(|parent| {
                         parent.spawn_bundle(TextBundle {
                             text: Text::with_section(
