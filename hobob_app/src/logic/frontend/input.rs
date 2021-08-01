@@ -8,13 +8,14 @@ use bevy::{
     },
 };
 use clipboard::{ClipboardContext, ClipboardProvider};
-use hobob_bevy_widget::scroll;
+use hobob_bevy_widget::{button, scroll};
 
 pub struct ModPlugin();
 
 impl Plugin for ModPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.add_system(input.system())
+            .add_plugin(button::SimpleButtonHelper())
             .add_system(jump_button_system.system())
             .add_system(button_add_following.system())
             .add_system(on_filter_button.system())
@@ -148,7 +149,11 @@ fn jump_button_system(
             Option<&ui::following::HomepageOpenButton>,
             Option<&ui::following::LiveRoomOpenButton>,
         ),
-        (Changed<Interaction>, With<Button>),
+        (
+            Changed<Interaction>,
+            With<Button>,
+            With<ui::following::HoverPressShow>,
+        ),
     >,
 ) {
     for (_, opt_home, opt_live) in button_query
