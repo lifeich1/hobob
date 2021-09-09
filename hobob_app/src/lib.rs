@@ -6,6 +6,7 @@ use bilibili_api_rs::{api, plugin::ApiRuntimePlugin};
 use hobob_bevy_widget::scroll;
 use lazy_static::lazy_static;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::runtime;
 
 lazy_static! {
@@ -42,7 +43,8 @@ impl HobobPlugin {
             return Self::startup_error(e);
         }
 
-        let api_ctx = api::Context::new();
+        let api_ctx = api::Context::new()
+            .map(|c| c.replace_cacher(Arc::new(bilibili_api_rs::cache::SimpleFishMemCacher::default())));
         if let Err(e) = api_ctx {
             return Self::startup_error(e);
         }
@@ -113,7 +115,7 @@ impl Default for AppConfig {
             startup_error: None,
             followings_uid: vec![15810, 10592068],
             face_cache_dir: FACE_CACHE_DIR.to_str().unwrap().to_string(),
-            refresh_batch_size: 30,
+            refresh_batch_size: 5,
         }
     }
 }
