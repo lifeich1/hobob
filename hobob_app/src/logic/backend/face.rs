@@ -104,7 +104,7 @@ fn show_face(
             }
             None => error!(
                 "pull face: {}",
-                result.2.expect("should return error description")
+                result.2.as_ref().expect("should return error description")
             ), // TODO alert in ui
         }
         commands.entity(entity).despawn();

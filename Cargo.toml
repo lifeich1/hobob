@@ -3,4 +3,6 @@
 members = [
     "hobob_bevy_widget",
     "hobob_app",
+    "hobob_cache",
 ]
+
