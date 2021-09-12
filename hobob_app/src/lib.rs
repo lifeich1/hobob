@@ -43,8 +43,11 @@ impl HobobPlugin {
             return Self::startup_error(e);
         }
 
-        let api_ctx = api::Context::new()
-            .map(|c| c.replace_cacher(Arc::new(bilibili_api_rs::cache::SimpleFishMemCacher::default())));
+        let api_ctx = api::Context::new().map(|c| {
+            c.replace_cacher(Arc::new(
+                bilibili_api_rs::cache::SimpleFishMemCacher::default(),
+            ))
+        });
         if let Err(e) = api_ctx {
             return Self::startup_error(e);
         }

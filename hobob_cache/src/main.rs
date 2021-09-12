@@ -22,7 +22,8 @@ async fn main() {
 
     www::run().await;
     /*
-    let tera0 = match Tera::new("templates/**/*.html") {
+    let tera0 = match Tera::new("templates/**/
+    *.html") {
         Ok(t) => t,
         Err(e) => {
             println!("Parsing error(s): {}", e);

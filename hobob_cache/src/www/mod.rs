@@ -1,19 +1,16 @@
-use warp::{Filter, Rejection, reply::Html};
-use tera::{Tera, Context as TeraContext};
 use log::error;
+use tera::Tera;
+use warp::{reply::Html, Filter, Rejection};
 
 macro_rules! render {
     ($tera:ident, $name:expr, $ctx:expr) => {
-        warp::reply::html(
-            $tera.render($name, $ctx)
-            .unwrap_or_else(|e| {
-                let mut ctx = TeraContext::new();
-                ctx.insert("kind", "Tera engine");
-                ctx.insert("reason", &format!("Error: tera: {}", e));
-                $tera.render("failure.html", &ctx).unwrap()
-            })
-        )
-    }
+        warp::reply::html($tera.render($name, $ctx).unwrap_or_else(|e| {
+            let mut ctx = TeraContext::new();
+            ctx.insert("kind", "Tera engine");
+            ctx.insert("reason", &format!("Error: tera: {}", e));
+            $tera.render("failure.html", &ctx).unwrap()
+        }))
+    };
 }
 
 #[derive(Clone)]
@@ -24,14 +21,12 @@ pub struct Context {
 macro_rules! route {
     ($t:ty, $ctx:ident) => {
         <$t>::build($ctx.clone())
-    }
+    };
 }
 
-
-trait AppFilter : Filter<Extract = (Html<String>,), Error = Rejection> {}
+pub trait AppFilter: Filter<Extract = (Html<String>,), Error = Rejection> {}
 
 impl<T> AppFilter for T where T: Filter<Extract = (Html<String>,), Error = Rejection> {}
-
 
 mod index;
 
@@ -44,9 +39,7 @@ pub async fn run() {
         }
     };
 
-    let ctx = Context {
-        tera,
-    };
+    let ctx = Context { tera };
 
     //let app = index::App::build(ctx.clone());
     let app = route!(index::App, ctx);
