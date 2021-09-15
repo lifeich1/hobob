@@ -1,6 +1,8 @@
 use crate::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, Row};
+use std::convert::TryFrom;
+use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard};
 
 pub struct UserInfo {
@@ -11,6 +13,7 @@ pub struct UserInfo {
     pub live_room_title: Option<String>,
     pub live_open: Option<bool>,
     pub ctime: DateTime<Utc>,
+    pub ctimestamp: i64,
 }
 
 pub struct VideoInfo {
@@ -28,6 +31,7 @@ pub struct VideoOwner {
 
 impl Default for UserInfo {
     fn default() -> Self {
+        let now = Utc::now();
         Self {
             id: Default::default(),
             name: Default::default(),
@@ -35,7 +39,8 @@ impl Default for UserInfo {
             live_room_url: Default::default(),
             live_room_title: Default::default(),
             live_open: Default::default(),
-            ctime: Utc::now(),
+            ctime: now,
+            ctimestamp: now.timestamp(),
         }
     }
 }
@@ -65,6 +70,7 @@ impl FromRow for UserInfo {
             live_room_title: row.get(4)?,
             live_open: row.get(5)?,
             ctime: row.get(6)?,
+            ctimestamp: row.get(7)?,
         })
     }
 }
@@ -90,8 +96,71 @@ impl FromRow for VideoOwner {
     }
 }
 
+impl TryFrom<serde_json::Value> for UserInfo {
+    type Error = &'static str;
+
+    fn try_from(v: serde_json::Value) -> std::result::Result<Self, Self::Error> {
+        Ok(Self {
+            id: v["mid"].as_i64().ok_or("mid not found")?,
+            name: v["name"]
+                .as_str()
+                .map(ToString::to_string)
+                .ok_or("name not found")?,
+            face_url: v["face"]
+                .as_str()
+                .map(ToString::to_string)
+                .ok_or("face not found")?,
+            live_room_url: v["live_room"]["url"].as_str().map(ToString::to_string),
+            live_room_title: v["live_room"]["title"].as_str().map(ToString::to_string),
+            live_open: v["live_room"]["liveStatus"].as_i64().map(|s| s != 0),
+            ..Default::default()
+        })
+    }
+}
+
+pub struct VideoVector(Vec<VideoInfo>);
+
+impl Deref for VideoVector {
+    type Target = Vec<VideoInfo>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl TryFrom<serde_json::Value> for VideoVector {
+    type Error = String;
+
+    fn try_from(v: serde_json::Value) -> std::result::Result<Self, Self::Error> {
+        let mut r = Vec::new();
+        if let Some(a) = v["list"]["vlist"].as_array() {
+            for (i, v) in a.iter().enumerate() {
+                r.push(VideoInfo {
+                    vid: v["bvid"]
+                        .as_str()
+                        .map(ToString::to_string)
+                        .ok_or_else(|| format!("list.vlist.{}.bvid not found", i))?,
+                    title: v["title"]
+                        .as_str()
+                        .map(ToString::to_string)
+                        .ok_or_else(|| format!("list.vlist.{}.title not found", i))?,
+                    pic_url: v["pic"]
+                        .as_str()
+                        .map(ToString::to_string)
+                        .ok_or_else(|| format!("list.vlist.{}.pic not found", i))?,
+                    utime: v["created"]
+                        .as_i64()
+                        .map(|x| Utc.timestamp(x, 0))
+                        .ok_or_else(|| format!("list.vlist.{}.created not found", i))?,
+                })
+            }
+        }
+        Ok(VideoVector(r))
+    }
+}
+
 lazy_static::lazy_static! {
-    pub static ref DBCON: Mutex<Connection> = {
+    static ref DBCON: Mutex<Connection> = {
         let path = "./.cache/cache.db3";
         let db = match Connection::open(&path) {
             Ok(r) => r,
@@ -108,7 +177,8 @@ lazy_static::lazy_static! {
                                                 live_room_url TEXT, \\
                                                 live_room_title TEXT, \\
                                                 live_open INTEGER, \\
-                                                ctime TEXT NOT NULL);
+                                                ctime TEXT NOT NULL, \\
+                                                ctimestamp INTEGER NOT NULL);
                           CREATE TABLE videoinfo(\\
                                                  vid TEXT PRIMARY KEY, \\
                                                  title TEXT NOT NULL, \\
@@ -171,8 +241,9 @@ impl User {
     }
 
     fn db_set_info(&self, db: &MutexGuard<Connection>, info: &UserInfo) {
+        let now = Utc::now();
         db.execute(
-            "REPLACE INTO userinfo VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "REPLACE INTO userinfo VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 info.id,
                 info.name,
@@ -180,7 +251,8 @@ impl User {
                 info.live_room_url,
                 info.live_room_title,
                 info.live_open,
-                Utc::now(),
+                now,
+                now.timestamp(),
             ],
         )
         .map_err(|e| log::warn!("Replace into userinfo error(s): {}", e))
@@ -244,5 +316,29 @@ impl User {
         )
         .map_err(|e| log::warn!("Insert or ignore into videoowner error(s): {}", e))
         .ok();
+    }
+
+    pub fn id(&self) -> i64 {
+        self.uid
+    }
+
+    pub fn oldest_ctime_user() -> Result<Self> {
+        conn_db!(db);
+        let uid = Self::db_oldest_ctime_user(&db)?;
+        Ok(Self { uid })
+    }
+
+    fn db_oldest_ctime_user(db: &MutexGuard<Connection>) -> Result<i64> {
+        Ok(db.query_row(
+            "SELECT id FROM userinfo ORDER BY ctimestamp ASC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+}
+
+impl std::fmt::Display for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.uid.fmt(f)
     }
 }

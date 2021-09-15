@@ -2215,12 +2215,14 @@ dependencies = [
 name = "hobob_cache"
 version = "0.1.0"
 dependencies = [
+ "bilibili-api-rs",
  "chrono",
  "env_logger",
  "error-chain",
  "lazy_static",
  "log",
  "rusqlite",
+ "serde_json",
  "tera",
  "tokio",
  "warp",

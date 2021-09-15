@@ -10,10 +10,11 @@ warp = "0.3"
 tokio = { version = "1", features = ["full"] }
 tera = "1.12"
 error-chain = "0.12"
-#rusqlite = "0.25"
 rusqlite = { version = "0.25", features = ["chrono"] }
 log = "0.4"
 env_logger = "*"
 lazy_static = "1.4"
-#time = "0.3"
 chrono = "0.4"
+serde_json = "1"
+
+bilibili-api-rs = { path = "../../bilibili-api-rs" }
