@@ -12,6 +12,11 @@ pub struct UserInfo {
     pub live_room_url: Option<String>,
     pub live_room_title: Option<String>,
     pub live_open: Option<bool>,
+}
+
+pub struct UserSync {
+    pub id: i64,
+    pub enable: bool,
     pub ctime: DateTime<Utc>,
     pub ctimestamp: i64,
 }
@@ -31,7 +36,6 @@ pub struct VideoOwner {
 
 impl Default for UserInfo {
     fn default() -> Self {
-        let now = Utc::now();
         Self {
             id: Default::default(),
             name: Default::default(),
@@ -39,8 +43,6 @@ impl Default for UserInfo {
             live_room_url: Default::default(),
             live_room_title: Default::default(),
             live_open: Default::default(),
-            ctime: now,
-            ctimestamp: now.timestamp(),
         }
     }
 }
@@ -69,8 +71,17 @@ impl FromRow for UserInfo {
             live_room_url: row.get(3)?,
             live_room_title: row.get(4)?,
             live_open: row.get(5)?,
-            ctime: row.get(6)?,
-            ctimestamp: row.get(7)?,
+        })
+    }
+}
+
+impl FromRow for UserSync {
+    fn from_row(row: &Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            enable: row.get(1)?,
+            ctime: row.get(2)?,
+            ctimestamp: row.get(3)?,
         })
     }
 }
@@ -113,7 +124,6 @@ impl TryFrom<serde_json::Value> for UserInfo {
             live_room_url: v["live_room"]["url"].as_str().map(ToString::to_string),
             live_room_title: v["live_room"]["title"].as_str().map(ToString::to_string),
             live_open: v["live_room"]["liveStatus"].as_i64().map(|s| s != 0),
-            ..Default::default()
         })
     }
 }
@@ -170,21 +180,24 @@ lazy_static::lazy_static! {
             }
         };
         let create_result = db.execute_batch("BEGIN;
-                          CREATE TABLE userinfo(\\
+                          CREATE TABLE IF NOT EXISTS userinfo(\\
                                                 id INTEGER PRIMARY KEY, \\
                                                 name TEXT NOT NULL, \\
                                                 face_url TEXT NOT NULL, \\
                                                 live_room_url TEXT, \\
                                                 live_room_title TEXT, \\
                                                 live_open INTEGER, \\
+                          CREATE TABLE IF NOT EXISTS usersync(\\
+                                                id INTEGER PRIMARY KEY, \\
+                                                enable INTEGER NOT NULL DEFAULT 1, \\
                                                 ctime TEXT NOT NULL, \\
-                                                ctimestamp INTEGER NOT NULL);
-                          CREATE TABLE videoinfo(\\
+                                                ctimestamp INTEGER NOT NULL DEFAULT 0);
+                          CREATE TABLE IF NOT EXISTS videoinfo(\\
                                                  vid TEXT PRIMARY KEY, \\
                                                  title TEXT NOT NULL, \\
                                                  pic_url TEXT NOT NULL, \\
                                                  utime TEXT NOT NULL);
-                          CREATE TABLE videoowner(\\
+                          CREATE TABLE IF NOT EXISTS videoowner(\\
                                                   uid INTEGER NOT NULL, \\
                                                   vid TEXT NOT NULL, \\
                                                   timestamp INTEGER NOT NULL, \\
@@ -241,7 +254,6 @@ impl User {
     }
 
     fn db_set_info(&self, db: &MutexGuard<Connection>, info: &UserInfo) {
-        let now = Utc::now();
         db.execute(
             "REPLACE INTO userinfo VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
@@ -251,11 +263,20 @@ impl User {
                 info.live_room_url,
                 info.live_room_title,
                 info.live_open,
+            ],
+        )
+        .map_err(|e| log::warn!("Replace into userinfo error(s): {}", e))
+        .ok();
+        let now = Utc::now();
+        db.execute(
+            "UPDATE usersync SET ctime=?2, ctimestamp=?3 WHERE id=?1",
+            params![
+                info.id,
                 now,
                 now.timestamp(),
             ],
         )
-        .map_err(|e| log::warn!("Replace into userinfo error(s): {}", e))
+        .map_err(|e| log::warn!("Update usersync error(s): {}", e))
         .ok();
     }
 
@@ -330,10 +351,25 @@ impl User {
 
     fn db_oldest_ctime_user(db: &MutexGuard<Connection>) -> Result<i64> {
         Ok(db.query_row(
-            "SELECT id FROM userinfo ORDER BY ctimestamp ASC LIMIT 1",
+            "SELECT id FROM usersync WHERE enable=1 ORDER BY ctimestamp ASC LIMIT 1",
             [],
             |row| row.get(0),
         )?)
+    }
+
+    pub fn enable(&self, b: bool) {
+        conn_db!(db);
+        self.db_disable(&db, b);
+    }
+
+    fn db_disable(&self, db: &MutexGuard<Connection>, b: bool) {
+        let z = Utc.timestamp(0, 0);
+        db.execute(
+            "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4)",
+            params![self.uid, b, z, z.timestamp()],
+        )
+        .map_err(|e| log::error!("Update usersync uid {} enable flag {} error(s): {}", self.uid, b, e))
+        .ok();
     }
 }
 

@@ -1,5 +1,8 @@
 use tera::{Context as TeraContext, Tera};
-use warp::Filter;
+use warp::{Filter, http::StatusCode, reject::Rejection, reply::Reply};
+use crate::{db, engine::{self, Command}};
+use serde_derive::{Deserialize, Serialize};
+use std::convert::Infallible;
 
 lazy_static::lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -28,10 +31,76 @@ macro_rules! render {
     };
 }
 
+
+
+macro_rules! jsnapi {
+    ($expr:expr) => {
+        {
+            tokio::spawn(async move {
+                $expr;
+            });
+            StatusCode::OK
+        }
+    };
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct FollowOptions {
+    enable: bool,
+    uid: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct RefreshOptions {
+    uid: i64,
+}
+
+#[derive(Serialize, Debug)]
+struct OpMessage {
+    code: u16,
+    message: String,
+}
+
+impl OpMessage {
+    pub fn ok() -> Self {
+        Self {
+            code: 200,
+            message: String::from("Success"),
+        }
+    }
+}
+
+impl warp::reject::Reject for OpMessage {}
+
+macro_rules! req_type {
+    (@post) => {
+        warp::post()
+            .and(warp::body::content_length_limit(1024 * 16))
+            .and(warp::body::json())
+    }
+}
+
 pub async fn run() {
     let index = warp::path::end().map(|| render!("index.html", &TeraContext::new()));
 
-    let app = index;
+    let evrx = engine::event_rx();
+
+    let op_follow = warp::path!("follow")
+        .and(req_type!(@post))
+        .map(|opt: FollowOptions| {
+            jsnapi!(engine::handle().send(Command::Follow(opt.enable, opt.uid)).await.ok())
+        });
+    let op_refresh = warp::path!("refresh")
+        .and(req_type!(@post))
+        .map(|opt: RefreshOptions| {
+            jsnapi!(engine::handle().send(Command::Refresh(opt.uid)).await.ok())
+        });
+    let op = warp::path!("op");
+
+    let app = index
+        .or(op.and(op_follow))
+        .or(op.and(op_refresh))
+        ;
     log::info!("www running");
     warp::serve(app).run(([127, 0, 0, 1], 3000)).await;
 }

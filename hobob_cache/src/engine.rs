@@ -1,15 +1,15 @@
 use crate::{db, Result};
 use std::convert::TryInto;
-use std::sync::{Mutex, Once, RwLock};
+use std::sync::{Once, RwLock};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 lazy_static::lazy_static! {
     static ref SENDER: RwLock<Option<mpsc::Sender<Command>>> = RwLock::new(None);
 
-    static ref ONCE: Once = Once::new();
+    static ref EVENTRX: RwLock<Option<watch::Receiver<Event>>> = RwLock::new(None);
 
-    static ref EVENTRX: Mutex<Option<mpsc::Receiver<Event>>> = Mutex::new(None);
+    static ref ONCE: Once = Once::new();
 }
 
 pub const CHANNEL_CAP: usize = 128;
@@ -21,31 +21,35 @@ struct Engine {
 
 pub enum Command {
     Refresh(i64),
+    Follow(bool, i64),
 }
 
-pub enum Event {
-    DoneRefresh(i64),
+#[derive(Clone, Default)]
+pub struct Event {
+    done_refresh: Option<i64>,
 }
 
 fn enforce_init() {
     ONCE.call_once(|| {
         log::info!("Engine runners preparing ...");
         let (tx, rx) = mpsc::channel(CHANNEL_CAP);
-        let (etx, erx) = mpsc::channel(CHANNEL_CAP);
+        let (etx, erx) = watch::channel(Event::default());
         tokio::spawn(async move {
             let engine = Engine::new(rx, etx);
             engine.run().await;
         });
         let mut sender = SENDER.write().expect("Write lock SENDER failure");
         *sender = Some(tx);
-        let mut evrx = EVENTRX.lock().expect("Write lock EVENTRX failure");
+        let mut evrx = EVENTRX.write().expect("Write lock EVENTRX failure");
         *evrx = Some(erx);
     });
 }
 
-pub fn event_rx() -> Option<mpsc::Receiver<Event>> {
+pub fn event_rx() -> watch::Receiver<Event> {
     enforce_init();
-    EVENTRX.lock().expect("Take lock EVENTRX failure").take()
+    EVENTRX.read().expect("Read lock EVENTRX failure")
+        .as_ref().expect("Initilizate EVENTRX failure")
+        .clone()
 }
 
 pub fn handle() -> mpsc::Sender<Command> {
@@ -65,7 +69,7 @@ struct CommandRunner {
 
 #[derive(Clone)]
 struct CommandDispatcher {
-    refresh_sender: mpsc::Sender<i64>,
+    refresh_sender: mpsc::Sender<Command>,
 }
 
 impl CommandRunner {
@@ -84,23 +88,23 @@ impl CommandRunner {
 impl CommandDispatcher {
     pub async fn dispatch(&mut self, cmd: Command) {
         match cmd {
-            Command::Refresh(uid) => {
-                log::trace!("Command refresh uid {}", uid);
-                self.refresh_sender.send(uid).await.ok();
-            }
+            Command::Refresh(_) | Command::Follow(_, _) => {
+                log::trace!("Command refresh type");
+                self.refresh_sender.send(cmd).await.ok();
+            },
         }
     }
 }
 
 struct RefreshRunner {
-    receiver: mpsc::Receiver<i64>,
+    receiver: mpsc::Receiver<Command>,
     token: RefreshBucket,
     ctx: bilibili_api_rs::Context,
-    evtx: mpsc::Sender<Event>,
+    evtx: watch::Sender<Event>,
 }
 
 impl RefreshRunner {
-    pub fn new(receiver: mpsc::Receiver<i64>, evtx: mpsc::Sender<Event>) -> Self {
+    pub fn new(receiver: mpsc::Receiver<Command>, evtx: watch::Sender<Event>) -> Self {
         Self {
             receiver,
             evtx,
@@ -117,12 +121,20 @@ impl RefreshRunner {
 
         loop {
             tokio::select! {
-                id = self.receiver.recv() => {
-                    if let Some(uid) = id {
-                        self.try_refresh(db::User::new(uid)).await;
-                    } else {
+                cmd = self.receiver.recv() => {
+                    if matches!(cmd, None) {
                         log::error!("Refresh command dispatch channel closed");
                         break;
+                    }
+                    match cmd.unwrap() {
+                        Command::Refresh(uid) => self.try_refresh(db::User::new(uid)).await,
+                        Command::Follow(enable, uid) => {
+                            let u = db::User::new(uid);
+                            u.enable(enable);
+                            if enable {
+                                self.try_refresh(u).await;
+                            }
+                        },
                     }
                 }
                 _ = &mut auto_refresh => {
@@ -158,12 +170,15 @@ impl RefreshRunner {
 
         let uid = user.id();
         log::info!("Refresh ok uid {}", uid);
-        let tx = self.evtx.clone();
-        tokio::spawn(async move {
-            tx.send(Event::DoneRefresh(uid)).await.ok();
-        });
+        self.event_change(|ev| ev.done_refresh = Some(uid));
 
         Ok(())
+    }
+
+    fn event_change<F: FnMut(&mut Event)>(&self, mut f: F) {
+        let mut ev = self.evtx.borrow().clone();
+        f(&mut ev);
+        self.evtx.send(ev).ok();
     }
 }
 
@@ -185,7 +200,7 @@ impl Default for RefreshBucket {
 }
 
 impl Engine {
-    pub fn new(receiver: mpsc::Receiver<Command>, evtx: mpsc::Sender<Event>) -> Self {
+    pub fn new(receiver: mpsc::Receiver<Command>, evtx: watch::Sender<Event>) -> Self {
         let (tx0, rx0) = mpsc::channel(CHANNEL_CAP);
         Self {
             cmd: CommandRunner {
