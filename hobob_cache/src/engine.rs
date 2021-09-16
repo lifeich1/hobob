@@ -47,8 +47,11 @@ fn enforce_init() {
 
 pub fn event_rx() -> watch::Receiver<Event> {
     enforce_init();
-    EVENTRX.read().expect("Read lock EVENTRX failure")
-        .as_ref().expect("Initilizate EVENTRX failure")
+    EVENTRX
+        .read()
+        .expect("Read lock EVENTRX failure")
+        .as_ref()
+        .expect("Initilizate EVENTRX failure")
         .clone()
 }
 
@@ -91,7 +94,7 @@ impl CommandDispatcher {
             Command::Refresh(_) | Command::Follow(_, _) => {
                 log::trace!("Command refresh type");
                 self.refresh_sender.send(cmd).await.ok();
-            },
+            }
         }
     }
 }

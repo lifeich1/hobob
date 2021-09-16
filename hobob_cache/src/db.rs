@@ -270,11 +270,7 @@ impl User {
         let now = Utc::now();
         db.execute(
             "UPDATE usersync SET ctime=?2, ctimestamp=?3 WHERE id=?1",
-            params![
-                info.id,
-                now,
-                now.timestamp(),
-            ],
+            params![info.id, now, now.timestamp(),],
         )
         .map_err(|e| log::warn!("Update usersync error(s): {}", e))
         .ok();
@@ -368,7 +364,14 @@ impl User {
             "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4)",
             params![self.uid, b, z, z.timestamp()],
         )
-        .map_err(|e| log::error!("Update usersync uid {} enable flag {} error(s): {}", self.uid, b, e))
+        .map_err(|e| {
+            log::error!(
+                "Update usersync uid {} enable flag {} error(s): {}",
+                self.uid,
+                b,
+                e
+            )
+        })
         .ok();
     }
 }
