@@ -3,9 +3,8 @@ use crate::{
     engine::{self, Command},
 };
 use serde_derive::{Deserialize, Serialize};
-use std::convert::Infallible;
 use tera::{Context as TeraContext, Tera};
-use warp::{http::StatusCode, reject::Rejection, reply::Reply, Filter};
+use warp::{http::StatusCode, Filter};
 
 lazy_static::lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -79,6 +78,16 @@ macro_rules! req_type {
     };
 }
 
+macro_rules! reply_json_result {
+    ($expr:expr) => {
+        match $expr {
+            Ok(ok) => warp::reply::with_status(warp::reply::json(&ok), StatusCode::OK),
+            Err(e) => warp::reply::with_status(
+                warp::reply::json(&format!("Err: {}", e)), StatusCode::INTERNAL_SERVER_ERROR),
+        }
+    }
+}
+
 pub async fn run() {
     let index = warp::path::end().map(|| render!("index.html", &TeraContext::new()));
 
@@ -99,7 +108,18 @@ pub async fn run() {
         });
     let op = warp::path!("op");
 
-    let app = index.or(op.and(op_follow)).or(op.and(op_refresh));
+    let get_user = warp::path!("user" / i64)
+        .map(|uid| {
+            reply_json_result!( db::User::new(uid).info())
+        });
+    let get_vlist = warp::path!("vlist" / i64)
+        .map(|uid| {
+            reply_json_result!(db::User::new(uid).recent_videos(30))
+        });
+    let get = warp::path!("get");
+
+    let app = index.or(op.and(op_follow)).or(op.and(op_refresh))
+        .or(get.and(get_user)).or(get.and(get_vlist));
     log::info!("www running");
     warp::serve(app).run(([127, 0, 0, 1], 3000)).await;
 }

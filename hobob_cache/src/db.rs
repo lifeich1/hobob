@@ -4,7 +4,9 @@ use rusqlite::{params, Connection, Row};
 use std::convert::TryFrom;
 use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard};
+use serde_derive::{Deserialize, Serialize};
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct UserInfo {
     pub id: i64,
     pub name: String,
@@ -21,6 +23,7 @@ pub struct UserSync {
     pub ctimestamp: i64,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct VideoInfo {
     pub vid: String,
     pub title: String,
