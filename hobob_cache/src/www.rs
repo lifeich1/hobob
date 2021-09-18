@@ -78,14 +78,18 @@ macro_rules! req_type {
     };
 }
 
+
 macro_rules! reply_json_result {
+    (@err $e:expr, $c:expr) => {
+        warp::reply::with_status(warp::reply::json(&format!("Err: {}", $e)), $c)
+    };
+
     ($expr:expr) => {
         match $expr {
             Ok(ok) => warp::reply::with_status(warp::reply::json(&ok), StatusCode::OK),
-            Err(e) => warp::reply::with_status(
-                warp::reply::json(&format!("Err: {}", e)), StatusCode::INTERNAL_SERVER_ERROR),
+            Err(e) => reply_json_result!(@err e, StatusCode::INTERNAL_SERVER_ERROR),
         }
-    }
+    };
 }
 
 pub async fn run() {
@@ -118,8 +122,22 @@ pub async fn run() {
         });
     let get = warp::path!("get");
 
+    let list = warp::path!("list" / String / i64 / i64)
+        .map(|typ: String, start, len| {
+            match typ.as_str() {
+                "default" | "video" | "live" => 
+                    reply_json_result!(db::User::list(match typ.as_str() {
+                        "video" => db::Order::LatestVideo,
+                        "live" => db::Order::LiveEntropy,
+                        _ => db::Order::Rowid,
+                    }, start, len)),
+                _ => reply_json_result!(@err "bad list type", StatusCode::BAD_REQUEST),
+            }
+        });
+
     let app = index.or(op.and(op_follow)).or(op.and(op_refresh))
-        .or(get.and(get_user)).or(get.and(get_vlist));
+        .or(get.and(get_user)).or(get.and(get_vlist))
+        .or(list);
     log::info!("www running");
     warp::serve(app).run(([127, 0, 0, 1], 3000)).await;
 }

@@ -6,7 +6,7 @@ use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard};
 use serde_derive::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct UserInfo {
     pub id: i64,
     pub name: String,
@@ -14,6 +14,7 @@ pub struct UserInfo {
     pub live_room_url: Option<String>,
     pub live_room_title: Option<String>,
     pub live_open: Option<bool>,
+    pub live_entropy: Option<i64>,
 }
 
 pub struct UserSync {
@@ -21,6 +22,7 @@ pub struct UserSync {
     pub enable: bool,
     pub ctime: DateTime<Utc>,
     pub ctimestamp: i64,
+    pub new_video_ts: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -37,18 +39,6 @@ pub struct VideoOwner {
     pub timestamp: i64,
 }
 
-impl Default for UserInfo {
-    fn default() -> Self {
-        Self {
-            id: Default::default(),
-            name: Default::default(),
-            face_url: Default::default(),
-            live_room_url: Default::default(),
-            live_room_title: Default::default(),
-            live_open: Default::default(),
-        }
-    }
-}
 
 impl Default for VideoInfo {
     fn default() -> Self {
@@ -74,6 +64,7 @@ impl FromRow for UserInfo {
             live_room_url: row.get(3)?,
             live_room_title: row.get(4)?,
             live_open: row.get(5)?,
+            live_entropy: row.get(6)?,
         })
     }
 }
@@ -85,6 +76,7 @@ impl FromRow for UserSync {
             enable: row.get(1)?,
             ctime: row.get(2)?,
             ctimestamp: row.get(3)?,
+            new_video_ts: row.get(4)?,
         })
     }
 }
@@ -127,6 +119,7 @@ impl TryFrom<serde_json::Value> for UserInfo {
             live_room_url: v["live_room"]["url"].as_str().map(ToString::to_string),
             live_room_title: v["live_room"]["title"].as_str().map(ToString::to_string),
             live_open: v["live_room"]["liveStatus"].as_i64().map(|s| s != 0),
+            live_entropy: v["live_room"]["online"].as_i64(),
         })
     }
 }
@@ -183,27 +176,29 @@ lazy_static::lazy_static! {
             }
         };
         let create_result = db.execute_batch("BEGIN;
-                          CREATE TABLE IF NOT EXISTS userinfo(\\
-                                                id INTEGER PRIMARY KEY, \\
-                                                name TEXT NOT NULL, \\
-                                                face_url TEXT NOT NULL, \\
-                                                live_room_url TEXT, \\
-                                                live_room_title TEXT, \\
-                                                live_open INTEGER, \\
-                          CREATE TABLE IF NOT EXISTS usersync(\\
-                                                id INTEGER PRIMARY KEY, \\
-                                                enable INTEGER NOT NULL DEFAULT 1, \\
-                                                ctime TEXT NOT NULL, \\
-                                                ctimestamp INTEGER NOT NULL DEFAULT 0);
-                          CREATE TABLE IF NOT EXISTS videoinfo(\\
-                                                 vid TEXT PRIMARY KEY, \\
-                                                 title TEXT NOT NULL, \\
-                                                 pic_url TEXT NOT NULL, \\
+                          CREATE TABLE IF NOT EXISTS userinfo(
+                                                id INTEGER PRIMARY KEY, \
+                                                name TEXT NOT NULL, \
+                                                face_url TEXT NOT NULL, \
+                                                live_room_url TEXT, \
+                                                live_room_title TEXT, \
+                                                live_open INTEGER, \
+                                                live_entropy INTEGER);
+                          CREATE TABLE IF NOT EXISTS usersync(\
+                                                id INTEGER PRIMARY KEY, \
+                                                enable INTEGER NOT NULL DEFAULT 1, \
+                                                ctime TEXT NOT NULL, \
+                                                ctimestamp INTEGER NOT NULL DEFAULT 0, \
+                                                new_video_ts INTEGER NOT NULL DEFAULT 0);
+                          CREATE TABLE IF NOT EXISTS videoinfo(\
+                                                 vid TEXT PRIMARY KEY, \
+                                                 title TEXT NOT NULL, \
+                                                 pic_url TEXT NOT NULL, \
                                                  utime TEXT NOT NULL);
-                          CREATE TABLE IF NOT EXISTS videoowner(\\
-                                                  uid INTEGER NOT NULL, \\
-                                                  vid TEXT NOT NULL, \\
-                                                  timestamp INTEGER NOT NULL, \\
+                          CREATE TABLE IF NOT EXISTS videoowner(\
+                                                  uid INTEGER NOT NULL, \
+                                                  vid TEXT NOT NULL, \
+                                                  timestamp INTEGER NOT NULL, \
                                                   UNIQUE(vid, uid));
                           COMMIT;");
         match create_result {
@@ -212,6 +207,13 @@ lazy_static::lazy_static! {
         }
         Mutex::new(db)
     };
+}
+
+#[derive(Debug)]
+pub enum Order {
+    Rowid,
+    LatestVideo,
+    LiveEntropy,
 }
 
 pub struct User {
@@ -258,7 +260,7 @@ impl User {
 
     fn db_set_info(&self, db: &MutexGuard<Connection>, info: &UserInfo) {
         db.execute(
-            "REPLACE INTO userinfo VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "REPLACE INTO userinfo VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 info.id,
                 info.name,
@@ -266,6 +268,7 @@ impl User {
                 info.live_room_url,
                 info.live_room_title,
                 info.live_open,
+                info.live_entropy,
             ],
         )
         .map_err(|e| log::warn!("Replace into userinfo error(s): {}", e))
@@ -336,6 +339,12 @@ impl User {
         )
         .map_err(|e| log::warn!("Insert or ignore into videoowner error(s): {}", e))
         .ok();
+        db.execute(
+            "UPDATE usersync SET new_video_ts=?2 WHERE id=?1",
+            params![self.uid, info.utime.timestamp()],
+        )
+        .map_err(|e| log::warn!("Update userinfo error(s): {}", e))
+        .ok();
     }
 
     pub fn id(&self) -> i64 {
@@ -376,6 +385,26 @@ impl User {
             )
         })
         .ok();
+    }
+
+    pub fn list(order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
+        conn_db!(db);
+        Self::db_list(&db, order, start, len)
+    }
+
+    fn db_list(db: &MutexGuard<Connection>, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
+        let mut stmt = match order {
+            Order::Rowid => db.prepare_cached("SELECT id FROM userinfo ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"),
+            Order::LatestVideo => db.prepare_cached("SELECT id FROM usersync ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"),
+            Order::LiveEntropy => db.prepare_cached("SELECT id FROM userinfo ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"),
+        }?;
+        let iter = stmt.query_map(
+            params![start, len],
+            |row| row.get(0)
+        )?;
+        Ok(iter
+           .filter_map(|id| id.ok())
+           .collect())
     }
 }
 
