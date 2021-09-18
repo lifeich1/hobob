@@ -100,6 +100,7 @@ pub async fn run() {
     let op_follow = warp::path!("follow")
         .and(req_type!(@post))
         .map(|opt: FollowOptions| {
+            log::debug!("op_follow arg: {:?}", opt);
             jsnapi!(engine::handle()
                 .send(Command::Follow(opt.enable, opt.uid))
                 .await
@@ -110,7 +111,7 @@ pub async fn run() {
         .map(|opt: RefreshOptions| {
             jsnapi!(engine::handle().send(Command::Refresh(opt.uid)).await.ok())
         });
-    let op = warp::path!("op");
+    let op = warp::path("op");
 
     let get_user = warp::path!("user" / i64)
         .map(|uid| {
@@ -120,9 +121,10 @@ pub async fn run() {
         .map(|uid| {
             reply_json_result!(db::User::new(uid).recent_videos(30))
         });
-    let get = warp::path!("get");
+    let get = warp::path("get").and(warp::get());
 
     let list = warp::path!("list" / String / i64 / i64)
+        .and(warp::get())
         .map(|typ: String, start, len| {
             match typ.as_str() {
                 "default" | "video" | "live" => 

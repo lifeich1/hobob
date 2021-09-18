@@ -33,9 +33,10 @@ pub struct VideoInfo {
     pub utime: DateTime<Utc>,
 }
 
+#[derive(Debug)]
 pub struct VideoOwner {
-    pub vid: String,
     pub uid: i64,
+    pub vid: String,
     pub timestamp: i64,
 }
 
@@ -95,8 +96,8 @@ impl FromRow for VideoInfo {
 impl FromRow for VideoOwner {
     fn from_row(row: &Row) -> rusqlite::Result<Self> {
         Ok(Self {
-            vid: row.get(0)?,
-            uid: row.get(1)?,
+            uid: row.get(0)?,
+            vid: row.get(1)?,
             timestamp: row.get(2)?,
         })
     }
@@ -243,7 +244,7 @@ impl User {
 
     fn db_info(&self, db: &MutexGuard<Connection>) -> Result<UserInfo> {
         Ok(db.query_row(
-            "SELECT * FROM userinfo WHERE uid=?1",
+            "SELECT * FROM userinfo WHERE id=?1",
             params![self.uid],
             UserInfo::from_row,
         )?)
@@ -289,14 +290,14 @@ impl User {
 
     fn db_recent_videos(&self, db: &MutexGuard<Connection>, limit: i32) -> Result<Vec<VideoInfo>> {
         let mut stmt = db.prepare_cached(
-            "SELECT * FROM videoowner \\
-            WHERE uid=?1 \\
-            ORDER BY timestamp DESC \\
+            "SELECT * FROM videoowner \
+            WHERE uid=?1 \
+            ORDER BY timestamp DESC \
             LIMIT ?2",
         )?;
         let iter = stmt.query_map(params![self.uid, limit], VideoOwner::from_row)?;
         let mut stmt = db.prepare_cached(
-            "SELECT * FROM videoinfo \\
+            "SELECT * FROM videoinfo \
             WHERE vid=?1",
         )?;
         Ok(iter
@@ -326,21 +327,21 @@ impl User {
 
     fn db_update_video(&self, db: &MutexGuard<Connection>, info: &VideoInfo) {
         db.execute(
-            "INSERT OR IGNORE INTO videoinfo VALUES \\
+            "INSERT OR IGNORE INTO videoinfo VALUES \
             (?1, ?2, ?3, ?4)",
             params![info.vid, info.title, info.pic_url, info.utime],
         )
         .map_err(|e| log::warn!("Insert or ignore into videoinfo error(s): {}", e))
         .ok();
         db.execute(
-            "INSERT OR IGNORE INTO videoowner VALUES \\
+            "INSERT OR IGNORE INTO videoowner VALUES \
             (?1, ?2, ?3)",
-            params![info.vid, self.uid, info.utime.timestamp()],
+            params![self.uid, info.vid, info.utime.timestamp()],
         )
         .map_err(|e| log::warn!("Insert or ignore into videoowner error(s): {}", e))
         .ok();
         db.execute(
-            "UPDATE usersync SET new_video_ts=?2 WHERE id=?1",
+            "UPDATE usersync SET new_video_ts=?2 WHERE id=?1 AND new_video_ts < ?2",
             params![self.uid, info.utime.timestamp()],
         )
         .map_err(|e| log::warn!("Update userinfo error(s): {}", e))
@@ -373,8 +374,8 @@ impl User {
     fn db_disable(&self, db: &MutexGuard<Connection>, b: bool) {
         let z = Utc.timestamp(0, 0);
         db.execute(
-            "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4)",
-            params![self.uid, b, z, z.timestamp()],
+            "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![self.uid, b, z, z.timestamp(), z.timestamp()],
         )
         .map_err(|e| {
             log::error!(
@@ -396,7 +397,7 @@ impl User {
         let mut stmt = match order {
             Order::Rowid => db.prepare_cached("SELECT id FROM userinfo ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"),
             Order::LatestVideo => db.prepare_cached("SELECT id FROM usersync ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"),
-            Order::LiveEntropy => db.prepare_cached("SELECT id FROM userinfo ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"),
+            Order::LiveEntropy => db.prepare_cached("SELECT id FROM userinfo WHERE live_open=1 ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"),
         }?;
         let iter = stmt.query_map(
             params![start, len],
