@@ -137,9 +137,13 @@ pub async fn run() {
             }
         });
 
+    let static_files = warp::path("static")
+        .and(warp::fs::dir("./static"));
+
     let app = index.or(op.and(op_follow)).or(op.and(op_refresh))
         .or(get.and(get_user)).or(get.and(get_vlist))
-        .or(list);
+        .or(list)
+        .or(static_files);
     log::info!("www running");
     warp::serve(app).run(([127, 0, 0, 1], 3000)).await;
 }
