@@ -2,15 +2,51 @@
 <html>
 
 <head>
-<link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.0.2/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap-utilities.min.css" rel="stylesheet">
 <title>首页</title>
+<meta name="referrer" content="no-referrer" />
 </head>
 
 <body>
-<div class="d-inline p-2 bg-primary text-white">body 元素的内容会显示在浏览器中。</div>
-<div class="d-inline p-2 bg-dark text-white">title 元素的内容会显示在浏览器的标题栏中。</div>
 
-<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.0.2/js/bootstrap.bundle.min.js"></script>
+<div class="m-1">
+    <ul class="nav nav-pills justify-content-center">
+        <li class="nav-item">
+            <a class="nav-link active" id="default-tab-nav" data-bs-toggle="pill" href="#default-list">默认</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="video-tab-nav" data-bs-toggle="pill" href="#video-list">新视频</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#live-list">直播</a>
+        </li>
+    </ul>
+</div>
+
+<div class="tab-content">
+    <div class="tab-pane active" id="default-list" role="tabpanel">
+        <div class="d-flex flex-row flex-wrap mb-1" id="default-list-content">
+            default-list
+        </div>
+    </div>
+    <div class="tab-pane" id="video-list" role="tabpanel">
+        <div class="d-flex flex-row flex-wrap mb-1" id="video-list-content">
+            video-list
+        </div>
+    </div>
+    <div class="tab-pane" id="live-list" role="tabpanel">
+        <div class="d-flex flex-row flex-wrap mb-1" id="live-list-content">
+            live-list
+        </div>
+    </div>
+    <div class="tab-pane" id="user-space" role="tabpanel">
+        user-space
+    </div>
+</div>
+
+<script src="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.staticfile.org/jquery/3.6.0/jquery.min.js"></script>
 <script src="/static/index.js"></script>
 </body>
 

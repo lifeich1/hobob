@@ -1,0 +1,22 @@
+{% for user in users %}
+<div class="card m-2 p-1 border-primary" id={{ user.ext.card_id }}>
+    <a href="{{ user.ext.space_link }}" target="_blank">
+        <img src={{ user.data.face_url ~ "@128w_128h_1o.webp" }} class="card-img-top" style="width: 128px;">
+    </a>
+    <div class="card-body">
+        <h5 class="card-title">
+            <a href="{{ user.ext.space_link }}" target="_blank" class="btn btn-light">
+                {{ user.data.name }}
+                <span class="badge bg-secondary"> {{ user.data.id }} </span>
+            </a>
+        </h5>
+        <a href="{{ user.ext.live_link }}" target="_blank" class="{{ user.ext.live_link_cls }}">
+        {% if user.ext.live_open %}
+            {{ user.data.live_room_title }}
+        {% else %}
+            直播间
+        {% endif %}
+        </a>
+    </div>
+</div>
+{% endfor %}

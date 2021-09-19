@@ -217,6 +217,16 @@ pub enum Order {
     LiveEntropy,
 }
 
+impl From<&str> for Order {
+    fn from(s: &str) -> Self {
+        match s {
+            "video" => Self::LatestVideo,
+            "live" => Self::LiveEntropy,
+            _ => Self::Rowid,
+        }
+    }
+}
+
 pub struct User {
     uid: i64,
 }

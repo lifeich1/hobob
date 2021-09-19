@@ -1,10 +1,12 @@
 use crate::{
     db,
+    Result,
     engine::{self, Command},
 };
 use serde_derive::{Deserialize, Serialize};
 use tera::{Context as TeraContext, Tera};
 use warp::{http::StatusCode, Filter};
+use std::convert::From;
 
 lazy_static::lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -20,16 +22,25 @@ lazy_static::lazy_static! {
 }
 
 macro_rules! render {
+    (@errhtml $kind:expr, $reason:expr) => {
+        warp::reply::html(render!(@err TEMPLATES, $kind, $reason))
+    };
+    (@err $tera:ident, $kind:expr, $reason:expr) => {
+        {
+            let mut ctx = TeraContext::new();
+            ctx.insert("kind", $kind);
+            ctx.insert("reason", $reason);
+            $tera.render("failure.html", &ctx).unwrap()
+        }
+    };
+
     ($name:expr, $ctx:expr) => {
         render!(TEMPLATES, $name, $ctx)
     };
     ($tera:ident, $name:expr, $ctx:expr) => {
-        warp::reply::html($tera.render($name, $ctx).unwrap_or_else(|e| {
-            let mut ctx = TeraContext::new();
-            ctx.insert("kind", "Tera engine");
-            ctx.insert("reason", &format!("Error: tera: {}", e));
-            $tera.render("failure.html", &ctx).unwrap()
-        }))
+        warp::reply::html($tera.render($name, $ctx).unwrap_or_else(|e|
+            render!(@err $tera, "Tera engine", &format!("Error: tera: {}", e))
+        ))
     };
 }
 
@@ -92,6 +103,56 @@ macro_rules! reply_json_result {
     };
 }
 
+#[derive(Debug, Serialize)]
+struct UserExt {
+    card_id: String,
+    space_link: String,
+    live_link: String,
+    live_link_cls: String,
+    live_open: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UserPack {
+    data: db::UserInfo,
+    ext: UserExt,
+}
+
+impl From<Result<db::UserInfo>> for UserPack {
+    fn from(data: Result<db::UserInfo>) -> Self {
+        match data {
+            Ok(data) => Self {
+                ext: UserExt {
+                    card_id: format!("user-card-{}", data.id),
+                    space_link: format!("https://space.bilibili.com/{}/", data.id),
+                    live_link: data.live_room_url.clone().unwrap_or_else(|| String::from("https://live.bilibili.com/")),
+                    live_open: matches!(data.live_open, Some(true)),
+                    live_link_cls: String::from(if matches!(data.live_open, Some(true)) {
+                        "btn btn-success"
+                    } else {
+                        "btn btn-secondary"
+                    }),
+                },
+                data,
+            },
+            Err(e) => Self {
+                ext: UserExt {
+                    card_id: String::from("user-card-0"),
+                    space_link: String::from("https://www.bilibili.com/"),
+                    live_link: String::from("https://live.bilibili.com/"),
+                    live_open: false,
+                    live_link_cls: String::from("btn btn-danger"),
+                },
+                data: db::UserInfo {
+                    name: format!("Err: {}", e),
+                    face_url: String::from("https://i0.hdslb.com/bfs/face/member/noface.jpg"),
+                    ..Default::default()
+                },
+            }
+        }
+    }
+}
+
 pub async fn run() {
     let index = warp::path::end().map(|| render!("index.html", &TeraContext::new()));
 
@@ -126,16 +187,27 @@ pub async fn run() {
     let list = warp::path!("list" / String / i64 / i64)
         .and(warp::get())
         .map(|typ: String, start, len| {
-            match typ.as_str() {
-                "default" | "video" | "live" => 
-                    reply_json_result!(db::User::list(match typ.as_str() {
-                        "video" => db::Order::LatestVideo,
-                        "live" => db::Order::LiveEntropy,
-                        _ => db::Order::Rowid,
-                    }, start, len)),
-                _ => reply_json_result!(@err "bad list type", StatusCode::BAD_REQUEST),
-            }
+            reply_json_result!(db::User::list(typ.as_str().into(), start, len))
         });
+
+    let card_ulist = warp::path!("ulist" / String / i64 / i64)
+        .map(|typ: String, start, len| {
+            let uids = db::User::list(typ.as_str().into(), start, len);
+            if let Err(e) = uids {
+                return render!(@errhtml "Database", &format!("Db error(s): {}", e));
+            }
+            let users: Vec<UserPack> = uids.unwrap()
+                .iter()
+                .map(|uid| {
+                    UserPack::from(db::User::new(*uid).info())
+                })
+                .collect();
+            let mut ctx = TeraContext::new();
+            ctx.insert("users", &users);
+            render!("user_cards.html", &ctx)
+        });
+    // TODO card_vlist
+    let card = warp::path("card");
 
     let static_files = warp::path("static")
         .and(warp::fs::dir("./static"));
@@ -143,7 +215,8 @@ pub async fn run() {
     let app = index.or(op.and(op_follow)).or(op.and(op_refresh))
         .or(get.and(get_user)).or(get.and(get_vlist))
         .or(list)
-        .or(static_files);
+        .or(static_files)
+        .or(card.and(card_ulist));
     log::info!("www running");
     warp::serve(app).run(([127, 0, 0, 1], 3000)).await;
 }
