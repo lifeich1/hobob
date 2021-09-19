@@ -246,5 +246,5 @@ pub async fn run() {
         .or(card.and(card_ulist))
         .or(favicon);
     log::info!("www running");
-    warp::serve(app).run(([127, 0, 0, 1], 3731)).await;
+    warp::serve(app).run(([0, 0, 0, 0], 3731)).await;
 }
