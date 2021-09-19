@@ -277,7 +277,7 @@ impl User {
 
     pub fn info(&self) -> Result<UserInfo> {
         conn_db!(db);
-        self.db_info(&db)
+        self.db_info(db)
     }
 
     fn db_info(&self, db: DbType) -> Result<UserInfo> {
@@ -294,7 +294,7 @@ impl User {
             return;
         }
         conn_db!(db);
-        self.db_set_info(&db, info);
+        self.db_set_info(db, info);
     }
 
     fn db_set_info(&self, db: DbType, info: &UserInfo) {
@@ -323,7 +323,7 @@ impl User {
 
     pub fn get_sync(&self) -> Result<UserSync> {
         conn_db!(db);
-        self.db_get_sync(&db)
+        self.db_get_sync(db)
     }
 
     fn db_get_sync(&self, db: DbType) -> Result<UserSync> {
@@ -336,7 +336,7 @@ impl User {
 
     pub fn recent_videos(&self, limit: i32) -> Result<Vec<VideoInfo>> {
         conn_db!(db);
-        self.db_recent_videos(&db, limit)
+        self.db_recent_videos(db, limit)
     }
 
     fn db_recent_videos(&self, db: DbType, limit: i32) -> Result<Vec<VideoInfo>> {
@@ -372,7 +372,7 @@ impl User {
     pub fn update_videos<'a>(&self, videos: impl Iterator<Item = &'a VideoInfo>) {
         conn_db!(db);
         for v in videos {
-            self.db_update_video(&db, v);
+            self.db_update_video(db, v);
         }
     }
 
@@ -405,7 +405,7 @@ impl User {
 
     pub fn oldest_ctime_user() -> Result<Self> {
         conn_db!(db);
-        let uid = Self::db_oldest_ctime_user(&db)?;
+        let uid = Self::db_oldest_ctime_user(db)?;
         Ok(Self { uid })
     }
 
@@ -419,7 +419,7 @@ impl User {
 
     pub fn enable(&self, b: bool) {
         conn_db!(db);
-        self.db_disable(&db, b);
+        self.db_disable(db, b);
     }
 
     fn db_disable(&self, db: DbType, b: bool) {
@@ -441,7 +441,7 @@ impl User {
 
     pub fn list(order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
         conn_db!(db);
-        Self::db_list(&db, order, start, len)
+        Self::db_list(db, order, start, len)
     }
 
     fn db_list(db: DbType, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {

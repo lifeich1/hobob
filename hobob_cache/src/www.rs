@@ -140,8 +140,8 @@ impl From<Result<db::UserInfo>> for UserPack {
                             .unwrap_or_else(|_| String::default()),
                         live_entropy: match data.live_entropy {
                             Some(e @ 0..=1000) => format!("{}", e),
-                            Some(e @ 1001..=1000_000) => format!("{:.1}K", e as f32 / 1000f32),
-                            Some(e) => format!("{:.1}M", e as f32 / 1000_000f32),
+                            Some(e @ 1001..=1_000_000) => format!("{:.1}K", e as f32 / 1000f32),
+                            Some(e) => format!("{:.1}M", e as f32 / 1_000_000_f32),
                             _ => String::from("0"),
                         },
                     },
