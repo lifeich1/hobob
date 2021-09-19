@@ -1,10 +1,10 @@
 use crate::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, Row};
+use serde_derive::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard};
-use serde_derive::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct UserInfo {
@@ -41,7 +41,6 @@ pub struct VideoOwner {
     pub vid: String,
     pub timestamp: i64,
 }
-
 
 impl Default for VideoInfo {
     fn default() -> Self {
@@ -120,7 +119,10 @@ impl TryFrom<serde_json::Value> for UserInfo {
                 .as_str()
                 .map(ToString::to_string)
                 .ok_or("face not found")?,
-            live_room_url: v["live_room"]["url"].as_str().filter(|s| !s.is_empty()).map(ToString::to_string),
+            live_room_url: v["live_room"]["url"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string),
             live_room_title: v["live_room"]["title"].as_str().map(ToString::to_string),
             live_open: v["live_room"]["liveStatus"].as_i64().map(|s| s != 0),
             live_entropy: v["live_room"]["online"].as_i64(),
@@ -420,19 +422,19 @@ impl User {
         Self::db_list(&db, order, start, len)
     }
 
-    fn db_list(db: &MutexGuard<Connection>, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
+    fn db_list(
+        db: &MutexGuard<Connection>,
+        order: Order,
+        start: i64,
+        len: i64,
+    ) -> Result<Vec<i64>> {
         let mut stmt = match order {
             Order::Rowid => db.prepare_cached("SELECT id FROM usersync ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"),
             Order::LatestVideo => db.prepare_cached("SELECT id FROM usersync ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"),
             Order::LiveEntropy => db.prepare_cached("SELECT id FROM userinfo WHERE live_open=1 ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"),
         }?;
-        let iter = stmt.query_map(
-            params![start, len],
-            |row| row.get(0)
-        )?;
-        Ok(iter
-           .filter_map(|id| id.ok())
-           .collect())
+        let iter = stmt.query_map(params![start, len], |row| row.get(0))?;
+        Ok(iter.filter_map(|id| id.ok()).collect())
     }
 }
 

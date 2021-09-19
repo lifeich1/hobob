@@ -1,13 +1,13 @@
 use crate::{
     db,
-    Result,
     engine::{self, Command},
+    Result,
 };
+use chrono::{TimeZone, Utc};
 use serde_derive::{Deserialize, Serialize};
+use std::convert::From;
 use tera::{Context as TeraContext, Tera};
 use warp::{http::StatusCode, Filter};
-use chrono::{Utc, TimeZone};
-use std::convert::From;
 
 lazy_static::lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -65,23 +65,6 @@ struct RefreshOptions {
     uid: i64,
 }
 
-#[derive(Serialize, Debug)]
-struct OpMessage {
-    code: u16,
-    message: String,
-}
-
-impl OpMessage {
-    pub fn ok() -> Self {
-        Self {
-            code: 200,
-            message: String::from("Success"),
-        }
-    }
-}
-
-impl warp::reject::Reject for OpMessage {}
-
 macro_rules! req_type {
     (@post) => {
         warp::post()
@@ -89,7 +72,6 @@ macro_rules! req_type {
             .and(warp::body::json())
     };
 }
-
 
 macro_rules! reply_json_result {
     (@err $e:expr, $c:expr) => {
@@ -132,7 +114,10 @@ impl From<Result<db::UserInfo>> for UserPack {
                     ext: UserExt {
                         card_id: format!("user-card-{}", data.id),
                         space_link: format!("https://space.bilibili.com/{}/", data.id),
-                        live_link: data.live_room_url.clone().unwrap_or_else(|| String::from("https://live.bilibili.com/")),
+                        live_link: data
+                            .live_room_url
+                            .clone()
+                            .unwrap_or_else(|| String::from("https://live.bilibili.com/")),
                         live_open: matches!(data.live_open, Some(true)),
                         live_link_cls: String::from(if matches!(data.live_open, Some(true)) {
                             "btn btn-success"
@@ -140,13 +125,18 @@ impl From<Result<db::UserInfo>> for UserPack {
                             "btn btn-secondary"
                         }),
                         new_video_ts: sync.as_ref().map(|s| s.new_video_ts).unwrap_or(0),
-                        new_video_title: sync.as_ref().map(|s| s.new_video_title.clone()).unwrap_or_else(|_| String::default()),
-                        new_video_tsrepr: sync.map(
-                            |s| Utc.timestamp(s.new_video_ts, 0)
-                                .with_timezone(&chrono::Local)
-                                .format("%Y-%m-%d %H:%M:%S")
-                                .to_string()
-                            ).unwrap_or_else(|_| String::default()),
+                        new_video_title: sync
+                            .as_ref()
+                            .map(|s| s.new_video_title.clone())
+                            .unwrap_or_else(|_| String::default()),
+                        new_video_tsrepr: sync
+                            .map(|s| {
+                                Utc.timestamp(s.new_video_ts, 0)
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M:%S")
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|_| String::default()),
                         live_entropy: match data.live_entropy {
                             Some(e @ 0..=1000) => format!("{}", e),
                             Some(e @ 1001..=1000_000) => format!("{:.1}K", e as f32 / 1000f32),
@@ -156,7 +146,7 @@ impl From<Result<db::UserInfo>> for UserPack {
                     },
                     data,
                 }
-            },
+            }
             Err(e) => Self {
                 ext: UserExt {
                     card_id: String::from("user-card-0"),
@@ -174,7 +164,7 @@ impl From<Result<db::UserInfo>> for UserPack {
                     face_url: String::from("https://i0.hdslb.com/bfs/face/member/noface.jpg"),
                     ..Default::default()
                 },
-            }
+            },
         }
     }
 }
@@ -182,7 +172,7 @@ impl From<Result<db::UserInfo>> for UserPack {
 pub async fn run() {
     let index = warp::path::end().map(|| render!("index.html", &TeraContext::new()));
 
-    let evrx = engine::event_rx();
+    let _evrx = engine::event_rx();
 
     let op_follow = warp::path!("follow")
         .and(req_type!(@post))
@@ -200,14 +190,10 @@ pub async fn run() {
         });
     let op = warp::path("op");
 
-    let get_user = warp::path!("user" / i64)
-        .map(|uid| {
-            reply_json_result!( db::User::new(uid).info())
-        });
+    let get_user =
+        warp::path!("user" / i64).map(|uid| reply_json_result!(db::User::new(uid).info()));
     let get_vlist = warp::path!("vlist" / i64)
-        .map(|uid| {
-            reply_json_result!(db::User::new(uid).recent_videos(30))
-        });
+        .map(|uid| reply_json_result!(db::User::new(uid).recent_videos(30)));
     let get = warp::path("get").and(warp::get());
 
     let list = warp::path!("list" / String / i64 / i64)
@@ -216,31 +202,30 @@ pub async fn run() {
             reply_json_result!(db::User::list(typ.as_str().into(), start, len))
         });
 
-    let card_ulist = warp::path!("ulist" / String / i64 / i64)
-        .map(|typ: String, start, len| {
-            let uids = db::User::list(typ.as_str().into(), start, len);
-            if let Err(e) = uids {
-                return render!(@errhtml "Database", &format!("Db error(s): {}", e));
-            }
-            let users: Vec<UserPack> = uids.unwrap()
-                .iter()
-                .map(|uid| {
-                    UserPack::from(db::User::new(*uid).info())
-                })
-                .collect();
-            let mut ctx = TeraContext::new();
-            ctx.insert("users", &users);
-            render!("user_cards.html", &ctx)
-        });
+    let card_ulist = warp::path!("ulist" / String / i64 / i64).map(|typ: String, start, len| {
+        let uids = db::User::list(typ.as_str().into(), start, len);
+        if let Err(e) = uids {
+            return render!(@errhtml "Database", &format!("Db error(s): {}", e));
+        }
+        let users: Vec<UserPack> = uids
+            .unwrap()
+            .iter()
+            .map(|uid| UserPack::from(db::User::new(*uid).info()))
+            .collect();
+        let mut ctx = TeraContext::new();
+        ctx.insert("users", &users);
+        render!("user_cards.html", &ctx)
+    });
     let card = warp::path("card");
 
-    let static_files = warp::path("static")
-        .and(warp::fs::dir("./static"));
-    let favicon = warp::path!("favicon.ico")
-        .and(warp::fs::file("./static/favicon.ico"));
+    let static_files = warp::path("static").and(warp::fs::dir("./static"));
+    let favicon = warp::path!("favicon.ico").and(warp::fs::file("./static/favicon.ico"));
 
-    let app = index.or(op.and(op_follow)).or(op.and(op_refresh))
-        .or(get.and(get_user)).or(get.and(get_vlist))
+    let app = index
+        .or(op.and(op_follow))
+        .or(op.and(op_refresh))
+        .or(get.and(get_user))
+        .or(get.and(get_vlist))
         .or(list)
         .or(static_files)
         .or(card.and(card_ulist))

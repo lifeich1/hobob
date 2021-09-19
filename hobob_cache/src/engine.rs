@@ -104,6 +104,7 @@ struct RefreshRunner {
     token: RefreshBucket,
     ctx: bilibili_api_rs::Context,
     evtx: watch::Sender<Event>,
+    silence_cnt: u64,
 }
 
 impl RefreshRunner {
@@ -114,13 +115,17 @@ impl RefreshRunner {
             token: Default::default(),
             ctx: bilibili_api_rs::Context::new()
                 .unwrap_or_else(|e| panic!("New bilibili api context error(s): {}", e)),
+            silence_cnt: 0,
         }
     }
 
     pub async fn run(mut self) {
         log::info!("RefreshRunner started");
+        let slowdown_duration = 32 * REFRESH_BUCKET_TIK_INTERVAL;
         let auto_refresh = tokio::time::sleep(REFRESH_BUCKET_TIK_INTERVAL);
+        let auto_slowdown = tokio::time::sleep(slowdown_duration);
         tokio::pin!(auto_refresh);
+        tokio::pin!(auto_slowdown);
 
         loop {
             tokio::select! {
@@ -129,6 +134,9 @@ impl RefreshRunner {
                         log::error!("Refresh command dispatch channel closed");
                         break;
                     }
+                    log::debug!("Trigger active speed token bucket");
+                    auto_slowdown.as_mut().reset(tokio::time::Instant::now() + slowdown_duration);
+                    self.token.set_interval(REFRESH_BUCKET_TIK_INTERVAL);
                     match cmd.unwrap() {
                         Command::Refresh(uid) => self.try_refresh(db::User::new(uid)).await,
                         Command::Follow(enable, uid) => {
@@ -147,6 +155,11 @@ impl RefreshRunner {
                         Err(e) => log::error!("Database query oldest ctime user error(s): {}", e),
                     }
                 }
+                _ = &mut auto_slowdown => {
+                    auto_slowdown.as_mut().reset(tokio::time::Instant::now() + REFRESH_BUCKET_TIK_INTERVAL * 3600);
+                    log::warn!("Trigger slowing down token bucket");
+                    self.token.set_interval(REFRESH_BUCKET_TIK_INTERVAL * 10);
+                }
             }
         }
         log::error!("RefreshRunner stopped");
@@ -158,10 +171,13 @@ impl RefreshRunner {
             return;
         }
         let id = user.id();
-        self.refresh(user)
-            .await
-            .map_err(|e| log::error!("Refresh uid {} error(s): {}", id, e))
-            .ok();
+        match self.refresh(user).await {
+            Ok(_) => self.on_remote_api_ok(),
+            Err(e) => {
+                self.on_remote_api_err();
+                log::error!("Refresh uid {} error(s): {}", id, e);
+            }
+        };
     }
 
     async fn refresh(&mut self, user: db::User) -> Result<()> {
@@ -183,12 +199,23 @@ impl RefreshRunner {
         f(&mut ev);
         self.evtx.send(ev).ok();
     }
+
+    fn on_remote_api_err(&mut self) {
+        self.silence_cnt += 1;
+        self.token
+            .silence(Duration::from_secs(3600 * self.silence_cnt));
+    }
+
+    fn on_remote_api_ok(&mut self) {
+        self.silence_cnt = 0;
+    }
 }
 
 pub const REFRESH_BUCKET_CAP: i32 = 30;
 pub const REFRESH_BUCKET_TIK_INTERVAL: Duration = Duration::from_secs(5);
 
 struct RefreshBucket {
+    interval: Duration,
     tik: Instant,
     now: i32,
 }
@@ -196,6 +223,7 @@ struct RefreshBucket {
 impl Default for RefreshBucket {
     fn default() -> Self {
         Self {
+            interval: REFRESH_BUCKET_TIK_INTERVAL,
             tik: Instant::now(),
             now: REFRESH_BUCKET_CAP,
         }
@@ -230,11 +258,10 @@ impl Engine {
 impl RefreshBucket {
     pub fn try_once(&mut self) -> bool {
         let now = Instant::now();
-        let d: i32 =
-            ((now - self.tik).as_secs() / REFRESH_BUCKET_TIK_INTERVAL.as_secs().max(1u64)) as i32;
+        let d: i32 = ((now - self.tik).as_secs() / self.interval.as_secs().max(1u64)) as i32;
         if d > 0 {
             self.now += d;
-            self.tik += REFRESH_BUCKET_TIK_INTERVAL * d as u32;
+            self.tik += self.interval * d as u32;
         }
         if self.now > 0 {
             self.now = self.now.min(REFRESH_BUCKET_CAP) - 1;
@@ -242,5 +269,13 @@ impl RefreshBucket {
         } else {
             false
         }
+    }
+
+    pub fn set_interval(&mut self, i: Duration) {
+        self.interval = i;
+    }
+
+    pub fn silence(&mut self, d: Duration) {
+        self.tik += d;
     }
 }

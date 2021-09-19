@@ -11,6 +11,10 @@ function enforce_tab_load() {
 }
 
 function loadmore() {
+    if ($('div.tab-pane.active div.d-flex div.card').length == 0) {
+        // this situation will be handle by enforce_tab_load
+        return;
+    }
     console.log('loadmore');
     $('#loading-spinner').show();
     var start = $('div.tab-pane.active div.d-flex div.card').length;
