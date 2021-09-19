@@ -4,14 +4,15 @@
 <head>
 <link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap-utilities.min.css" rel="stylesheet">
-<title>首页</title>
+<title>关注列表</title>
 <meta name="referrer" content="no-referrer" />
 </head>
 
 <body>
 
-<div class="m-1">
-    <ul class="nav nav-pills justify-content-center">
+<nav class="navbar navbar-light fixed-top bg-light">
+  <div class="container-fluid">
+    <ul class="nav nav-pills">
         <li class="nav-item">
             <a class="nav-link active" id="default-tab-nav" data-bs-toggle="pill" href="#default-list">默认</a>
         </li>
@@ -22,26 +23,34 @@
             <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#live-list">直播</a>
         </li>
     </ul>
-</div>
+    <div class="d-flex">
+        <input class="form-control me-2" type="search" placeholder="New follow's uid or space url etc." aria-label="Follow">
+        <button class="btn btn-outline-success" type="submit" id="btn-follow">Follow</button>
+    </div>
+  </div>
+</nav>
 
-<div class="tab-content">
+<div class="tab-content" style="padding-top: 3em; padding-bottom: 6em;">
     <div class="tab-pane active" id="default-list" role="tabpanel">
-        <div class="d-flex flex-row flex-wrap mb-1" id="default-list-content">
+        <div class="d-flex flex-row flex-wrap mb-1" id="default-list-content" role="list-content">
             default-list
         </div>
     </div>
     <div class="tab-pane" id="video-list" role="tabpanel">
-        <div class="d-flex flex-row flex-wrap mb-1" id="video-list-content">
+        <div class="d-flex flex-row flex-wrap mb-1" id="video-list-content" role="list-content">
             video-list
         </div>
     </div>
     <div class="tab-pane" id="live-list" role="tabpanel">
-        <div class="d-flex flex-row flex-wrap mb-1" id="live-list-content">
+        <div class="d-flex flex-row flex-wrap mb-1" id="live-list-content" role="list-content">
             live-list
         </div>
     </div>
-    <div class="tab-pane" id="user-space" role="tabpanel">
-        user-space
+</div>
+
+<div class="d-flex flex-row-reverse fixed-bottom">
+    <div class="spinner-border text-primary" role="status" id="loading-spinner">
+        <span class="visually-hidden">Loading...</span>
     </div>
 </div>
 

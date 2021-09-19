@@ -17,12 +17,14 @@ pub struct UserInfo {
     pub live_entropy: Option<i64>,
 }
 
+#[derive(Clone)]
 pub struct UserSync {
     pub id: i64,
     pub enable: bool,
     pub ctime: DateTime<Utc>,
     pub ctimestamp: i64,
     pub new_video_ts: i64,
+    pub new_video_title: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -78,6 +80,7 @@ impl FromRow for UserSync {
             ctime: row.get(2)?,
             ctimestamp: row.get(3)?,
             new_video_ts: row.get(4)?,
+            new_video_title: row.get(5)?,
         })
     }
 }
@@ -117,7 +120,7 @@ impl TryFrom<serde_json::Value> for UserInfo {
                 .as_str()
                 .map(ToString::to_string)
                 .ok_or("face not found")?,
-            live_room_url: v["live_room"]["url"].as_str().map(ToString::to_string),
+            live_room_url: v["live_room"]["url"].as_str().filter(|s| !s.is_empty()).map(ToString::to_string),
             live_room_title: v["live_room"]["title"].as_str().map(ToString::to_string),
             live_open: v["live_room"]["liveStatus"].as_i64().map(|s| s != 0),
             live_entropy: v["live_room"]["online"].as_i64(),
@@ -186,11 +189,12 @@ lazy_static::lazy_static! {
                                                 live_open INTEGER, \
                                                 live_entropy INTEGER);
                           CREATE TABLE IF NOT EXISTS usersync(\
-                                                id INTEGER PRIMARY KEY, \
+                                                id INTEGER NOT NULL UNIQUE, \
                                                 enable INTEGER NOT NULL DEFAULT 1, \
                                                 ctime TEXT NOT NULL, \
                                                 ctimestamp INTEGER NOT NULL DEFAULT 0, \
-                                                new_video_ts INTEGER NOT NULL DEFAULT 0);
+                                                new_video_ts INTEGER NOT NULL DEFAULT 0, \
+                                                new_video_title TEXT NOT NULL);
                           CREATE TABLE IF NOT EXISTS videoinfo(\
                                                  vid TEXT PRIMARY KEY, \
                                                  title TEXT NOT NULL, \
@@ -293,6 +297,19 @@ impl User {
         .ok();
     }
 
+    pub fn get_sync(&self) -> Result<UserSync> {
+        conn_db!(db);
+        self.db_get_sync(&db)
+    }
+
+    fn db_get_sync(&self, db: &MutexGuard<Connection>) -> Result<UserSync> {
+        Ok(db.query_row(
+            "SELECT * FROM usersync WHERE id=?1",
+            params![self.uid],
+            UserSync::from_row,
+        )?)
+    }
+
     pub fn recent_videos(&self, limit: i32) -> Result<Vec<VideoInfo>> {
         conn_db!(db);
         self.db_recent_videos(&db, limit)
@@ -351,8 +368,8 @@ impl User {
         .map_err(|e| log::warn!("Insert or ignore into videoowner error(s): {}", e))
         .ok();
         db.execute(
-            "UPDATE usersync SET new_video_ts=?2 WHERE id=?1 AND new_video_ts < ?2",
-            params![self.uid, info.utime.timestamp()],
+            "UPDATE usersync SET new_video_ts=?2, new_video_title=?3 WHERE id=?1 AND new_video_ts < ?2",
+            params![self.uid, info.utime.timestamp(), info.title],
         )
         .map_err(|e| log::warn!("Update userinfo error(s): {}", e))
         .ok();
@@ -384,8 +401,8 @@ impl User {
     fn db_disable(&self, db: &MutexGuard<Connection>, b: bool) {
         let z = Utc.timestamp(0, 0);
         db.execute(
-            "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![self.uid, b, z, z.timestamp(), z.timestamp()],
+            "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![self.uid, b, z, z.timestamp(), z.timestamp(), ""],
         )
         .map_err(|e| {
             log::error!(
@@ -405,7 +422,7 @@ impl User {
 
     fn db_list(db: &MutexGuard<Connection>, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
         let mut stmt = match order {
-            Order::Rowid => db.prepare_cached("SELECT id FROM userinfo ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"),
+            Order::Rowid => db.prepare_cached("SELECT id FROM usersync ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"),
             Order::LatestVideo => db.prepare_cached("SELECT id FROM usersync ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"),
             Order::LiveEntropy => db.prepare_cached("SELECT id FROM userinfo WHERE live_open=1 ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"),
         }?;

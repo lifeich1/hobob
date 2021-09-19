@@ -1,7 +1,9 @@
 {% for user in users %}
 <div class="card m-2 p-1 border-primary" id={{ user.ext.card_id }}>
+    <div class="d-flex flex-row">
     <a href="{{ user.ext.space_link }}" target="_blank">
-        <img src={{ user.data.face_url ~ "@128w_128h_1o.webp" }} class="card-img-top" style="width: 128px;">
+        <img src={{ user.data.face_url ~ "@128w_128h_1o.webp" }}
+        class="card-img-top rounded-circle" style="width: 128px;">
     </a>
     <div class="card-body">
         <h5 class="card-title">
@@ -16,7 +18,17 @@
         {% else %}
             直播间
         {% endif %}
+            <span class="badge bg-info">{{ user.ext.live_entropy }}</span>
         </a>
+        {% if user.ext.new_video_ts > 0 %}
+        <p>
+            最新视频：{{ user.ext.new_video_title }}
+            <span class="badge bg-info">
+                {{ user.ext.new_video_tsrepr }}
+            </span>
+        </p>
+        {% endif %}
+    </div>
     </div>
 </div>
 {% endfor %}
