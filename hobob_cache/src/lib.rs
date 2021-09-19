@@ -31,7 +31,7 @@ pub fn prepare_log() -> Result<()> {
         .build(
             Root::builder()
                 .appender("logfile")
-                .build(LevelFilter::Debug),
+                .build(LevelFilter::Info),
         )?;
 
     log4rs::init_config(config)?;
