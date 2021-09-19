@@ -1,5 +1,7 @@
 use crate::{db, Result};
+use rand::Rng;
 use std::convert::TryInto;
+use std::io::{self, Write};
 use std::sync::{Once, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
@@ -9,7 +11,58 @@ lazy_static::lazy_static! {
 
     static ref EVENTRX: RwLock<Option<watch::Receiver<Event>>> = RwLock::new(None);
 
+    static ref SHUTDOWN: RwLock<Option<mpsc::Sender<i32>>> = RwLock::new(None);
+
+    static ref SHUTDOWN_WAIT: RwLock<Option<mpsc::Receiver<i32>>> = RwLock::new(None);
+
     static ref ONCE: Once = Once::new();
+
+    static ref SHUTDOWN_ONCE: Once = Once::new();
+}
+
+fn enforce_shutdown_struct_init() {
+    SHUTDOWN_ONCE.call_once(|| {
+        log::info!("init shutdown structures");
+        let (tx, rx) = mpsc::channel(1);
+        let mut sender = SHUTDOWN.write().expect("Write SHUTDOWN failure");
+        let mut receiver = SHUTDOWN_WAIT.write().expect("Write SHUTDOWN_WAIT failure");
+        *sender = Some(tx);
+        *receiver = Some(rx);
+    });
+}
+
+pub fn will_shutdown() -> mpsc::Sender<i32> {
+    enforce_shutdown_struct_init();
+    SHUTDOWN
+        .read()
+        .expect("Read lock SHUTDOWN failure")
+        .as_ref()
+        .expect("Initilizate SHUTDOWN failure or register too late")
+        .clone()
+}
+
+pub async fn done_shutdown() {
+    enforce_shutdown_struct_init();
+    let tx = SHUTDOWN
+        .write()
+        .expect("Write lock SHUTDOWN failure")
+        .take();
+    drop(tx);
+    let mut guard = SHUTDOWN_WAIT
+        .write()
+        .expect("Write lock SHUTDOWN_WAIT failure");
+    let wait = guard
+        .as_mut()
+        .expect("Initilizate SHUTDOWN_WAIT failure")
+        .recv();
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    writeln!(&mut out, "\nDoing graceful shutdown ...").ok();
+    writeln!(&mut out, "Press ^C again to halt").ok();
+    tokio::select! {
+        _ = wait => {},
+        _ = tokio::signal::ctrl_c() => log::error!("forced halt"),
+    };
 }
 
 pub const CHANNEL_CAP: usize = 128;
@@ -19,9 +72,12 @@ struct Engine {
     refresh: RefreshRunner,
 }
 
+#[derive(Debug)]
 pub enum Command {
     Refresh(i64),
     Follow(bool, i64),
+    Activate,
+    Shutdown,
 }
 
 #[derive(Clone, Default)]
@@ -78,20 +134,25 @@ struct CommandDispatcher {
 impl CommandRunner {
     pub async fn run(mut self) {
         log::info!("CommandRunner started");
+        let _running = will_shutdown();
         while let Some(cmd) = self.receiver.recv().await {
             let mut d = self.dispatcher.clone();
+            let quit = matches!(cmd, Command::Shutdown);
             tokio::spawn(async move {
                 d.dispatch(cmd).await;
             });
+            if quit {
+                break;
+            }
         }
-        log::error!("CommandRunner stopped");
+        log::info!("CommandRunner stopped");
     }
 }
 
 impl CommandDispatcher {
     pub async fn dispatch(&mut self, cmd: Command) {
         match cmd {
-            Command::Refresh(_) | Command::Follow(_, _) => {
+            Command::Refresh(_) | Command::Follow(_, _) | Command::Activate | Command::Shutdown => {
                 log::trace!("Command refresh type");
                 self.refresh_sender.send(cmd).await.ok();
             }
@@ -121,11 +182,17 @@ impl RefreshRunner {
 
     pub async fn run(mut self) {
         log::info!("RefreshRunner started");
+        let _running = will_shutdown();
         let slowdown_duration = 32 * REFRESH_BUCKET_TIK_INTERVAL;
         let auto_refresh = tokio::time::sleep(REFRESH_BUCKET_TIK_INTERVAL);
         let auto_slowdown = tokio::time::sleep(slowdown_duration);
         tokio::pin!(auto_refresh);
         tokio::pin!(auto_slowdown);
+        let factors: Vec<f32> = {
+            let mut rng = rand::thread_rng();
+            (0..100).map(|_| rng.gen_range(1.0..2.0)).collect()
+        };
+        let mut factor_i: usize = 0;
 
         loop {
             tokio::select! {
@@ -146,10 +213,17 @@ impl RefreshRunner {
                                 self.try_refresh(u).await;
                             }
                         },
+                        Command::Activate => log::info!("Command Activate force token bucket high speed"),
+                        Command::Shutdown => break,
                     }
                 }
                 _ = &mut auto_refresh => {
-                    auto_refresh.as_mut().reset(tokio::time::Instant::now() + REFRESH_BUCKET_TIK_INTERVAL);
+                    let factor: f32 = factors[factor_i];
+                    factor_i += 1;
+                    if factor_i >= factors.len() {
+                        factor_i = 0;
+                    }
+                    auto_refresh.as_mut().reset(tokio::time::Instant::now() + REFRESH_BUCKET_TIK_INTERVAL.mul_f32(factor));
                     match db::User::oldest_ctime_user() {
                         Ok(user) => self.try_refresh(user).await,
                         Err(e) => log::error!("Database query oldest ctime user error(s): {}", e),
@@ -162,12 +236,14 @@ impl RefreshRunner {
                 }
             }
         }
-        log::error!("RefreshRunner stopped");
+        log::info!("RefreshRunner stopped");
     }
 
     async fn try_refresh(&mut self, user: db::User) {
         if !self.token.try_once() {
-            log::info!("Canceled refresh uid {} for no token", user.id());
+            if self.token.is_need_log() {
+                log::info!("Canceled refresh uid {} for no token", user.id());
+            }
             return;
         }
         let id = user.id();
@@ -218,6 +294,7 @@ struct RefreshBucket {
     interval: Duration,
     tik: Instant,
     now: i32,
+    canceled: i32,
 }
 
 impl Default for RefreshBucket {
@@ -226,6 +303,7 @@ impl Default for RefreshBucket {
             interval: REFRESH_BUCKET_TIK_INTERVAL,
             tik: Instant::now(),
             now: REFRESH_BUCKET_CAP,
+            canceled: 0,
         }
     }
 }
@@ -258,17 +336,29 @@ impl Engine {
 impl RefreshBucket {
     pub fn try_once(&mut self) -> bool {
         let now = Instant::now();
-        let d: i32 = ((now - self.tik).as_secs() / self.interval.as_secs().max(1u64)) as i32;
+        let d: i32 = (now
+            .checked_duration_since(self.tik)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            / self.interval.as_secs().max(1u64)) as i32;
         if d > 0 {
             self.now += d;
             self.tik += self.interval * d as u32;
         }
         if self.now > 0 {
             self.now = self.now.min(REFRESH_BUCKET_CAP) - 1;
+            self.canceled = 0;
             true
         } else {
+            if self.canceled < 2 {
+                self.canceled += 1
+            }
             false
         }
+    }
+
+    pub fn is_need_log(&self) -> bool {
+        self.canceled < 2
     }
 
     pub fn set_interval(&mut self, i: Duration) {
@@ -277,5 +367,11 @@ impl RefreshBucket {
 
     pub fn silence(&mut self, d: Duration) {
         self.tik += d;
+        log::info!(
+            "silence token bucket {} secs, original remaining about {} token(s)",
+            d.as_secs(),
+            self.now
+        );
+        self.now = 0;
     }
 }

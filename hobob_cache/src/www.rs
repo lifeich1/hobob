@@ -7,6 +7,7 @@ use chrono::{TimeZone, Utc};
 use serde_derive::{Deserialize, Serialize};
 use std::convert::From;
 use tera::{Context as TeraContext, Tera};
+use tokio::sync::oneshot;
 use warp::{http::StatusCode, Filter};
 
 lazy_static::lazy_static! {
@@ -169,7 +170,9 @@ impl From<Result<db::UserInfo>> for UserPack {
     }
 }
 
-pub async fn run() {
+pub async fn run(shutdown: oneshot::Receiver<i32>) {
+    let _running = engine::will_shutdown();
+
     let index = warp::path::end().map(|| render!("index.html", &TeraContext::new()));
 
     let _evrx = engine::event_rx();
@@ -212,6 +215,7 @@ pub async fn run() {
             .iter()
             .map(|uid| UserPack::from(db::User::new(*uid).info()))
             .collect();
+        tokio::spawn(async move { engine::handle().send(Command::Activate).await.ok() });
         let mut ctx = TeraContext::new();
         ctx.insert("users", &users);
         render!("user_cards.html", &ctx)
@@ -231,5 +235,9 @@ pub async fn run() {
         .or(card.and(card_ulist))
         .or(favicon);
     log::info!("www running");
-    warp::serve(app).run(([0, 0, 0, 0], 3731)).await;
+    let (_, run) = warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
+        shutdown.await.ok();
+    });
+    run.await;
+    log::info!("www stopped");
 }

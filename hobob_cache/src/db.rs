@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, Row};
 use serde_derive::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::ops::Deref;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct UserInfo {
@@ -172,7 +172,7 @@ impl TryFrom<serde_json::Value> for VideoVector {
 }
 
 lazy_static::lazy_static! {
-    static ref DBCON: Mutex<Connection> = {
+    static ref DBCON: Mutex<Option<Connection>> = {
         let path = "./.cache/cache.db3";
         let db = match Connection::open(&path) {
             Ok(r) => r,
@@ -212,8 +212,39 @@ lazy_static::lazy_static! {
             Ok(_) => log::info!("Database tables created!"),
             Err(e) => log::warn!("Database tables creation error(s): {}", e),
         }
-        Mutex::new(db)
+        Mutex::new(Some(db))
     };
+}
+
+macro_rules! conn_db {
+    ($name:ident, $mtxdb:ident) => {
+        let _guard = $mtxdb
+            .lock()
+            .unwrap_or_else(|e| panic!("Database access error(s): {}", e));
+        let $name = _guard
+            .as_ref()
+            .expect("Require db connection after shutdown");
+    };
+    ($name:ident) => {
+        conn_db!($name, DBCON);
+    };
+}
+
+pub fn blocking_shutdown() {
+    log::info!("blocking_shutdown");
+    let mut db = DBCON
+        .lock()
+        .unwrap_or_else(|e| panic!("Database access error(s): {}", e))
+        .take()
+        .expect("Initilizate DBCON failure or double shutdown");
+    for _ in 0..6 {
+        if let Err((con, e)) = db.close() {
+            db = con;
+            log::error!("Close db connection error(s): {}", e);
+        } else {
+            break;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -237,16 +268,7 @@ pub struct User {
     uid: i64,
 }
 
-macro_rules! conn_db {
-    ($name:ident, $mtxdb:ident) => {
-        let $name = $mtxdb
-            .lock()
-            .unwrap_or_else(|e| panic!("Database access error(s): {}", e));
-    };
-    ($name:ident) => {
-        conn_db!($name, DBCON);
-    };
-}
+type DbType<'a> = &'a rusqlite::Connection;
 
 impl User {
     pub fn new(uid: i64) -> Self {
@@ -258,7 +280,7 @@ impl User {
         self.db_info(&db)
     }
 
-    fn db_info(&self, db: &MutexGuard<Connection>) -> Result<UserInfo> {
+    fn db_info(&self, db: DbType) -> Result<UserInfo> {
         Ok(db.query_row(
             "SELECT * FROM userinfo WHERE id=?1",
             params![self.uid],
@@ -275,7 +297,7 @@ impl User {
         self.db_set_info(&db, info);
     }
 
-    fn db_set_info(&self, db: &MutexGuard<Connection>, info: &UserInfo) {
+    fn db_set_info(&self, db: DbType, info: &UserInfo) {
         db.execute(
             "REPLACE INTO userinfo VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
@@ -304,7 +326,7 @@ impl User {
         self.db_get_sync(&db)
     }
 
-    fn db_get_sync(&self, db: &MutexGuard<Connection>) -> Result<UserSync> {
+    fn db_get_sync(&self, db: DbType) -> Result<UserSync> {
         Ok(db.query_row(
             "SELECT * FROM usersync WHERE id=?1",
             params![self.uid],
@@ -317,7 +339,7 @@ impl User {
         self.db_recent_videos(&db, limit)
     }
 
-    fn db_recent_videos(&self, db: &MutexGuard<Connection>, limit: i32) -> Result<Vec<VideoInfo>> {
+    fn db_recent_videos(&self, db: DbType, limit: i32) -> Result<Vec<VideoInfo>> {
         let mut stmt = db.prepare_cached(
             "SELECT * FROM videoowner \
             WHERE uid=?1 \
@@ -354,7 +376,7 @@ impl User {
         }
     }
 
-    fn db_update_video(&self, db: &MutexGuard<Connection>, info: &VideoInfo) {
+    fn db_update_video(&self, db: DbType, info: &VideoInfo) {
         db.execute(
             "INSERT OR IGNORE INTO videoinfo VALUES \
             (?1, ?2, ?3, ?4)",
@@ -387,7 +409,7 @@ impl User {
         Ok(Self { uid })
     }
 
-    fn db_oldest_ctime_user(db: &MutexGuard<Connection>) -> Result<i64> {
+    fn db_oldest_ctime_user(db: DbType) -> Result<i64> {
         Ok(db.query_row(
             "SELECT id FROM usersync WHERE enable=1 ORDER BY ctimestamp ASC LIMIT 1",
             [],
@@ -400,7 +422,7 @@ impl User {
         self.db_disable(&db, b);
     }
 
-    fn db_disable(&self, db: &MutexGuard<Connection>, b: bool) {
+    fn db_disable(&self, db: DbType, b: bool) {
         let z = Utc.timestamp(0, 0);
         db.execute(
             "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -422,12 +444,7 @@ impl User {
         Self::db_list(&db, order, start, len)
     }
 
-    fn db_list(
-        db: &MutexGuard<Connection>,
-        order: Order,
-        start: i64,
-        len: i64,
-    ) -> Result<Vec<i64>> {
+    fn db_list(db: DbType, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
         let mut stmt = match order {
             Order::Rowid => db.prepare_cached("SELECT id FROM usersync ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"),
             Order::LatestVideo => db.prepare_cached("SELECT id FROM usersync ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"),
