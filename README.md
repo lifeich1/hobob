@@ -8,12 +8,11 @@ An web app for hobo kicked from bibi&lili.
 
 - [x] persistence fetch and cache user/video info from remote.
 - [x] webpage: user list in default/video-upload/live-entropy order.
-- [ ] change hobob\_cache as hobob\_app, with 2 bins: web-server & native-app.
+- [ ] rename to hobob, remove deprecated hobob\_app.
 - [ ] webpage: a video list of user X for temporary utilizing while being banned.
 - [ ] webpage: unfollow upzhu.
 - [ ] webpage: server notify data update.
 - [ ] *publish*: use `include_str!()` to make bin ok to publish.
-- [ ] *a lot* rpc: provide rpc api (with framework like [tarpc](https://github.com/google/tarpc)) to give easy-use support for native app.
 
 
 ## License
