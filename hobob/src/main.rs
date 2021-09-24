@@ -1,4 +1,4 @@
-use hobob_cache::*;
+use hobob::*;
 
 #[tokio::main]
 async fn main() {

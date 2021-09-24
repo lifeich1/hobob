@@ -1,5 +1,5 @@
 [package]
-name = "hobob_cache"
+name = "hobob"
 version = "0.1.0"
 edition = "2018"
 
