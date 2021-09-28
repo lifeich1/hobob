@@ -6,9 +6,12 @@ use crate::{
 use chrono::{TimeZone, Utc};
 use serde_derive::{Deserialize, Serialize};
 use std::convert::From;
+use std::convert::Infallible;
 use tera::{Context as TeraContext, Tera};
 use tokio::sync::oneshot;
-use warp::{http::StatusCode, Filter};
+use tokio_stream::wrappers::WatchStream;
+use warp::{http::StatusCode, Filter, sse::Event};
+use futures::StreamExt;
 
 lazy_static::lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -170,12 +173,31 @@ impl From<Result<db::UserInfo>> for UserPack {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct IndexData {
+    status: String,
+}
+
+impl IndexData {
+    pub fn now() -> Self {
+        Self {
+            status: engine::event_rx().borrow().status.to_string(),
+        }
+    }
+}
+
+fn sse_ev_engine(e: engine::Event) -> std::result::Result<Event, Infallible> {
+    Ok(Event::default().json_data(e).expect("engine event json-stringify should never fail"))
+}
+
 pub async fn run(shutdown: oneshot::Receiver<i32>) {
     let _running = engine::will_shutdown();
 
-    let index = warp::path::end().map(|| render!("index.html", &TeraContext::new()));
-
-    let _evrx = engine::event_rx();
+    let index = warp::path::end().map(|| {
+        let mut ctx = TeraContext::new();
+        ctx.insert("data", &IndexData::now());
+        render!("index.html", &ctx)
+    });
 
     let op_follow = warp::path!("follow")
         .and(req_type!(@post))
@@ -218,9 +240,22 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         tokio::spawn(async move { engine::handle().send(Command::Activate).await.ok() });
         let mut ctx = TeraContext::new();
         ctx.insert("users", &users);
+        ctx.insert("in_div", &true);
+        render!("user_cards.html", &ctx)
+    });
+    let card_one = warp::path!("one" / i64).map(|uid| {
+        let users = vec![UserPack::from(db::User::new(uid).info())];
+        let mut ctx = TeraContext::new();
+        ctx.insert("users", &users);
+        ctx.insert("in_div", &false);
         render!("user_cards.html", &ctx)
     });
     let card = warp::path("card");
+
+    let ev_engine = warp::path!("engine").map(|| {
+        warp::sse::reply(warp::sse::keep_alive().stream(WatchStream::new(engine::event_rx()).map(sse_ev_engine)))
+    });
+    let ev = warp::path("ev");
 
     let static_files = warp::path("static").and(warp::fs::dir("./static"));
     let favicon = warp::path!("favicon.ico").and(warp::fs::file("./static/favicon.ico"));
@@ -233,6 +268,8 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .or(list)
         .or(static_files)
         .or(card.and(card_ulist))
+        .or(card.and(card_one))
+        .or(ev.and(ev_engine))
         .or(favicon);
     log::info!("www running");
     let (_, run) = warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {

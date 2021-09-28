@@ -27,12 +27,11 @@ pub fn prepare_log() -> Result<()> {
         .build(".cache/hobob_cache.log")?;
 
     let config = Config::builder()
-        .appender(Appender::builder().build("logfile", Box::new(logfile)))
-        .build(Root::builder().appender("logfile").build(LevelFilter::Info))?;
+        .appender(Appender::builder().build("logfile", Box::new(logfile))) .build(Root::builder().appender("logfile").build(LevelFilter::Info))?;
 
     log4rs::init_config(config)?;
 
-    log::info!("logger prepared");
+    log::info!("{} version {}; logger prepared", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
     Ok(())
 }

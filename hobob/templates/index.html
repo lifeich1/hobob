@@ -23,6 +23,13 @@
             <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#live-list">直播</a>
         </li>
     </ul>
+    <span>
+        <span id="status-display">
+            {{ data.status }}
+        </span>
+        <span id="status-last-sync-uid" class="badge rounded-pill bg-dark">
+        </span>
+    </span>
     <div class="d-flex">
         <input class="form-control me-2" type="search" placeholder="New follow's uid or space url etc." aria-label="Follow">
         <button class="btn btn-outline-success" type="submit" id="btn-follow">Follow</button>

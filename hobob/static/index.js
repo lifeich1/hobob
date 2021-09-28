@@ -64,6 +64,22 @@ function submit_follow() {
     return false;
 }
 
+function handle_ev(ev) {
+    var data = JSON.parse(ev.data);
+    $("span#status-display").text(data.status_desc);
+    if (data.done_refresh) {
+        $("span.tag-latest-sync-user").hide();
+        $("span#status-last-sync-uid").text("最近刷新uid:" + data.done_refresh);
+        $("div#user-card-" + data.done_refresh + " span.tag-latest-sync-user").show();
+        var card = $("div#user-card-" + data.done_refresh);
+        if (card.length > 0) {
+            card.load("/card/one/" + data.done_refresh);
+        }
+    }
+}
+
+var evsrc = null;
+
 $(function() {
     $('#loading-spinner').hide();
     $('a[data-bs-toggle="pill"]').bind('shown.bs.tab', function() {
@@ -77,4 +93,9 @@ $(function() {
         submit_follow();
     });
     $('html, body').animate({ scrollTop: 0}, 500);
+    evsrc = new EventSource("ev/engine");
+    evsrc.onmessage = function(event) {
+        console.log("ev/engine:", event);
+        handle_ev(event);
+    };
 })

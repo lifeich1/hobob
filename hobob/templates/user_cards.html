@@ -1,5 +1,7 @@
 {% for user in users %}
+{% if in_div %}
 <div class="card m-2 p-1 border-primary" id={{ user.ext.card_id }}>
+{% endif %}
     <div class="d-flex flex-row">
     <a href="{{ user.ext.space_link }}" target="_blank">
         <img src={{ user.data.face_url ~ "@128w_128h_1o.webp" }}
@@ -9,7 +11,11 @@
         <h5 class="card-title">
             <a href="{{ user.ext.space_link }}" target="_blank" class="btn btn-light">
                 {{ user.data.name }}
-                <span class="badge bg-secondary"> {{ user.data.id }} </span>
+                <span class="badge bg-secondary">
+                    {{ user.data.id }}
+                    <span class="tag-latest-sync-user position-absolute top-0 start-100 translate-middle p-2 bg-danger border border-light rounded-circle">
+                    </span>
+                </span>
             </a>
         </h5>
         <a href="{{ user.ext.live_link }}" target="_blank" class="{{ user.ext.live_link_cls }}">
@@ -30,5 +36,7 @@
         {% endif %}
     </div>
     </div>
+{% if in_div %}
 </div>
+{% endif %}
 {% endfor %}

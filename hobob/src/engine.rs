@@ -1,10 +1,13 @@
 use crate::{db, Result};
 use rand::Rng;
 use std::convert::TryInto;
+use std::fmt;
 use std::io::{self, Write};
 use std::sync::{Once, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
+use serde_derive::{Deserialize, Serialize};
+use chrono::{DateTime, Local};
 
 lazy_static::lazy_static! {
     static ref SENDER: RwLock<Option<mpsc::Sender<Command>>> = RwLock::new(None);
@@ -80,9 +83,49 @@ pub enum Command {
     Shutdown,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Serialize, Deserialize)]
+pub enum RefreshStatus {
+    Fast,
+    Slow,
+    Silence(DateTime<Local>),
+}
+
+impl Default for RefreshStatus {
+    fn default() -> Self {
+        Self::Slow
+    }
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct Status(pub RefreshStatus);
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            RefreshStatus::Fast => write!(f, "激活自动刷新"),
+            RefreshStatus::Slow => write!(f, "低速自动刷新"),
+            RefreshStatus::Silence(i) => {
+                let d = Local::now() - i;
+                let day = chrono::Duration::days(1);
+                write!(
+                    f,
+                    "停止自动更新至{}",
+                    i.format(if d > day {
+                        "%Y-%m-%d %H:%M:%S"
+                    } else {
+                        "%H:%M:%S"
+                    })
+                )
+            }
+        }
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Event {
-    done_refresh: Option<i64>,
+    pub done_refresh: Option<i64>,
+    pub status: Status,
+    pub status_desc: String,
 }
 
 fn enforce_init() {
@@ -203,6 +246,7 @@ impl RefreshRunner {
                     }
                     log::debug!("Trigger active speed token bucket");
                     auto_slowdown.as_mut().reset(tokio::time::Instant::now() + slowdown_duration);
+                    self.status_change(RefreshStatus::Fast);
                     self.token.set_interval(REFRESH_BUCKET_TIK_INTERVAL);
                     match cmd.unwrap() {
                         Command::Refresh(uid) => self.try_refresh(db::User::new(uid)).await,
@@ -232,6 +276,7 @@ impl RefreshRunner {
                 _ = &mut auto_slowdown => {
                     auto_slowdown.as_mut().reset(tokio::time::Instant::now() + REFRESH_BUCKET_TIK_INTERVAL * 3600);
                     log::warn!("Trigger slowing down token bucket");
+                    self.status_change(RefreshStatus::Slow);
                     self.token.set_interval(REFRESH_BUCKET_TIK_INTERVAL * 10);
                 }
             }
@@ -276,6 +321,18 @@ impl RefreshRunner {
         self.evtx.send(ev).ok();
     }
 
+    fn status_change(&self, stat: RefreshStatus) {
+        let s = if self.silence_cnt > 0 {
+            RefreshStatus::Silence(to_datetime(self.token.next_tik()))
+        } else {
+            stat.clone()
+        };
+        self.event_change(move |ev| {
+            ev.status.0 = s.clone();
+            ev.status_desc = ev.status.to_string();
+        });
+    }
+
     fn on_remote_api_err(&mut self) {
         self.silence_cnt += 1;
         self.token
@@ -284,6 +341,24 @@ impl RefreshRunner {
 
     fn on_remote_api_ok(&mut self) {
         self.silence_cnt = 0;
+    }
+}
+
+fn to_datetime(i: Instant) -> DateTime<Local> {
+    let now = Instant::now();
+    if let Some(d) = i.checked_duration_since(now) {
+        Local::now() + chrono::Duration::from_std(d).unwrap_or_else(|e| {
+            log::error!("chrono::Duration::from_std error(s): {}", e);
+            chrono::Duration::zero()
+        })
+    } else if let Some(d) = now.checked_duration_since(i) {
+        Local::now() - chrono::Duration::from_std(d).unwrap_or_else(|e| {
+            log::error!("chrono::Duration::from_std error(s): {}", e);
+            chrono::Duration::zero()
+        })
+    } else {
+        log::error!("instant {:?} cast to datetime failed", i);
+        Local::now()
     }
 }
 
@@ -373,5 +448,9 @@ impl RefreshBucket {
             self.now
         );
         self.now = 0;
+    }
+
+    pub fn next_tik(&self) -> Instant {
+        self.tik
     }
 }

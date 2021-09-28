@@ -13,12 +13,13 @@ An web app for hobo kicked from bibi&lili.
 
 - [x] persistence fetch and cache user/video info from remote.
 - [x] webpage: user list in default/video-upload/live-entropy order.
-- [ ] rename to hobob, remove deprecated hobob\_app.
-- [ ] webpage: backend refresh status display & control.
+- [x] rename to hobob, remove deprecated hobob\_app.
+- [x] webpage: backend refresh status display.
+- [x] webpage: server notify data update.
+- [ ] backend refresh status control.
 - [ ] webpage: "hot" upzhu list.
 - [ ] webpage: a video list of user X for temporary utilizing while being banned.
 - [ ] webpage: unfollow upzhu.
-- [ ] webpage: server notify data update.
 - [ ] *publish*: use `include_str!()` to make bin ok to publish.
 
 
