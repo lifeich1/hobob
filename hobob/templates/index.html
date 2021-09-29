@@ -4,6 +4,7 @@
 <head>
 <link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap-utilities.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.5.0/font/bootstrap-icons.css">
 <title>关注列表</title>
 <meta name="referrer" content="no-referrer" />
 </head>
@@ -31,6 +32,15 @@
         </span>
     </span>
     <div class="d-flex">
+        <div class="dropdown pe-3">
+            <button class="btn btn-secondary dropdown-toggle" type="button" id="dropdownMenuButton1" data-bs-toggle="dropdown" aria-expanded="false">
+                <i class="bi bi-gear-fill"></i>
+            </button>
+            <ul class="dropdown-menu" aria-labelledby="dropdownMenuButton1">
+                <li><a class="dropdown-item" onclick="on_force_silence()">强制停止自动刷新</a></li>
+                <li><a class="dropdown-item" onclick="on_force_arefresh()">强制激活自动刷新</a></li>
+            </ul>
+        </div>
         <input class="form-control me-2" type="search" placeholder="New follow's uid or space url etc." aria-label="Follow">
         <button class="btn btn-outline-success" type="submit" id="btn-follow">Follow</button>
     </div>

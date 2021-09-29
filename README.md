@@ -16,7 +16,7 @@ An web app for hobo kicked from bibi&lili.
 - [x] rename to hobob, remove deprecated hobob\_app.
 - [x] webpage: backend refresh status display.
 - [x] webpage: server notify data update.
-- [ ] backend refresh status control.
+- [x] backend refresh status control.
 - [ ] webpage: "hot" upzhu list.
 - [ ] webpage: a video list of user X for temporary utilizing while being banned.
 - [ ] webpage: unfollow upzhu.

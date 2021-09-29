@@ -64,6 +64,33 @@ function submit_follow() {
     return false;
 }
 
+function post_forcesilence(flag) {
+    console.log("call post_forcesilence", flag);
+    $.ajax({
+        type: "post",
+        url: "/op/silence",
+        dataType : "json",
+        contentType : "application/json",
+        data: JSON.stringify({
+            silence: flag,
+        }),
+        complete: function (xml, status) {
+            console.log("final", status);
+        },
+        success: function (d) {
+            console.log("succ", d);
+        },
+    });
+}
+
+function on_force_arefresh() {
+    post_forcesilence(false);
+}
+
+function on_force_silence() {
+    post_forcesilence(true);
+}
+
 function handle_ev(ev) {
     var data = JSON.parse(ev.data);
     $("span#status-display").text(data.status_desc);

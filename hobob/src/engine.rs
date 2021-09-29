@@ -1,13 +1,13 @@
 use crate::{db, Result};
+use chrono::{DateTime, Local};
 use rand::Rng;
+use serde_derive::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::fmt;
 use std::io::{self, Write};
 use std::sync::{Once, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
-use serde_derive::{Deserialize, Serialize};
-use chrono::{DateTime, Local};
 
 lazy_static::lazy_static! {
     static ref SENDER: RwLock<Option<mpsc::Sender<Command>>> = RwLock::new(None);
@@ -80,6 +80,7 @@ pub enum Command {
     Refresh(i64),
     Follow(bool, i64),
     Activate,
+    ForceSilence(bool),
     Shutdown,
 }
 
@@ -105,7 +106,7 @@ impl fmt::Display for Status {
             RefreshStatus::Fast => write!(f, "激活自动刷新"),
             RefreshStatus::Slow => write!(f, "低速自动刷新"),
             RefreshStatus::Silence(i) => {
-                let d = Local::now() - i;
+                let d = i - Local::now();
                 let day = chrono::Duration::days(1);
                 write!(
                     f,
@@ -194,12 +195,8 @@ impl CommandRunner {
 
 impl CommandDispatcher {
     pub async fn dispatch(&mut self, cmd: Command) {
-        match cmd {
-            Command::Refresh(_) | Command::Follow(_, _) | Command::Activate | Command::Shutdown => {
-                log::trace!("Command refresh type");
-                self.refresh_sender.send(cmd).await.ok();
-            }
-        }
+        log::trace!("Command refresh type");
+        self.refresh_sender.send(cmd).await.ok();
     }
 }
 
@@ -258,6 +255,15 @@ impl RefreshRunner {
                             }
                         },
                         Command::Activate => log::info!("Command Activate force token bucket high speed"),
+                        Command::ForceSilence(flag) => {
+                            log::info!("Command ForceSilence {}", flag);
+                            if flag {
+                                self.on_remote_api_err();
+                            } else {
+                                self.on_remote_api_ok();
+                            }
+                            self.status_change(RefreshStatus::Fast);
+                        },
                         Command::Shutdown => break,
                     }
                 }
@@ -325,7 +331,7 @@ impl RefreshRunner {
         let s = if self.silence_cnt > 0 {
             RefreshStatus::Silence(to_datetime(self.token.next_tik()))
         } else {
-            stat.clone()
+            stat
         };
         self.event_change(move |ev| {
             ev.status.0 = s.clone();
@@ -347,15 +353,17 @@ impl RefreshRunner {
 fn to_datetime(i: Instant) -> DateTime<Local> {
     let now = Instant::now();
     if let Some(d) = i.checked_duration_since(now) {
-        Local::now() + chrono::Duration::from_std(d).unwrap_or_else(|e| {
-            log::error!("chrono::Duration::from_std error(s): {}", e);
-            chrono::Duration::zero()
-        })
+        Local::now()
+            + chrono::Duration::from_std(d).unwrap_or_else(|e| {
+                log::error!("chrono::Duration::from_std error(s): {}", e);
+                chrono::Duration::zero()
+            })
     } else if let Some(d) = now.checked_duration_since(i) {
-        Local::now() - chrono::Duration::from_std(d).unwrap_or_else(|e| {
-            log::error!("chrono::Duration::from_std error(s): {}", e);
-            chrono::Duration::zero()
-        })
+        Local::now()
+            - chrono::Duration::from_std(d).unwrap_or_else(|e| {
+                log::error!("chrono::Duration::from_std error(s): {}", e);
+                chrono::Duration::zero()
+            })
     } else {
         log::error!("instant {:?} cast to datetime failed", i);
         Local::now()

@@ -4,14 +4,14 @@ use crate::{
     Result,
 };
 use chrono::{TimeZone, Utc};
+use futures::StreamExt;
 use serde_derive::{Deserialize, Serialize};
 use std::convert::From;
 use std::convert::Infallible;
 use tera::{Context as TeraContext, Tera};
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::WatchStream;
-use warp::{http::StatusCode, Filter, sse::Event};
-use futures::StreamExt;
+use warp::{http::StatusCode, sse::Event, Filter};
 
 lazy_static::lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -67,6 +67,11 @@ struct FollowOptions {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct RefreshOptions {
     uid: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct ForceSilenceOptions {
+    silence: bool,
 }
 
 macro_rules! req_type {
@@ -187,7 +192,9 @@ impl IndexData {
 }
 
 fn sse_ev_engine(e: engine::Event) -> std::result::Result<Event, Infallible> {
-    Ok(Event::default().json_data(e).expect("engine event json-stringify should never fail"))
+    Ok(Event::default()
+        .json_data(e)
+        .expect("engine event json-stringify should never fail"))
 }
 
 pub async fn run(shutdown: oneshot::Receiver<i32>) {
@@ -213,6 +220,15 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .map(|opt: RefreshOptions| {
             jsnapi!(engine::handle().send(Command::Refresh(opt.uid)).await.ok())
         });
+    let op_silence =
+        warp::path!("silence")
+            .and(req_type!(@post))
+            .map(|opt: ForceSilenceOptions| {
+                jsnapi!(engine::handle()
+                    .send(Command::ForceSilence(opt.silence))
+                    .await
+                    .ok())
+            });
     let op = warp::path("op");
 
     let get_user =
@@ -253,7 +269,9 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
     let card = warp::path("card");
 
     let ev_engine = warp::path!("engine").map(|| {
-        warp::sse::reply(warp::sse::keep_alive().stream(WatchStream::new(engine::event_rx()).map(sse_ev_engine)))
+        warp::sse::reply(
+            warp::sse::keep_alive().stream(WatchStream::new(engine::event_rx()).map(sse_ev_engine)),
+        )
     });
     let ev = warp::path("ev");
 
@@ -263,6 +281,7 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
     let app = index
         .or(op.and(op_follow))
         .or(op.and(op_refresh))
+        .or(op.and(op_silence))
         .or(get.and(get_user))
         .or(get.and(get_vlist))
         .or(list)
