@@ -91,6 +91,10 @@ function on_force_silence() {
     post_forcesilence(true);
 }
 
+function on_filter_changed() {
+    console.log("filter select changed:", $('select#select-filter-type').val());
+}
+
 function handle_ev(ev) {
     var data = JSON.parse(ev.data);
     $("span#status-display").text(data.status_desc);

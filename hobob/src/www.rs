@@ -49,13 +49,49 @@ macro_rules! render {
     };
 }
 
+macro_rules! async_command {
+    ($expr:expr) => {
+        tokio::spawn(async move { engine::handle().send($expr).await.ok() })
+    };
+}
+
+macro_rules! ulist_render {
+    (@pack $packs:ident, $in_div:expr) => {{
+        let mut ctx = TeraContext::new();
+        ctx.insert("users", &$packs);
+        ctx.insert("in_div", &$in_div);
+        render!("user_cards.html", &ctx)
+    }};
+
+    ($uids:ident, $in_div:expr) => {{
+        if let Err(e) = $uids {
+            return render!(@errhtml "Database", &format!("Db error(s): {}", e));
+        }
+        let users: Vec<UserPack> = $uids
+            .unwrap()
+            .iter()
+            .map(|uid| UserPack::from(db::User::new(*uid).info()))
+            .collect();
+        async_command!(Command::Activate);
+        ulist_render!(@pack users, $in_div)
+    }};
+}
+
 macro_rules! jsnapi {
+    (@ok) => {
+        warp::reply::json(&String::from("success"))
+    };
+
     ($expr:expr) => {{
         tokio::spawn(async move {
             $expr;
         });
-        warp::reply::json(&String::from("success"))
+        jsnapi!(@ok)
     }};
+
+    (@cmd $expr:expr) => {
+        jsnapi!(engine::handle().send($expr).await.ok())
+    };
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -72,6 +108,13 @@ struct RefreshOptions {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct ForceSilenceOptions {
     silence: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct ModFilterOptions {
+    uid: i64,
+    fid: i64,
+    priority: i64,
 }
 
 macro_rules! req_type {
@@ -210,24 +253,20 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .and(req_type!(@post))
         .map(|opt: FollowOptions| {
             log::debug!("op_follow arg: {:?}", opt);
-            jsnapi!(engine::handle()
-                .send(Command::Follow(opt.enable, opt.uid))
-                .await
-                .ok())
+            jsnapi!(@cmd Command::Follow(opt.enable, opt.uid))
         });
     let op_refresh = warp::path!("refresh")
         .and(req_type!(@post))
-        .map(|opt: RefreshOptions| {
-            jsnapi!(engine::handle().send(Command::Refresh(opt.uid)).await.ok())
-        });
-    let op_silence =
-        warp::path!("silence")
+        .map(|opt: RefreshOptions| jsnapi!(@cmd Command::Refresh(opt.uid)));
+    let op_silence = warp::path!("silence")
+        .and(req_type!(@post))
+        .map(|opt: ForceSilenceOptions| jsnapi!(@cmd Command::ForceSilence(opt.silence)));
+    let op_mod_filter =
+        warp::path!("mod" / "filter")
             .and(req_type!(@post))
-            .map(|opt: ForceSilenceOptions| {
-                jsnapi!(engine::handle()
-                    .send(Command::ForceSilence(opt.silence))
-                    .await
-                    .ok())
+            .map(|opt: ModFilterOptions| {
+                db::User::new(opt.uid).mod_filter(opt.fid, opt.priority);
+                jsnapi!(@ok)
             });
     let op = warp::path("op");
 
@@ -245,26 +284,15 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
 
     let card_ulist = warp::path!("ulist" / String / i64 / i64).map(|typ: String, start, len| {
         let uids = db::User::list(typ.as_str().into(), start, len);
-        if let Err(e) = uids {
-            return render!(@errhtml "Database", &format!("Db error(s): {}", e));
-        }
-        let users: Vec<UserPack> = uids
-            .unwrap()
-            .iter()
-            .map(|uid| UserPack::from(db::User::new(*uid).info()))
-            .collect();
-        tokio::spawn(async move { engine::handle().send(Command::Activate).await.ok() });
-        let mut ctx = TeraContext::new();
-        ctx.insert("users", &users);
-        ctx.insert("in_div", &true);
-        render!("user_cards.html", &ctx)
+        ulist_render!(uids, true)
     });
     let card_one = warp::path!("one" / i64).map(|uid| {
         let users = vec![UserPack::from(db::User::new(uid).info())];
-        let mut ctx = TeraContext::new();
-        ctx.insert("users", &users);
-        ctx.insert("in_div", &false);
-        render!("user_cards.html", &ctx)
+        ulist_render!(@pack users, false)
+    });
+    let card_ufilter = warp::path!("ufilter" / i64 / i64 / i64).map(|fid, start, len| {
+        let uids = db::User::filter_list(fid, start, len);
+        ulist_render!(uids, true)
     });
     let card = warp::path("card");
 
@@ -282,12 +310,14 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .or(op.and(op_follow))
         .or(op.and(op_refresh))
         .or(op.and(op_silence))
+        .or(op.and(op_mod_filter))
         .or(get.and(get_user))
         .or(get.and(get_vlist))
         .or(list)
         .or(static_files)
         .or(card.and(card_ulist))
         .or(card.and(card_one))
+        .or(card.and(card_ufilter))
         .or(ev.and(ev_engine))
         .or(favicon);
     log::info!("www running");

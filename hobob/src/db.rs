@@ -42,6 +42,13 @@ pub struct VideoOwner {
     pub timestamp: i64,
 }
 
+#[derive(Debug)]
+pub struct UserFilter {
+    pub uid: i64,
+    pub fid: i64,
+    pub priority: i64,
+}
+
 impl Default for VideoInfo {
     fn default() -> Self {
         Self {
@@ -101,6 +108,16 @@ impl FromRow for VideoOwner {
             uid: row.get(0)?,
             vid: row.get(1)?,
             timestamp: row.get(2)?,
+        })
+    }
+}
+
+impl FromRow for UserFilter {
+    fn from_row(row: &Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            uid: row.get(0)?,
+            fid: row.get(1)?,
+            priority: row.get(2)?,
         })
     }
 }
@@ -207,6 +224,11 @@ lazy_static::lazy_static! {
                                                   vid TEXT NOT NULL, \
                                                   timestamp INTEGER NOT NULL, \
                                                   UNIQUE(vid, uid));
+                          CREATE TABLE IF NOT EXISTS userfilters(\
+                                                uid INTEGER NOT NULL, \
+                                                fid INTEGER NOT NULL, \
+                                                priority INTEGER NOT NULL, \
+                                                UNIQUE(uid, fid));
                           COMMIT;");
         match create_result {
             Ok(_) => log::info!("Database tables created!"),
@@ -451,6 +473,43 @@ impl User {
             Order::LiveEntropy => db.prepare_cached("SELECT id FROM userinfo WHERE live_open=1 ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"),
         }?;
         let iter = stmt.query_map(params![start, len], |row| row.get(0))?;
+        Ok(iter.filter_map(|id| id.ok()).collect())
+    }
+
+    /// Modify user's priority in filter _fid_ . Priority of non-positive is equal to delete.
+    pub fn mod_filter(&self, fid: i64, priority: i64) {
+        conn_db!(db);
+        self.db_mod_filter(db, fid, priority);
+    }
+
+    fn db_mod_filter(&self, db: DbType, fid: i64, priority: i64) {
+        if priority > 0 {
+            db.execute(
+                "REPLACE INTO userfilters VALUES (?1, ?2, ?3)",
+                params![self.uid, fid, priority,],
+            )
+            .map_err(|e| log::warn!("Replace into userfilters error(s): {}", e))
+            .ok();
+        } else {
+            db.execute(
+                "DELETE FROM userfilters WHERE uid=?1 and fid=?2",
+                params![self.uid, fid],
+            )
+            .map_err(|e| log::warn!("Delete from userfilters error(s): {}", e))
+            .ok();
+        }
+    }
+
+    pub fn filter_list(fid: i64, start: i64, len: i64) -> Result<Vec<i64>> {
+        conn_db!(db);
+        Self::db_filter_list(db, fid, start, len)
+    }
+
+    fn db_filter_list(db: DbType, fid: i64, start: i64, len: i64) -> Result<Vec<i64>> {
+        let mut stmt = db.prepare_cached(
+            "SELECT uid FROM userfilters WHERE fid=?1 ORDER BY priority DESC LIMIT ?3 OFFSET ?2",
+        )?;
+        let iter = stmt.query_map(params![fid, start, len], |row| row.get(0))?;
         Ok(iter.filter_map(|id| id.ok()).collect())
     }
 }

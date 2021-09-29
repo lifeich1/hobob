@@ -23,6 +23,15 @@
         <li class="nav-item">
             <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#live-list">直播</a>
         </li>
+        <li class="nav-item">
+            <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#filter-list">分类</a>
+        </li>
+        <li class="nav-item">
+            <select class="form-select" id="select-filter-type" onchange="on_filter_changed()">
+                <option selected value="0">全部</option>
+                <option value="1">特别关注</option>
+            </select>
+        </li>
     </ul>
     <span>
         <span id="status-display">
