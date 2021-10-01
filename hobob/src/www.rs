@@ -276,23 +276,20 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .map(|uid| reply_json_result!(db::User::new(uid).recent_videos(30)));
     let get = warp::path("get").and(warp::get());
 
-    let list = warp::path!("list" / String / i64 / i64)
+    let list = warp::path!("list" / i64 / String / i64 / i64)
         .and(warp::get())
-        .map(|typ: String, start, len| {
-            reply_json_result!(db::User::list(typ.as_str().into(), start, len))
+        .map(|fid, typ: String, start, len| {
+            reply_json_result!(db::User::list(fid, typ.as_str().into(), start, len))
         });
 
-    let card_ulist = warp::path!("ulist" / String / i64 / i64).map(|typ: String, start, len| {
-        let uids = db::User::list(typ.as_str().into(), start, len);
-        ulist_render!(uids, true)
-    });
+    let card_ulist =
+        warp::path!("ulist" / i64 / String / i64 / i64).map(|fid, typ: String, start, len| {
+            let uids = db::User::list(fid, typ.as_str().into(), start, len);
+            ulist_render!(uids, true)
+        });
     let card_one = warp::path!("one" / i64).map(|uid| {
         let users = vec![UserPack::from(db::User::new(uid).info())];
         ulist_render!(@pack users, false)
-    });
-    let card_ufilter = warp::path!("ufilter" / i64 / i64 / i64).map(|fid, start, len| {
-        let uids = db::User::filter_list(fid, start, len);
-        ulist_render!(uids, true)
     });
     let card = warp::path("card");
 
@@ -317,7 +314,6 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .or(static_files)
         .or(card.and(card_ulist))
         .or(card.and(card_one))
-        .or(card.and(card_ufilter))
         .or(ev.and(ev_engine))
         .or(favicon);
     log::info!("www running");

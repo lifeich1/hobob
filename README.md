@@ -18,9 +18,9 @@ An web app for hobo kicked from bibi&lili.
 - [x] webpage: server notify data update.
 - [x] backend refresh status control.
 - [ ] webpage: upzhu list filter
-    - [ ] webpage: display filter with 3 order
+    - [x] webpage: display filter with 3 order
     - [ ] webpage: custom filter default order can be modified.
-    - [ ] webpage: able to add more customized filter (filter 1 is specially unmovable)
+    - [ ] webpage: able to add/remove customized filter (filter 1 is specially unmovable)
 - [ ] webpage: a video list of user X for temporary utilizing while being banned.
 - [ ] webpage: unfollow upzhu.
 - [ ] *publish*: use `include_str!()` to make bin ok to publish.

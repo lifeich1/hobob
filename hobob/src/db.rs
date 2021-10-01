@@ -461,17 +461,34 @@ impl User {
         .ok();
     }
 
-    pub fn list(order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
+    pub fn list(fid: i64, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
         conn_db!(db);
-        Self::db_list(db, order, start, len)
+        if fid <= 0 {
+            Self::db_list(db, order, start, len)
+        } else {
+            Self::db_filter_list(db, fid, order, start, len)
+        }
     }
 
     fn db_list(db: DbType, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
-        let mut stmt = match order {
-            Order::Rowid => db.prepare_cached("SELECT id FROM usersync ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"),
-            Order::LatestVideo => db.prepare_cached("SELECT id FROM usersync ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"),
-            Order::LiveEntropy => db.prepare_cached("SELECT id FROM userinfo WHERE live_open=1 ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"),
-        }?;
+        let mut stmt = db.prepare_cached(match order {
+            Order::Rowid => {
+                "SELECT id FROM usersync \
+                    WHERE enable=1 \
+                    ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"
+            }
+            Order::LatestVideo => {
+                "SELECT id FROM usersync \
+                    WHERE enable=1 \
+                    ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"
+            }
+            Order::LiveEntropy => {
+                "SELECT userinfo.id FROM userinfo \
+                    INNER JOIN usersync ON usersync.id=userinfo.id \
+                    WHERE live_open=1 and enable=1 \
+                    ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"
+            }
+        })?;
         let iter = stmt.query_map(params![start, len], |row| row.get(0))?;
         Ok(iter.filter_map(|id| id.ok()).collect())
     }
@@ -502,13 +519,37 @@ impl User {
 
     pub fn filter_list(fid: i64, start: i64, len: i64) -> Result<Vec<i64>> {
         conn_db!(db);
-        Self::db_filter_list(db, fid, start, len)
+        Self::db_filter_list(db, fid, Order::Rowid, start, len)
     }
 
-    fn db_filter_list(db: DbType, fid: i64, start: i64, len: i64) -> Result<Vec<i64>> {
-        let mut stmt = db.prepare_cached(
-            "SELECT uid FROM userfilters WHERE fid=?1 ORDER BY priority DESC LIMIT ?3 OFFSET ?2",
-        )?;
+    fn db_filter_list(
+        db: DbType,
+        fid: i64,
+        order: Order,
+        start: i64,
+        len: i64,
+    ) -> Result<Vec<i64>> {
+        let mut stmt = db.prepare_cached(match order {
+            Order::Rowid => {
+                "SELECT id FROM usersync \
+                    INNER JOIN userfilters ON userfilters.uid=usersync.id and fid=?1 \
+                    WHERE enable=1 \
+                    ORDER BY priority DESC LIMIT ?3 OFFSET ?2"
+            }
+            Order::LatestVideo => {
+                "SELECT id FROM usersync \
+                    INNER JOIN userfilters ON userfilters.uid=usersync.id and fid=?1 \
+                    WHERE enable=1 \
+                    ORDER BY new_video_ts DESC LIMIT ?3 OFFSET ?2"
+            }
+            Order::LiveEntropy => {
+                "SELECT usersync.id FROM usersync \
+                    INNER JOIN userfilters ON userfilters.uid=usersync.id and fid=?1 \
+                    INNER JOIN userinfo ON userinfo.id=usersync.id \
+                    WHERE live_open=1 and enable=1 \
+                    ORDER BY live_entropy DESC LIMIT ?3 OFFSET ?2"
+            }
+        })?;
         let iter = stmt.query_map(params![fid, start, len], |row| row.get(0))?;
         Ok(iter.filter_map(|id| id.ok()).collect())
     }

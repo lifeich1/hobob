@@ -23,10 +23,7 @@
         <li class="nav-item">
             <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#live-list">直播</a>
         </li>
-        <li class="nav-item">
-            <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#filter-list">分类</a>
-        </li>
-        <li class="nav-item">
+        <li class="nav-item ms-2">
             <select class="form-select" id="select-filter-type" onchange="on_filter_changed()">
                 <option selected value="0">全部</option>
                 <option value="1">特别关注</option>
@@ -41,6 +38,9 @@
         </span>
     </span>
     <div class="d-flex">
+        <button class="btn btn-light me-2" onclick="tabs_reload()">
+            <i class="bi bi-arrow-repeat"></i>
+        </button>
         <div class="dropdown pe-3">
             <button class="btn btn-secondary dropdown-toggle" type="button" id="dropdownMenuButton1" data-bs-toggle="dropdown" aria-expanded="false">
                 <i class="bi bi-gear-fill"></i>
@@ -78,6 +78,24 @@
     <div class="spinner-border text-primary" role="status" id="loading-spinner">
         <span class="visually-hidden">Loading...</span>
     </div>
+</div>
+
+<div class="modal fade" id="yes-or-no-modal" tabindex="-1" aria-labelledby="yes-or-no-modal-label" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="yes-or-no-modal-label">Modal title</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        ...
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary">确认</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/js/bootstrap.bundle.min.js"></script>
