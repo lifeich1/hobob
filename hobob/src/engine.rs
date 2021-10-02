@@ -261,6 +261,7 @@ impl RefreshRunner {
                                 self.on_remote_api_err();
                             } else {
                                 self.on_remote_api_ok();
+                                self.token.available_now();
                             }
                             self.status_change(RefreshStatus::Fast);
                         },
@@ -456,6 +457,13 @@ impl RefreshBucket {
             self.now
         );
         self.now = 0;
+    }
+
+    pub fn available_now(&mut self) {
+        let now = Instant::now();
+        if self.tik > now {
+            self.tik = now;
+        }
     }
 
     pub fn next_tik(&self) -> Instant {
