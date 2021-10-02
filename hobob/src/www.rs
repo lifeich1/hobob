@@ -77,6 +77,19 @@ macro_rules! ulist_render {
     }};
 }
 
+macro_rules! www_try {
+    (@hdl $expr:expr, $err:ident, $errhdl:expr) => {
+        match $expr {
+            Ok(ok) => ok,
+            Err($err) => return $errhdl,
+        }
+    };
+
+    (@db $expr:expr) => {
+        www_try!(@hdl $expr, e, render!(@errhtml "Database", &format!("Db error(s): {}", e)))
+    };
+}
+
 macro_rules! jsnapi {
     (@ok) => {
         warp::reply::json(&String::from("success"))
@@ -274,6 +287,7 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         warp::path!("user" / i64).map(|uid| reply_json_result!(db::User::new(uid).info()));
     let get_vlist = warp::path!("vlist" / i64)
         .map(|uid| reply_json_result!(db::User::new(uid).recent_videos(30)));
+    let get_flist = warp::path!("flist").map(|| reply_json_result!(db::FilterMeta::all()));
     let get = warp::path("get").and(warp::get());
 
     let list = warp::path!("list" / i64 / String / i64 / i64)
@@ -290,6 +304,12 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
     let card_one = warp::path!("one" / i64).map(|uid| {
         let users = vec![UserPack::from(db::User::new(uid).info())];
         ulist_render!(@pack users, false)
+    });
+    let card_filter_options = warp::path!("filter" / "options").map(|| {
+        let filters = www_try!(@db db::FilterMeta::all());
+        let mut ctx = TeraContext::new();
+        ctx.insert("filters", &filters);
+        render!("filter_options.html", &ctx)
     });
     let card = warp::path("card");
 
@@ -310,10 +330,12 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .or(op.and(op_mod_filter))
         .or(get.and(get_user))
         .or(get.and(get_vlist))
+        .or(get.and(get_flist))
         .or(list)
         .or(static_files)
         .or(card.and(card_ulist))
         .or(card.and(card_one))
+        .or(card.and(card_filter_options))
         .or(ev.and(ev_engine))
         .or(favicon);
     log::info!("www running");

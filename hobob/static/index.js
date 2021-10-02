@@ -1,5 +1,12 @@
 console.log("hello")
 
+function reload_filters() {
+    var fid = cur_filter();
+    $('select#select-filter-type').load('/card/filter/options', function() {
+        $('select#select-filter-type option[value="' + fid + '"]')[0].selected = true;
+    });
+}
+
 function cur_filter() {
     return $('select#select-filter-type').val();
 }
@@ -200,6 +207,7 @@ $(function() {
         enforce_tab_load();
     });
     enforce_tab_load();
+    reload_filters();
     $(window).scroll(function() {
         check_bottom_loadmore();
     });
