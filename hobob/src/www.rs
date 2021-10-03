@@ -49,13 +49,73 @@ macro_rules! render {
     };
 }
 
+macro_rules! async_command {
+    ($expr:expr) => {
+        tokio::spawn(async move { engine::handle().send($expr).await.ok() })
+    };
+}
+
+macro_rules! ulist_render {
+    (@pack $packs:ident, $in_div:expr) => {{
+        let mut ctx = TeraContext::new();
+        ctx.insert("users", &$packs);
+        ctx.insert("in_div", &$in_div);
+        render!("user_cards.html", &ctx)
+    }};
+
+    ($uids:ident, $in_div:expr) => {{
+        if let Err(e) = $uids {
+            return render!(@errhtml "Database", &format!("Db error(s): {}", e));
+        }
+        let users: Vec<UserPack> = $uids
+            .unwrap()
+            .iter()
+            .map(|uid| UserPack::from(db::User::new(*uid).info()))
+            .collect();
+        async_command!(Command::Activate);
+        ulist_render!(@pack users, $in_div)
+    }};
+}
+
+macro_rules! www_try {
+    (@hdl $expr:expr, $err:ident, $errhdl:expr) => {
+        match $expr {
+            Ok(ok) => ok,
+            Err($err) => return $errhdl,
+        }
+    };
+
+    (@db $expr:expr) => {
+        www_try!(@hdl $expr, e, render!(@errhtml "Database", &format!("Db error(s): {}", e)))
+    };
+}
+
 macro_rules! jsnapi {
+    (@ok) => {
+        warp::reply::json(&String::from("success"))
+    };
+
+    (@err $why:expr) => {
+        warp::reply::json(&$why)
+    };
+
+    (@try $expr:expr; $err:ident; $why:expr) => {
+        match $expr {
+            Ok(_) => jsnapi!(@ok),
+            Err($err) => jsnapi!(@err $why),
+        }
+    };
+
     ($expr:expr) => {{
         tokio::spawn(async move {
             $expr;
         });
-        warp::reply::json(&String::from("success"))
+        jsnapi!(@ok)
     }};
+
+    (@cmd $expr:expr) => {
+        jsnapi!(engine::handle().send($expr).await.ok())
+    };
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -72,6 +132,18 @@ struct RefreshOptions {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct ForceSilenceOptions {
     silence: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct ModFilterOptions {
+    uid: i64,
+    fid: i64,
+    priority: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct NewFilterOptions {
+    name: String,
 }
 
 macro_rules! req_type {
@@ -106,6 +178,7 @@ struct UserExt {
     new_video_title: String,
     new_video_tsrepr: String,
     live_entropy: String,
+    ctimestamp: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,6 +207,7 @@ impl From<Result<db::UserInfo>> for UserPack {
                             "btn btn-secondary"
                         }),
                         new_video_ts: sync.as_ref().map(|s| s.new_video_ts).unwrap_or(0),
+                        ctimestamp: sync.as_ref().map(|s| s.ctimestamp).unwrap_or(0),
                         new_video_title: sync
                             .as_ref()
                             .map(|s| s.new_video_title.clone())
@@ -167,6 +241,7 @@ impl From<Result<db::UserInfo>> for UserPack {
                     new_video_title: Default::default(),
                     new_video_tsrepr: Default::default(),
                     live_entropy: Default::default(),
+                    ctimestamp: 0,
                 },
                 data: db::UserInfo {
                     name: format!("Err: {}", e),
@@ -210,24 +285,29 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .and(req_type!(@post))
         .map(|opt: FollowOptions| {
             log::debug!("op_follow arg: {:?}", opt);
-            jsnapi!(engine::handle()
-                .send(Command::Follow(opt.enable, opt.uid))
-                .await
-                .ok())
+            jsnapi!(@cmd Command::Follow(opt.enable, opt.uid))
         });
     let op_refresh = warp::path!("refresh")
         .and(req_type!(@post))
-        .map(|opt: RefreshOptions| {
-            jsnapi!(engine::handle().send(Command::Refresh(opt.uid)).await.ok())
-        });
-    let op_silence =
-        warp::path!("silence")
+        .map(|opt: RefreshOptions| jsnapi!(@cmd Command::Refresh(opt.uid)));
+    let op_silence = warp::path!("silence")
+        .and(req_type!(@post))
+        .map(|opt: ForceSilenceOptions| jsnapi!(@cmd Command::ForceSilence(opt.silence)));
+    let op_mod_filter =
+        warp::path!("mod" / "filter")
             .and(req_type!(@post))
-            .map(|opt: ForceSilenceOptions| {
-                jsnapi!(engine::handle()
-                    .send(Command::ForceSilence(opt.silence))
-                    .await
-                    .ok())
+            .map(|opt: ModFilterOptions| {
+                db::User::new(opt.uid).mod_filter(opt.fid, opt.priority);
+                jsnapi!(@ok)
+            });
+    let op_new_filter =
+        warp::path!("new" / "filter")
+            .and(req_type!(@post))
+            .map(|opt: NewFilterOptions| {
+                jsnapi!(@try db::FilterMeta::new(&opt.name); e; {
+                    log::error!("new filter error(s): {}", e);
+                    format!("Db error: {}", e)
+                })
             });
     let op = warp::path("op");
 
@@ -235,36 +315,29 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         warp::path!("user" / i64).map(|uid| reply_json_result!(db::User::new(uid).info()));
     let get_vlist = warp::path!("vlist" / i64)
         .map(|uid| reply_json_result!(db::User::new(uid).recent_videos(30)));
+    let get_flist = warp::path!("flist").map(|| reply_json_result!(db::FilterMeta::all()));
     let get = warp::path("get").and(warp::get());
 
-    let list = warp::path!("list" / String / i64 / i64)
+    let list = warp::path!("list" / i64 / String / i64 / i64)
         .and(warp::get())
-        .map(|typ: String, start, len| {
-            reply_json_result!(db::User::list(typ.as_str().into(), start, len))
+        .map(|fid, typ: String, start, len| {
+            reply_json_result!(db::User::list(fid, typ.as_str().into(), start, len))
         });
 
-    let card_ulist = warp::path!("ulist" / String / i64 / i64).map(|typ: String, start, len| {
-        let uids = db::User::list(typ.as_str().into(), start, len);
-        if let Err(e) = uids {
-            return render!(@errhtml "Database", &format!("Db error(s): {}", e));
-        }
-        let users: Vec<UserPack> = uids
-            .unwrap()
-            .iter()
-            .map(|uid| UserPack::from(db::User::new(*uid).info()))
-            .collect();
-        tokio::spawn(async move { engine::handle().send(Command::Activate).await.ok() });
-        let mut ctx = TeraContext::new();
-        ctx.insert("users", &users);
-        ctx.insert("in_div", &true);
-        render!("user_cards.html", &ctx)
-    });
+    let card_ulist =
+        warp::path!("ulist" / i64 / String / i64 / i64).map(|fid, typ: String, start, len| {
+            let uids = db::User::list(fid, typ.as_str().into(), start, len);
+            ulist_render!(uids, true)
+        });
     let card_one = warp::path!("one" / i64).map(|uid| {
         let users = vec![UserPack::from(db::User::new(uid).info())];
+        ulist_render!(@pack users, false)
+    });
+    let card_filter_options = warp::path!("filter" / "options").map(|| {
+        let filters = www_try!(@db db::FilterMeta::all());
         let mut ctx = TeraContext::new();
-        ctx.insert("users", &users);
-        ctx.insert("in_div", &false);
-        render!("user_cards.html", &ctx)
+        ctx.insert("filters", &filters);
+        render!("filter_options.html", &ctx)
     });
     let card = warp::path("card");
 
@@ -282,12 +355,16 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .or(op.and(op_follow))
         .or(op.and(op_refresh))
         .or(op.and(op_silence))
+        .or(op.and(op_mod_filter))
+        .or(op.and(op_new_filter))
         .or(get.and(get_user))
         .or(get.and(get_vlist))
+        .or(get.and(get_flist))
         .or(list)
         .or(static_files)
         .or(card.and(card_ulist))
         .or(card.and(card_one))
+        .or(card.and(card_filter_options))
         .or(ev.and(ev_engine))
         .or(favicon);
     log::info!("www running");

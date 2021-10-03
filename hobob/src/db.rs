@@ -42,6 +42,19 @@ pub struct VideoOwner {
     pub timestamp: i64,
 }
 
+#[derive(Debug)]
+pub struct UserFilter {
+    pub uid: i64,
+    pub fid: i64,
+    pub priority: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct FilterMeta {
+    pub fid: i64,
+    pub name: String,
+}
+
 impl Default for VideoInfo {
     fn default() -> Self {
         Self {
@@ -101,6 +114,25 @@ impl FromRow for VideoOwner {
             uid: row.get(0)?,
             vid: row.get(1)?,
             timestamp: row.get(2)?,
+        })
+    }
+}
+
+impl FromRow for UserFilter {
+    fn from_row(row: &Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            uid: row.get(0)?,
+            fid: row.get(1)?,
+            priority: row.get(2)?,
+        })
+    }
+}
+
+impl FromRow for FilterMeta {
+    fn from_row(row: &Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            fid: row.get(0)?,
+            name: row.get(1)?,
         })
     }
 }
@@ -198,15 +230,25 @@ lazy_static::lazy_static! {
                                                 new_video_ts INTEGER NOT NULL DEFAULT 0, \
                                                 new_video_title TEXT NOT NULL);
                           CREATE TABLE IF NOT EXISTS videoinfo(\
-                                                 vid TEXT PRIMARY KEY, \
-                                                 title TEXT NOT NULL, \
-                                                 pic_url TEXT NOT NULL, \
-                                                 utime TEXT NOT NULL);
+                                                vid TEXT PRIMARY KEY, \
+                                                title TEXT NOT NULL, \
+                                                pic_url TEXT NOT NULL, \
+                                                utime TEXT NOT NULL);
                           CREATE TABLE IF NOT EXISTS videoowner(\
-                                                  uid INTEGER NOT NULL, \
-                                                  vid TEXT NOT NULL, \
-                                                  timestamp INTEGER NOT NULL, \
-                                                  UNIQUE(vid, uid));
+                                                uid INTEGER NOT NULL, \
+                                                vid TEXT NOT NULL, \
+                                                timestamp INTEGER NOT NULL, \
+                                                UNIQUE(vid, uid));
+                          CREATE TABLE IF NOT EXISTS userfilters(\
+                                                uid INTEGER NOT NULL, \
+                                                fid INTEGER NOT NULL, \
+                                                priority INTEGER NOT NULL, \
+                                                UNIQUE(uid, fid));
+                          CREATE TABLE IF NOT EXISTS filtermeta(\
+                                                fid INTEGER PRIMARY KEY AUTOINCREMENT, \
+                                                name TEXT NOT NULL);
+                          INSERT OR IGNORE INTO filtermeta VALUES (0, \"全部\");
+                          INSERT OR IGNORE INTO filtermeta VALUES (1, \"特别关注\");
                           COMMIT;");
         match create_result {
             Ok(_) => log::info!("Database tables created!"),
@@ -439,19 +481,138 @@ impl User {
         .ok();
     }
 
-    pub fn list(order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
+    pub fn list(fid: i64, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
         conn_db!(db);
-        Self::db_list(db, order, start, len)
+        if fid <= 0 {
+            Self::db_list(db, order, start, len)
+        } else {
+            Self::db_filter_list(db, fid, order, start, len)
+        }
     }
 
     fn db_list(db: DbType, order: Order, start: i64, len: i64) -> Result<Vec<i64>> {
-        let mut stmt = match order {
-            Order::Rowid => db.prepare_cached("SELECT id FROM usersync ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"),
-            Order::LatestVideo => db.prepare_cached("SELECT id FROM usersync ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"),
-            Order::LiveEntropy => db.prepare_cached("SELECT id FROM userinfo WHERE live_open=1 ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"),
-        }?;
+        let mut stmt = db.prepare_cached(match order {
+            Order::Rowid => {
+                "SELECT id FROM usersync \
+                    WHERE enable=1 \
+                    ORDER BY rowid DESC LIMIT ?2 OFFSET ?1"
+            }
+            Order::LatestVideo => {
+                "SELECT id FROM usersync \
+                    WHERE enable=1 \
+                    ORDER BY new_video_ts DESC LIMIT ?2 OFFSET ?1"
+            }
+            Order::LiveEntropy => {
+                "SELECT userinfo.id FROM userinfo \
+                    INNER JOIN usersync ON usersync.id=userinfo.id \
+                    WHERE live_open=1 and enable=1 \
+                    ORDER BY live_entropy DESC LIMIT ?2 OFFSET ?1"
+            }
+        })?;
         let iter = stmt.query_map(params![start, len], |row| row.get(0))?;
         Ok(iter.filter_map(|id| id.ok()).collect())
+    }
+
+    /// Modify user's priority in filter _fid_ . Priority of non-positive is equal to delete.
+    pub fn mod_filter(&self, fid: i64, priority: i64) {
+        conn_db!(db);
+        self.db_mod_filter(db, fid, priority);
+    }
+
+    fn db_mod_filter(&self, db: DbType, fid: i64, priority: i64) {
+        if priority > 0 {
+            db.execute(
+                "REPLACE INTO userfilters VALUES (?1, ?2, ?3)",
+                params![self.uid, fid, priority,],
+            )
+            .map_err(|e| log::warn!("Replace into userfilters error(s): {}", e))
+            .ok();
+        } else {
+            db.execute(
+                "DELETE FROM userfilters WHERE uid=?1 and fid=?2",
+                params![self.uid, fid],
+            )
+            .map_err(|e| log::warn!("Delete from userfilters error(s): {}", e))
+            .ok();
+        }
+    }
+
+    pub fn filter_list(fid: i64, start: i64, len: i64) -> Result<Vec<i64>> {
+        conn_db!(db);
+        Self::db_filter_list(db, fid, Order::Rowid, start, len)
+    }
+
+    fn db_filter_list(
+        db: DbType,
+        fid: i64,
+        order: Order,
+        start: i64,
+        len: i64,
+    ) -> Result<Vec<i64>> {
+        let mut stmt = db.prepare_cached(match order {
+            Order::Rowid => {
+                "SELECT id FROM usersync \
+                    INNER JOIN userfilters ON userfilters.uid=usersync.id and fid=?1 \
+                    WHERE enable=1 \
+                    ORDER BY priority DESC LIMIT ?3 OFFSET ?2"
+            }
+            Order::LatestVideo => {
+                "SELECT id FROM usersync \
+                    INNER JOIN userfilters ON userfilters.uid=usersync.id and fid=?1 \
+                    WHERE enable=1 \
+                    ORDER BY new_video_ts DESC LIMIT ?3 OFFSET ?2"
+            }
+            Order::LiveEntropy => {
+                "SELECT usersync.id FROM usersync \
+                    INNER JOIN userfilters ON userfilters.uid=usersync.id and fid=?1 \
+                    INNER JOIN userinfo ON userinfo.id=usersync.id \
+                    WHERE live_open=1 and enable=1 \
+                    ORDER BY live_entropy DESC LIMIT ?3 OFFSET ?2"
+            }
+        })?;
+        let iter = stmt.query_map(params![fid, start, len], |row| row.get(0))?;
+        Ok(iter.filter_map(|id| id.ok()).collect())
+    }
+}
+
+impl FilterMeta {
+    pub fn new<T: ToString>(name: T) -> Result<Self> {
+        conn_db!(db);
+        db.execute(
+            "INSERT INTO filtermeta (name) VALUES (?1)",
+            params![name.to_string()],
+        )?;
+        Ok(Self {
+            fid: db.query_row(
+                "SELECT fid FROM filtermeta WHERE name=?1 ORDER BY fid DESC LIMIT 1",
+                params![name.to_string()],
+                |row| row.get(0),
+            )?,
+            name: name.to_string(),
+        })
+    }
+
+    pub fn all() -> Result<Vec<Self>> {
+        conn_db!(db);
+        let mut stmt = db.prepare_cached("SELECT * FROM filtermeta ORDER BY fid ASC")?;
+        let iter = stmt.query_map([], FilterMeta::from_row)?;
+        Ok(iter.filter_map(|o| o.ok()).collect())
+    }
+}
+
+impl TryFrom<i64> for FilterMeta {
+    type Error = crate::Error;
+
+    fn try_from(fid: i64) -> Result<Self> {
+        conn_db!(db);
+        Ok(Self {
+            fid,
+            name: db.query_row(
+                "SELECT name FROM filtermeta WHERE fid=?1",
+                params![fid],
+                |row| row.get(0),
+            )?,
+        })
     }
 }
 

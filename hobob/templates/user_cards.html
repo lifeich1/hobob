@@ -1,6 +1,6 @@
 {% for user in users %}
 {% if in_div %}
-<div class="card m-2 p-1 border-primary" id={{ user.ext.card_id }}>
+<div class="card m-2 p-1 shadow" id={{ user.ext.card_id }}>
 {% endif %}
     <div class="d-flex flex-row">
     <a href="{{ user.ext.space_link }}" target="_blank">
@@ -34,6 +34,32 @@
             </span>
         </p>
         {% endif %}
+        <div class="dropdown">
+            <a class="btn btn-sm btn-dark dropdown-toggle"
+                href="#" role="button"
+                id="dropdownMenuLink-{{ user.ext.card_id }}"
+                data-bs-toggle="dropdown" aria-expanded="false">
+                <i class="bi bi-sliders"></i>
+                更多
+            </a>
+
+            <ul class="dropdown-menu" aria-labelledby="dropdownMenuLink-{{ user.ext.card_id }}">
+                <li><a class="dropdown-item" onclick="on_move2top_filter({{ user.data.id }})">移至顶部</a></li>
+                <li><a class="dropdown-item" onclick="on_ui_addto_filter({{ user.data.id }}, '{{ user.data.name }}')">添加到列表</a></li>
+                <li><a class="dropdown-item" onclick="on_drop_from_filter({{ user.data.id }}, '{{ user.data.name }}')">从当前列表移除</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item" onclick="on_try_refresh({{ user.data.id }})">尝试同步</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item" onclick="on_check_unfollow({{ user.data.id }}, '{{ user.data.name }}')">
+                        <span class="text-danger">
+                            取消关注
+                        </span>
+                    </a></li>
+            </ul>
+            <span class="badge rounded-pill bg-warning">
+                CST {{ user.ext.ctimestamp + 8 * 3600 | date(format="%Y-%m-%d %H:%M:%S") }}
+            </span>
+        </div>
     </div>
     </div>
 {% if in_div %}
