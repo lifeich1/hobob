@@ -17,8 +17,12 @@ function cur_order() {
 
 function enforce_tab_load() {
     if ($('div.tab-pane.active div.d-flex div.card').length == 0) {
-        $('div.tab-pane.active div.d-flex').load('/card/ulist/' + cur_order() + '/0/10');
+        $('div.tab-pane.active div.d-flex').load('/card/ulist/' + cur_order() + '/0/10', function() {
+            update_end_status();
+        });
     }
+    $('span#tab-title-display').text($('a.nav-link.active').text());
+    $('span#filter-name-display').text($('select#select-filter-type option[value="' + cur_filter() + '"]').text());
 }
 
 function tabs_reload() {
@@ -33,22 +37,24 @@ function loadmore() {
         // this situation will be handle by enforce_tab_load
         return;
     }
+    if ($('#loading-spinner').is(':visible')) {
+        return;
+    }
     console.log('loadmore');
     $('#loading-spinner').show();
     var start = $('div.tab-pane.active div.d-flex div.card').length;
     $.get("/card/ulist/" + cur_order() + '/' + start + '/10', function(data, status) {
         $('#loading-spinner').hide();
         $('div.tab-pane.active div.d-flex[role="list-content"]').append(data);
+        update_end_status();
     })
 }
 
 function check_bottom_loadmore() {
-    var scrollTop = document.documentElement.scrollTop;
-    var scrollHeight = document.documentElement.scrollHeight;
-    var clientHeight = document.documentElement.clientHeight;
-    if (scrollHeight - scrollTop <= clientHeight) {
+    var scrollh = $(document).height();
+    var scrollTop=Math.max(document.documentElement.scrollTop||document.body.scrollTop);
+    if((scrollTop + $(window).height()) >= scrollh) {
         loadmore();
-        window.scrollTo(0, Math.max(scrollHeight - clientHeight - 25, 0));
     }
 }
 
@@ -127,9 +133,26 @@ function on_check_unfollow(id, name) {
     );
 }
 
-function on_ui_addto_filter(id) {
-    use_yorn_modal('选择列表', 'TODO', function() {
-        alert("TODO");
+var last_filter_to_join = null;
+
+function on_ui_addto_filter(id, name) {
+    use_yorn_modal('选择列表', '添加<span class="text-danger">' + name + '</span>到' +
+        '<select class="form-select" id="modal-select-filter-to-join"></select>', function() {
+            last_filter_to_join = parseInt($('select#modal-select-filter-to-join').val());
+            do_post_json('op/mod/filter', {
+                uid: id,
+                fid: last_filter_to_join,
+                priority: Date.now(),
+            });
+    });
+    $('select#modal-select-filter-to-join').load("/card/filter/options", function() {
+        $('select#modal-select-filter-to-join option[value="0"]').remove();
+        if (last_filter_to_join) {
+            var q = $('select#modal-select-filter-to-join option[value="' + last_filter_to_join + '"]');
+            if (q.length > 0) {
+                q[0].selected = true;
+            }
+        }
     });
 }
 
@@ -151,6 +174,20 @@ function on_drop_from_filter(id, uname) {
             }
         );
     }
+}
+
+function on_new_user_filter() {
+    use_yorn_modal('新建列表',
+        '<div class="input-group">' +
+        '<span class="input-group-text">新列表名</span>' +
+        '<input id="input-new-list-name" type="text" class="form-control" placeholder="名称">' +
+        '</div>', function() {
+            do_post_json('/op/new/filter', {
+                name: $('input#input-new-list-name').val(),
+            }, function() {
+                reload_filters();
+            });
+        });
 }
 
 function use_yorn_modal(title, desc, cb) {
@@ -182,18 +219,28 @@ function on_try_refresh(id) {
     });
 }
 
+function update_end_status() {
+    $('span#end-status-text').text('最近刷新' + new Date().toLocaleString());
+}
+
 function handle_ev(ev) {
     var data = JSON.parse(ev.data);
     $("span#status-display").text(data.status_desc);
     if (data.done_refresh) {
         $("span.tag-latest-sync-user").hide();
         $("span#status-last-sync-uid").text("最近刷新uid:" + data.done_refresh);
+        $("span#status-last-sync-uid").show();
         $("div#user-card-" + data.done_refresh + " span.tag-latest-sync-user").show();
         var card = $("div#user-card-" + data.done_refresh);
         if (card.length > 0) {
             card.load("/card/one/" + data.done_refresh);
         }
+        onResize();
     }
+}
+
+function onResize() {
+    $("body").css("padding-top", $("nav.fixed-top").height());
 }
 
 var evsrc = null;
@@ -220,4 +267,6 @@ $(function() {
         console.log("ev/engine:", event);
         handle_ev(event);
     };
+    $(window).resize(onResize);
+    onResize();
 })

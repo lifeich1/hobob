@@ -95,6 +95,17 @@ macro_rules! jsnapi {
         warp::reply::json(&String::from("success"))
     };
 
+    (@err $why:expr) => {
+        warp::reply::json(&$why)
+    };
+
+    (@try $expr:expr; $err:ident; $why:expr) => {
+        match $expr {
+            Ok(_) => jsnapi!(@ok),
+            Err($err) => jsnapi!(@err $why),
+        }
+    };
+
     ($expr:expr) => {{
         tokio::spawn(async move {
             $expr;
@@ -130,6 +141,11 @@ struct ModFilterOptions {
     priority: i64,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct NewFilterOptions {
+    name: String,
+}
+
 macro_rules! req_type {
     (@post) => {
         warp::post()
@@ -162,6 +178,7 @@ struct UserExt {
     new_video_title: String,
     new_video_tsrepr: String,
     live_entropy: String,
+    ctimestamp: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,6 +207,7 @@ impl From<Result<db::UserInfo>> for UserPack {
                             "btn btn-secondary"
                         }),
                         new_video_ts: sync.as_ref().map(|s| s.new_video_ts).unwrap_or(0),
+                        ctimestamp: sync.as_ref().map(|s| s.ctimestamp).unwrap_or(0),
                         new_video_title: sync
                             .as_ref()
                             .map(|s| s.new_video_title.clone())
@@ -223,6 +241,7 @@ impl From<Result<db::UserInfo>> for UserPack {
                     new_video_title: Default::default(),
                     new_video_tsrepr: Default::default(),
                     live_entropy: Default::default(),
+                    ctimestamp: 0,
                 },
                 data: db::UserInfo {
                     name: format!("Err: {}", e),
@@ -281,6 +300,15 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
                 db::User::new(opt.uid).mod_filter(opt.fid, opt.priority);
                 jsnapi!(@ok)
             });
+    let op_new_filter =
+        warp::path!("new" / "filter")
+            .and(req_type!(@post))
+            .map(|opt: NewFilterOptions| {
+                jsnapi!(@try db::FilterMeta::new(&opt.name); e; {
+                    log::error!("new filter error(s): {}", e);
+                    format!("Db error: {}", e)
+                })
+            });
     let op = warp::path("op");
 
     let get_user =
@@ -328,6 +356,7 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .or(op.and(op_refresh))
         .or(op.and(op_silence))
         .or(op.and(op_mod_filter))
+        .or(op.and(op_new_filter))
         .or(get.and(get_user))
         .or(get.and(get_vlist))
         .or(get.and(get_flist))

@@ -1,6 +1,6 @@
 {% for user in users %}
 {% if in_div %}
-<div class="card m-2 p-1 border-primary" id={{ user.ext.card_id }}>
+<div class="card m-2 p-1 shadow" id={{ user.ext.card_id }}>
 {% endif %}
     <div class="d-flex flex-row">
     <a href="{{ user.ext.space_link }}" target="_blank">
@@ -56,6 +56,9 @@
                         </span>
                     </a></li>
             </ul>
+            <span class="badge rounded-pill bg-warning">
+                CST {{ user.ext.ctimestamp + 8 * 3600 | date(format="%Y-%m-%d %H:%M:%S") }}
+            </span>
         </div>
     </div>
     </div>

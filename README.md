@@ -19,7 +19,7 @@ An web app for hobo kicked from bibi&lili.
 - [x] backend refresh status control.
 - [ ] webpage: upzhu list filter
     - [x] webpage: display filter with 3 order
-    - [ ] webpage: custom filter default order can be modified.
+    - [x] webpage: custom filter default order can be modified.
     - [ ] webpage: able to add/remove customized filter (filter 1 is specially unmovable)
 - [ ] webpage: a video list of user X for temporary utilizing while being banned.
 - [ ] webpage: unfollow upzhu.
