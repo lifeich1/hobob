@@ -53,7 +53,7 @@ function loadmore() {
 function check_bottom_loadmore() {
     var scrollh = $(document).height();
     var scrollTop=Math.max(document.documentElement.scrollTop||document.body.scrollTop);
-    if((scrollTop + $(window).height()) >= scrollh) {
+    if((scrollTop + $(window).height()) >= scrollh - 1) {
         loadmore();
     }
 }
@@ -228,6 +228,13 @@ function handle_ev(ev) {
     $("span#status-display").text(data.status_desc);
     if (data.done_refresh) {
         $("span.tag-latest-sync-user").hide();
+        if (typeof data.status == 'string') {
+            $('span#silence-reason-display').hide();
+            $('span#silence-reason-display').text('');
+        } else {
+            $('span#silence-reason-display').text(data.status.Silence[1]);
+            $('span#silence-reason-display').show();
+        }
         $("span#status-last-sync-uid").text("最近刷新uid:" + data.done_refresh);
         $("span#status-last-sync-uid").show();
         $("div#user-card-" + data.done_refresh + " span.tag-latest-sync-user").show();
@@ -250,6 +257,7 @@ var yorn_modal = null;
 $(function() {
     yorn_modal = new bootstrap.Modal($('div.modal#yes-or-no-modal')[0]);
     $('#loading-spinner').hide();
+    $('#silence-reason-display').hide();
     $('a[data-bs-toggle="pill"]').bind('shown.bs.tab', function() {
         enforce_tab_load();
     });

@@ -88,7 +88,7 @@ pub enum Command {
 pub enum RefreshStatus {
     Fast,
     Slow,
-    Silence(DateTime<Local>),
+    Silence(DateTime<Local>, String),
 }
 
 impl Default for RefreshStatus {
@@ -105,7 +105,7 @@ impl fmt::Display for Status {
         match self.0 {
             RefreshStatus::Fast => write!(f, "激活自动刷新"),
             RefreshStatus::Slow => write!(f, "低速自动刷新"),
-            RefreshStatus::Silence(i) => {
+            RefreshStatus::Silence(i, _) => {
                 let d = i - Local::now();
                 let day = chrono::Duration::days(1);
                 write!(
@@ -206,6 +206,7 @@ struct RefreshRunner {
     ctx: bilibili_api_rs::Context,
     evtx: watch::Sender<Event>,
     silence_cnt: u64,
+    silence_reason: String,
 }
 
 impl RefreshRunner {
@@ -217,6 +218,7 @@ impl RefreshRunner {
             ctx: bilibili_api_rs::Context::new()
                 .unwrap_or_else(|e| panic!("New bilibili api context error(s): {}", e)),
             silence_cnt: 0,
+            silence_reason: Default::default(),
         }
     }
 
@@ -258,7 +260,7 @@ impl RefreshRunner {
                         Command::ForceSilence(flag) => {
                             log::info!("Command ForceSilence {}", flag);
                             if flag {
-                                self.on_remote_api_err();
+                                self.on_remote_api_err("Forced");
                             } else {
                                 self.on_remote_api_ok();
                                 self.token.available_now();
@@ -302,7 +304,7 @@ impl RefreshRunner {
         match self.refresh(user).await {
             Ok(_) => self.on_remote_api_ok(),
             Err(e) => {
-                self.on_remote_api_err();
+                self.on_remote_api_err(&e);
                 log::error!("Refresh uid {} error(s): {}", id, e);
             }
         };
@@ -330,7 +332,7 @@ impl RefreshRunner {
 
     fn status_change(&self, stat: RefreshStatus) {
         let s = if self.silence_cnt > 0 {
-            RefreshStatus::Silence(to_datetime(self.token.next_tik()))
+            RefreshStatus::Silence(to_datetime(self.token.next_tik()), self.silence_reason.clone())
         } else {
             stat
         };
@@ -340,8 +342,9 @@ impl RefreshRunner {
         });
     }
 
-    fn on_remote_api_err(&mut self) {
+    fn on_remote_api_err<T: ToString>(&mut self, reason: T) {
         self.silence_cnt += 1;
+        self.silence_reason = reason.to_string();
         self.token
             .silence(Duration::from_secs(3600 * self.silence_cnt));
     }
