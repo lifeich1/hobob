@@ -23,7 +23,7 @@ An web app for hobo kicked from bibi&lili.
     - [ ] webpage: able to add/remove customized filter (filter 1 is specially unmovable)
 - [x] webpage: show recent stop refresh reason, for banned checking.
 - [ ] webpage: a video list of user X for temporary utilizing while being banned.
-- [ ] webpage: unfollow upzhu.
+- [x] webpage: unfollow upzhu.
 - [ ] *publish*: use `include_str!()` to make bin ok to publish.
 
 
