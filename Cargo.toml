@@ -22,4 +22,4 @@ serde = "1"
 rand = "0.8"
 futures = "0.3"
 
-bilibili-api-rs = "0.2"
+bilibili-api-rs = { path = "../bilibili-api-rs", version = "0.2" }
