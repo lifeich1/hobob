@@ -319,7 +319,12 @@ impl RefreshRunner {
 
         let uid = user.id();
         log::info!("Refresh ok uid {}", uid);
-        self.event_change(|ev| ev.done_refresh = Some(uid));
+        self.event_change(|ev| {
+            ev.done_refresh = Some(uid);
+            if matches!(ev.status.0, RefreshStatus::Silence(_, _)) {
+                ev.status.0 = RefreshStatus::Slow;
+            }
+        });
 
         Ok(())
     }
