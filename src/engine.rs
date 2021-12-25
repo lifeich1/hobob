@@ -127,6 +127,8 @@ pub struct Event {
     pub done_refresh: Option<i64>,
     pub status: Status,
     pub status_desc: String,
+    pub new_live_msgid: i64,
+    pub new_live_name: String,
 }
 
 fn enforce_init() {
@@ -324,6 +326,8 @@ impl RefreshRunner {
     }
 
     async fn refresh(&mut self, user: db::User) -> Result<()> {
+        let last_info = user.info();
+
         let api = self.ctx.new_user(&user);
         let info: db::UserInfo = api.get_info()?.invalidate().query().await?.try_into()?;
         user.set_info(&info);
@@ -336,8 +340,12 @@ impl RefreshRunner {
             ev.done_refresh = Some(uid);
             if matches!(ev.status.0, RefreshStatus::Silence(_, _)) {
                 ev.status.0 = RefreshStatus::Slow;
+                ev.status_desc = ev.status.to_string();
             }
         });
+        if !matches!(last_info, Ok(db::UserInfo{live_open: Some(true), ..})) && matches!(info.live_open, Some(true)) {
+            self.on_new_live(&info);
+        }
 
         Ok(())
     }
@@ -387,8 +395,7 @@ impl RefreshRunner {
             }
         };
         if !matches!(info.live_open, Some(true)) {
-            log::info!("uid {} live open: {}", uid, info.name);
-            // TODO event live open
+            self.on_new_live(&info);
         }
         info.live_open = Some(true);
         if let Some(link) = i["link"].as_str() {
@@ -420,6 +427,15 @@ impl RefreshRunner {
         self.event_change(move |ev| {
             ev.status.0 = s.clone();
             ev.status_desc = ev.status.to_string();
+        });
+    }
+
+    fn on_new_live(&self, info: &db::UserInfo) {
+        log::info!("uid {} live open: {}", info.id, info.name);
+        let n = info.name.to_string();
+        self.event_change(move |ev| {
+            ev.new_live_msgid += 1;
+            ev.new_live_name = n.clone();
         });
     }
 
