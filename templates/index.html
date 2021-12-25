@@ -67,6 +67,8 @@
                             <li><a class="dropdown-item" onclick="on_force_arefresh()">强制激活自动刷新</a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" onclick="on_new_user_filter()">新建列表</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" onclick="on_clear_live_toast()">清空开播消息</a></li>
                         </ul>
                     </div>
                 </div>
@@ -128,6 +130,9 @@
       </div>
     </div>
   </div>
+</div>
+
+<div class="toast-container position-fixed bottom-0 start-50 translate-middle-x p-3" id="toast-container-new-live">
 </div>
 
 <script src="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/js/bootstrap.bundle.min.js"></script>

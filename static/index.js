@@ -223,6 +223,12 @@ function update_end_status() {
     $('span#end-status-text').text('最近刷新' + new Date().toLocaleString());
 }
 
+function on_clear_live_toast() {
+    $('#toast-container-new-live div.toast').remove();
+}
+
+var last_live_msgid = 0;
+
 function handle_ev(ev) {
     var data = JSON.parse(ev.data);
     $("span#status-display").text(data.status_desc);
@@ -243,6 +249,18 @@ function handle_ev(ev) {
             card.load("/card/one/" + data.done_refresh);
         }
         onResize();
+    }
+    if (data.new_live_msgid > last_live_msgid) {
+        console.log('get new live of ' + data.new_live_name);
+        last_live_msgid = data.new_live_msgid;
+        $('#toast-container-new-live div.toast.hide').remove();
+        $('#toast-container-new-live').append('<div class="toast align-items-center show" role="alert" aria-live="assertive" aria-atomic="true" style="z-index: 11">' +
+  '<div class="d-flex">' +
+    '<div class="toast-body">' +
+            '<span class="text-danger">' + data.new_live_name + '</span>开播' +
+   '</div>' +
+    '<button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>' +
+  '</div></div>');
     }
 }
 
