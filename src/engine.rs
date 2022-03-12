@@ -1,6 +1,6 @@
 use crate::{db, Result};
 use chrono::{DateTime, Local};
-use rand::Rng;
+use rand::{Rng, seq::SliceRandom};
 use serde_derive::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::fmt;
@@ -127,6 +127,8 @@ pub struct Event {
     pub done_refresh: Option<i64>,
     pub status: Status,
     pub status_desc: String,
+    pub new_live_msgid: i64,
+    pub new_live_name: String,
 }
 
 fn enforce_init() {
@@ -235,6 +237,13 @@ impl RefreshRunner {
             (0..100).map(|_| rng.gen_range(1.0..2.0)).collect()
         };
         let mut factor_i: usize = 0;
+        let live_pagens: Vec<i32> = {
+            let mut rng = rand::thread_rng();
+            let mut v: Vec<i32> = (1..21).collect();
+            v.shuffle(&mut rng);
+            v
+        };
+        let mut live_pagens_i: usize = 0;
 
         loop {
             tokio::select! {
@@ -248,12 +257,12 @@ impl RefreshRunner {
                     self.status_change(RefreshStatus::Fast);
                     self.token.set_interval(REFRESH_BUCKET_TIK_INTERVAL);
                     match cmd.unwrap() {
-                        Command::Refresh(uid) => self.try_refresh(db::User::new(uid)).await,
+                        Command::Refresh(uid) => self.try_refresh(db::User::new(uid), 0).await,
                         Command::Follow(enable, uid) => {
                             let u = db::User::new(uid);
                             u.enable(enable);
                             if enable {
-                                self.try_refresh(u).await;
+                                self.try_refresh(u, 0).await;
                             }
                         },
                         Command::Activate => log::info!("Command Activate force token bucket high speed"),
@@ -276,9 +285,14 @@ impl RefreshRunner {
                     if factor_i >= factors.len() {
                         factor_i = 0;
                     }
+                    let pn: i32 = live_pagens[live_pagens_i];
+                    live_pagens_i += 1;
+                    if live_pagens_i >= live_pagens.len() {
+                        live_pagens_i = 0;
+                    }
                     auto_refresh.as_mut().reset(tokio::time::Instant::now() + REFRESH_BUCKET_TIK_INTERVAL.mul_f32(factor));
                     match db::User::oldest_ctime_user() {
-                        Ok(user) => self.try_refresh(user).await,
+                        Ok(user) => self.try_refresh(user, pn).await,
                         Err(e) => log::error!("Database query oldest ctime user error(s): {}", e),
                     }
                 }
@@ -293,7 +307,7 @@ impl RefreshRunner {
         log::info!("RefreshRunner stopped");
     }
 
-    async fn try_refresh(&mut self, user: db::User) {
+    async fn try_refresh(&mut self, user: db::User, live_pn: i32) {
         if !self.token.try_once() {
             if self.token.is_need_log() {
                 log::info!("Canceled refresh uid {} for no token", user.id());
@@ -301,7 +315,8 @@ impl RefreshRunner {
             return;
         }
         let id = user.id();
-        match self.refresh(user).await {
+        let refresh_res = self.refresh(user).await;
+        match refresh_res.and(self.refresh_live_list(live_pn).await) {
             Ok(_) => self.on_remote_api_ok(),
             Err(e) => {
                 self.on_remote_api_err(&e);
@@ -311,6 +326,8 @@ impl RefreshRunner {
     }
 
     async fn refresh(&mut self, user: db::User) -> Result<()> {
+        let last_info = user.info();
+
         let api = self.ctx.new_user(&user);
         let info: db::UserInfo = api.get_info()?.invalidate().query().await?.try_into()?;
         user.set_info(&info);
@@ -319,8 +336,79 @@ impl RefreshRunner {
 
         let uid = user.id();
         log::info!("Refresh ok uid {}", uid);
-        self.event_change(|ev| ev.done_refresh = Some(uid));
+        self.event_change(|ev| {
+            ev.done_refresh = Some(uid);
+            if matches!(ev.status.0, RefreshStatus::Silence(_, _)) {
+                ev.status.0 = RefreshStatus::Slow;
+                ev.status_desc = ev.status.to_string();
+            }
+        });
+        if !matches!(last_info, Ok(db::UserInfo{live_open: Some(true), ..})) && matches!(info.live_open, Some(true)) {
+            self.on_new_live(&info);
+        }
 
+        Ok(())
+    }
+
+    async fn refresh_live_list(&self, live_pn: i32) -> Result<()> {
+        if live_pn <= 0 {
+            return Ok(());
+        }
+
+        let xlive = self.ctx.xlive();
+        let v = xlive.get_list(
+                bilibili_api_rs::xlive::PAreaID::Vup,
+                bilibili_api_rs::xlive::AreaID::All,
+                bilibili_api_rs::xlive::ListSortType::Entropy,
+                live_pn,
+            )?.query().await?;
+        let l = match v["list"].as_array() {
+            Some(l) => l,
+            None => {
+                log::error!("xlive list result['list'] is not list: {:?}", v);
+                return Ok(());
+            }
+        };
+        log::info!("xlive get page {}", live_pn);
+        for i in l.iter() {
+            if let Err(e) = self.try_parse_livelist_row(i) {
+                log::error!("try parse livelist row error: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    fn try_parse_livelist_row(&self, i: &serde_json::Value) -> Result<()> {
+        let uid = match i["uid"].as_i64() {
+            Some(v) => v,
+            None => {
+                log::error!("xlive list row uid not num: {:?}", i);
+                return Ok(());
+            }
+        };
+        let u = db::User::new(uid);
+        let mut info = match u.info() {
+            Ok(v) => v,
+            Err(e) => {
+                log::trace!("uid {} not in db: {}", uid, e);
+                return Ok(());
+            }
+        };
+        if !matches!(info.live_open, Some(true)) {
+            self.on_new_live(&info);
+        }
+        info.live_open = Some(true);
+        if let Some(link) = i["link"].as_str() {
+            info.live_room_url = Some(format!("https://live.bilibili.com{}", link));
+        }
+        if let Some(title) = i["title"].as_str() {
+            info.live_room_title = Some(title.to_string());
+        }
+        if let Some(online) = i["watched_show"]["num"].as_i64() {
+            info.live_entropy = Some(online);
+        }
+        log::trace!("update live info from livelist row for {}", uid);
+        u.set_info(&info);
         Ok(())
     }
 
@@ -339,6 +427,15 @@ impl RefreshRunner {
         self.event_change(move |ev| {
             ev.status.0 = s.clone();
             ev.status_desc = ev.status.to_string();
+        });
+    }
+
+    fn on_new_live(&self, info: &db::UserInfo) {
+        log::info!("uid {} live open: {}", info.id, info.name);
+        let n = info.name.to_string();
+        self.event_change(move |ev| {
+            ev.new_live_msgid += 1;
+            ev.new_live_name = n.clone();
         });
     }
 
