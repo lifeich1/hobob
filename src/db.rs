@@ -157,7 +157,7 @@ impl TryFrom<serde_json::Value> for UserInfo {
                 .map(ToString::to_string),
             live_room_title: v["live_room"]["title"].as_str().map(ToString::to_string),
             live_open: v["live_room"]["liveStatus"].as_i64().map(|s| s != 0),
-            live_entropy: v["live_room"]["online"].as_i64(),
+            live_entropy: v["live_room"]["watched_show"]["num"].as_i64(),
         })
     }
 }

@@ -404,7 +404,7 @@ impl RefreshRunner {
         if let Some(title) = i["title"].as_str() {
             info.live_room_title = Some(title.to_string());
         }
-        if let Some(online) = i["online"].as_i64() {
+        if let Some(online) = i["watched_show"]["num"].as_i64() {
             info.live_entropy = Some(online);
         }
         log::trace!("update live info from livelist row for {}", uid);
