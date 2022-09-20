@@ -48,7 +48,7 @@ pub async fn main_loop() -> Result<()> {
         www::run(rx).await;
     });
 
-    let _ = tokio::signal::ctrl_c().await?;
+    tokio::signal::ctrl_c().await?;
     log::info!("Caught ^C, quiting");
     engine::handle().send(engine::Command::Shutdown).await?;
 

@@ -15,14 +15,13 @@ use warp::{http::StatusCode, sse::Event, Filter};
 
 lazy_static::lazy_static! {
     pub static ref TEMPLATES: Tera = {
-        let tera = match Tera::new("templates/**/*.html") {
+        match Tera::new("templates/**/*.html") {
             Ok(t) => t,
             Err(e) => {
                 log::error!("Parsing error(s): {}", e);
                 ::std::process::exit(1);
             }
-        };
-        tera
+        }
     };
 }
 
