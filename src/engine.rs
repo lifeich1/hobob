@@ -312,7 +312,7 @@ impl RefreshRunner {
     async fn try_refresh(&mut self, user: db::User, live_pn: i32) {
         if !self.token.try_once() {
             if self.token.is_need_log() {
-                log::info!("Canceled refresh uid {} for no token", user.id());
+                log::info!("Canceled refresh uid {} live_pn {} for no token", user.id(), live_pn);
             }
             return;
         }
