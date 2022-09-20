@@ -69,6 +69,7 @@ pub async fn done_shutdown() {
 }
 
 pub const CHANNEL_CAP: usize = 128;
+pub const SILENCE_HIP_TH: u64 = 5;
 
 struct Engine {
     cmd: CommandRunner,
@@ -241,8 +242,9 @@ impl RefreshRunner {
             let mut rng = rand::thread_rng();
             let mut v: Vec<i32> = (1..21).collect();
             v.shuffle(&mut rng);
-            v
+            v.into_iter().flat_map(|x| [0, x]).collect()
         };
+        log::info!("init pseudo random live_pagens: {:?}", live_pagens);
         let mut live_pagens_i: usize = 0;
 
         loop {
@@ -314,15 +316,24 @@ impl RefreshRunner {
             }
             return;
         }
-        let id = user.id();
-        let refresh_res = self.refresh(user).await;
-        match refresh_res.and(self.refresh_live_list(live_pn).await) {
-            Ok(_) => self.on_remote_api_ok(),
-            Err(e) => {
-                self.on_remote_api_err(&e);
-                log::error!("Refresh uid {} error(s): {}", id, e);
+        if live_pn == 0 {
+            let id = user.id();
+            match self.refresh(user).await {
+                Ok(_) => self.on_remote_api_ok(),
+                Err(e) => {
+                    self.on_remote_api_err(&e);
+                    log::error!("Refresh uid {} error(s): {}", id, e);
+                }
             }
-        };
+        } else {
+             match self.refresh_live_list(live_pn).await {
+                Ok(_) => self.on_remote_api_ok(),
+                Err(e) => {
+                    self.on_remote_api_err(&e);
+                    log::error!("Request vtb live page {} error(s): {}", live_pn, e);
+                }
+            }
+        }
     }
 
     async fn refresh(&mut self, user: db::User) -> Result<()> {
@@ -419,7 +430,7 @@ impl RefreshRunner {
     }
 
     fn status_change(&self, stat: RefreshStatus) {
-        let s = if self.silence_cnt > 0 {
+        let s = if self.silence_cnt >= SILENCE_HIP_TH {
             RefreshStatus::Silence(to_datetime(self.token.next_tik()), self.silence_reason.clone())
         } else {
             stat
@@ -441,9 +452,13 @@ impl RefreshRunner {
 
     fn on_remote_api_err<T: ToString>(&mut self, reason: T) {
         self.silence_cnt += 1;
-        self.silence_reason = reason.to_string();
-        self.token
-            .silence(Duration::from_secs(3600 * self.silence_cnt));
+        let why = reason.to_string();
+        log::error!("increase silence count {}/{}, reason: {}", self.silence_cnt, SILENCE_HIP_TH, &why);
+        if self.silence_cnt >= SILENCE_HIP_TH {
+            self.silence_reason = why;
+            self.token
+                .silence(Duration::from_secs(60 * self.silence_cnt));
+        }
     }
 
     fn on_remote_api_ok(&mut self) {
