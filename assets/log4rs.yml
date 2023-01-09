@@ -1,0 +1,27 @@
+# Scan this file for changes every 30 seconds
+refresh_rate: 30 seconds
+
+appenders:
+  # An appender named "stdout" that writes to stdout
+  stdout:
+    kind: console
+
+  # An appender named "requests" that writes to a file with a custom pattern encoder
+  fall:
+    kind: file
+    path: "/var/lifeich1/hobob/error.log"
+    encoder:
+      pattern: "{d(%Y-%m-%d %H:%M:%S)} # {M}/{l} - {P}:{I} # {m}{n}"
+
+# Set the default logging level to "warn" and attach the "stdout" appender to the root
+root:
+  level: warn
+  appenders:
+    - stdout
+
+loggers:
+  hobob:
+    level: info
+    appenders:
+      - fall
+    additive: false
