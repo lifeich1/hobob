@@ -1,4 +1,4 @@
-use crate::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, Row};
 use serde_derive::{Deserialize, Serialize};
@@ -138,19 +138,19 @@ impl FromRow for FilterMeta {
 }
 
 impl TryFrom<serde_json::Value> for UserInfo {
-    type Error = &'static str;
+    type Error = anyhow::Error;
 
-    fn try_from(v: serde_json::Value) -> std::result::Result<Self, Self::Error> {
+    fn try_from(v: serde_json::Value) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: v["mid"].as_i64().ok_or("mid not found")?,
+            id: v["mid"].as_i64().ok_or(anyhow!("mid not found"))?,
             name: v["name"]
                 .as_str()
                 .map(ToString::to_string)
-                .ok_or("name not found")?,
+                .ok_or(anyhow!("name not found"))?,
             face_url: v["face"]
                 .as_str()
                 .map(ToString::to_string)
-                .ok_or("face not found")?,
+                .ok_or(anyhow!("face not found"))?,
             live_room_url: v["live_room"]["url"]
                 .as_str()
                 .filter(|s| !s.is_empty())
@@ -173,9 +173,8 @@ impl Deref for VideoVector {
 }
 
 impl TryFrom<serde_json::Value> for VideoVector {
-    type Error = String;
-
-    fn try_from(v: serde_json::Value) -> std::result::Result<Self, Self::Error> {
+    type Error = anyhow::Error;
+    fn try_from(v: serde_json::Value) -> Result<Self, Self::Error> {
         let mut r = Vec::new();
         if let Some(a) = v["list"]["vlist"].as_array() {
             for (i, v) in a.iter().enumerate() {
@@ -183,19 +182,21 @@ impl TryFrom<serde_json::Value> for VideoVector {
                     vid: v["bvid"]
                         .as_str()
                         .map(ToString::to_string)
-                        .ok_or_else(|| format!("list.vlist.{}.bvid not found", i))?,
+                        .ok_or_else(|| anyhow!("list.vlist.{}.bvid not found", i))?,
                     title: v["title"]
                         .as_str()
                         .map(ToString::to_string)
-                        .ok_or_else(|| format!("list.vlist.{}.title not found", i))?,
+                        .ok_or_else(|| anyhow!("list.vlist.{}.title not found", i))?,
                     pic_url: v["pic"]
                         .as_str()
                         .map(ToString::to_string)
-                        .ok_or_else(|| format!("list.vlist.{}.pic not found", i))?,
+                        .ok_or_else(|| anyhow!("list.vlist.{}.pic not found", i))?,
                     utime: v["created"]
                         .as_i64()
-                        .map(|x| Utc.timestamp(x, 0))
-                        .ok_or_else(|| format!("list.vlist.{}.created not found", i))?,
+                        .map(|x| Utc.timestamp_opt(x, 0))
+                        .ok_or_else(|| anyhow!("list.vlist.{}.created not found", i))?
+                        .latest()
+                        .unwrap_or(chrono::DateTime::<Utc>::MIN_UTC),
                 })
             }
         }
@@ -430,7 +431,7 @@ impl User {
     }
 
     fn db_disable(&self, db: DbType, b: bool) {
-        let z = Utc.timestamp(0, 0);
+        let z = DateTime::<Utc>::MIN_UTC;
         db.execute(
             "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![self.uid, b, z, z.timestamp(), z.timestamp(), ""],
@@ -566,7 +567,7 @@ impl FilterMeta {
 }
 
 impl TryFrom<i64> for FilterMeta {
-    type Error = crate::Error;
+    type Error = anyhow::Error;
 
     fn try_from(fid: i64) -> Result<Self> {
         conn_db!(db);
