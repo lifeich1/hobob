@@ -272,6 +272,7 @@ impl From<&str> for Order {
     }
 }
 
+#[derive(Clone)]
 pub struct User {
     uid: i64,
 }
@@ -320,10 +321,19 @@ impl User {
         )
         .map_err(|e| log::warn!("Replace into userinfo error(s): {}", e))
         .ok();
+        self.db_upd_ctime(db, info.id);
+    }
+
+    pub fn force_upd_ctime(&self) {
+        conn_db!(db);
+        self.db_upd_ctime(db, self.id());
+    }
+
+    fn db_upd_ctime(&self, db: DbType, id: i64) {
         let now = Utc::now();
         db.execute(
             "UPDATE usersync SET ctime=?2, ctimestamp=?3 WHERE id=?1",
-            params![info.id, now, now.timestamp(),],
+            params![id, now, now.timestamp(),],
         )
         .map_err(|e| log::warn!("Update usersync error(s): {}", e))
         .ok();

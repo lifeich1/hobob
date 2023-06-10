@@ -321,9 +321,10 @@ impl RefreshRunner {
         }
         if live_pn == 0 {
             let id = user.id();
-            match self.refresh(user).await {
+            match self.refresh(user.clone()).await {
                 Ok(_) => self.on_remote_api_ok(),
                 Err(e) => {
+                    user.force_upd_ctime();
                     self.on_remote_api_err(&e);
                     log::error!("Refresh uid {} error(s): {}", id, e);
                 }
