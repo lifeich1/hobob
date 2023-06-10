@@ -1,8 +1,8 @@
 use crate::{
     db,
     engine::{self, Command},
-    Result,
 };
+use anyhow::Result;
 use chrono::{TimeZone, Utc};
 use futures::StreamExt;
 use serde_derive::{Deserialize, Serialize};
@@ -213,7 +213,9 @@ impl From<Result<db::UserInfo>> for UserPack {
                             .unwrap_or_else(|_| String::default()),
                         new_video_tsrepr: sync
                             .map(|s| {
-                                Utc.timestamp(s.new_video_ts, 0)
+                                Utc.timestamp_opt(s.new_video_ts, 0)
+                                    .latest()
+                                    .unwrap_or(chrono::DateTime::<Utc>::MIN_UTC)
                                     .with_timezone(&chrono::Local)
                                     .format("%Y-%m-%d %H:%M:%S")
                                     .to_string()

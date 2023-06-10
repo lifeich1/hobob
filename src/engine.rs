@@ -1,6 +1,6 @@
 use crate::{db, Result};
 use chrono::{DateTime, Local};
-use rand::{Rng, seq::SliceRandom};
+use rand::{seq::SliceRandom, Rng};
 use serde_derive::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::fmt;
@@ -206,7 +206,7 @@ impl CommandDispatcher {
 struct RefreshRunner {
     receiver: mpsc::Receiver<Command>,
     token: RefreshBucket,
-    ctx: bilibili_api_rs::Context,
+    api: bilibili_api_rs::Client,
     evtx: watch::Sender<Event>,
     silence_cnt: u64,
     silence_reason: String,
@@ -218,8 +218,7 @@ impl RefreshRunner {
             receiver,
             evtx,
             token: Default::default(),
-            ctx: bilibili_api_rs::Context::new()
-                .unwrap_or_else(|e| panic!("New bilibili api context error(s): {}", e)),
+            api: bilibili_api_rs::Client::new(),
             silence_cnt: 0,
             silence_reason: Default::default(),
         }
@@ -312,21 +311,26 @@ impl RefreshRunner {
     async fn try_refresh(&mut self, user: db::User, live_pn: i32) {
         if !self.token.try_once() {
             if self.token.is_need_log() {
-                log::info!("Canceled refresh uid {} live_pn {} for no token", user.id(), live_pn);
+                log::info!(
+                    "Canceled refresh uid {} live_pn {} for no token",
+                    user.id(),
+                    live_pn
+                );
             }
             return;
         }
         if live_pn == 0 {
             let id = user.id();
-            match self.refresh(user).await {
+            match self.refresh(user.clone()).await {
                 Ok(_) => self.on_remote_api_ok(),
                 Err(e) => {
+                    user.force_upd_ctime();
                     self.on_remote_api_err(&e);
                     log::error!("Refresh uid {} error(s): {}", id, e);
                 }
             }
         } else {
-             match self.refresh_live_list(live_pn).await {
+            match self.refresh_live_list(live_pn).await {
                 Ok(_) => self.on_remote_api_ok(),
                 Err(e) => {
                     self.on_remote_api_err(&e);
@@ -339,10 +343,10 @@ impl RefreshRunner {
     async fn refresh(&mut self, user: db::User) -> Result<()> {
         let last_info = user.info();
 
-        let api = self.ctx.new_user(&user);
-        let info: db::UserInfo = api.get_info()?.invalidate().query().await?.try_into()?;
+        let api = self.api.user(user.id());
+        let info: db::UserInfo = api.info().await?.try_into()?;
         user.set_info(&info);
-        let videos: db::VideoVector = api.video_list(1)?.invalidate().query().await?.try_into()?;
+        let videos: db::VideoVector = api.latest_videos().await?.try_into()?;
         user.update_videos(videos.iter());
 
         let uid = user.id();
@@ -354,7 +358,14 @@ impl RefreshRunner {
                 ev.status_desc = ev.status.to_string();
             }
         });
-        if !matches!(last_info, Ok(db::UserInfo{live_open: Some(true), ..})) && matches!(info.live_open, Some(true)) {
+        if !matches!(
+            last_info,
+            Ok(db::UserInfo {
+                live_open: Some(true),
+                ..
+            })
+        ) && matches!(info.live_open, Some(true))
+        {
             self.on_new_live(&info);
         }
 
@@ -366,13 +377,9 @@ impl RefreshRunner {
             return Ok(());
         }
 
-        let xlive = self.ctx.xlive();
-        let v = xlive.get_list(
-                bilibili_api_rs::xlive::PAreaID::Vup,
-                bilibili_api_rs::xlive::AreaID::All,
-                bilibili_api_rs::xlive::ListSortType::Entropy,
-                live_pn,
-            )?.query().await?;
+        // Vup/all
+        let xlive = self.api.xlive(9, 0);
+        let v = xlive.list(live_pn.into()).await?;
         let l = match v["list"].as_array() {
             Some(l) => l,
             None => {
@@ -431,7 +438,10 @@ impl RefreshRunner {
 
     fn status_change(&self, stat: RefreshStatus) {
         let s = if self.silence_cnt >= SILENCE_HIP_TH {
-            RefreshStatus::Silence(to_datetime(self.token.next_tik()), self.silence_reason.clone())
+            RefreshStatus::Silence(
+                to_datetime(self.token.next_tik()),
+                self.silence_reason.clone(),
+            )
         } else {
             stat
         };
@@ -453,7 +463,12 @@ impl RefreshRunner {
     fn on_remote_api_err<T: ToString>(&mut self, reason: T) {
         self.silence_cnt += 1;
         let why = reason.to_string();
-        log::error!("increase silence count {}/{}, reason: {}", self.silence_cnt, SILENCE_HIP_TH, &why);
+        log::error!(
+            "increase silence count {}/{}, reason: {}",
+            self.silence_cnt,
+            SILENCE_HIP_TH,
+            &why
+        );
         if self.silence_cnt >= SILENCE_HIP_TH {
             self.silence_reason = why;
             self.token

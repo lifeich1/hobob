@@ -9,6 +9,12 @@
 
 An web app for hobo kicked from bibi&lili.
 
+## Cross compilation
+
+Use [`cross`](https://github.com/cross-rs/cross).
+
+*HINT*: Enforce `CROSS_CONTAINER_ENGINE=podman` to use podman in linux. (*Docker currently is in trouble*)
+
 ## Todo
 
 - [x] persistence fetch and cache user/video info from remote.

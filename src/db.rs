@@ -1,4 +1,4 @@
-use crate::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, Row};
 use serde_derive::{Deserialize, Serialize};
@@ -138,19 +138,19 @@ impl FromRow for FilterMeta {
 }
 
 impl TryFrom<serde_json::Value> for UserInfo {
-    type Error = &'static str;
+    type Error = anyhow::Error;
 
-    fn try_from(v: serde_json::Value) -> std::result::Result<Self, Self::Error> {
+    fn try_from(v: serde_json::Value) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: v["mid"].as_i64().ok_or("mid not found")?,
+            id: v["mid"].as_i64().ok_or(anyhow!("mid not found"))?,
             name: v["name"]
                 .as_str()
                 .map(ToString::to_string)
-                .ok_or("name not found")?,
+                .ok_or(anyhow!("name not found"))?,
             face_url: v["face"]
                 .as_str()
                 .map(ToString::to_string)
-                .ok_or("face not found")?,
+                .ok_or(anyhow!("face not found"))?,
             live_room_url: v["live_room"]["url"]
                 .as_str()
                 .filter(|s| !s.is_empty())
@@ -173,9 +173,8 @@ impl Deref for VideoVector {
 }
 
 impl TryFrom<serde_json::Value> for VideoVector {
-    type Error = String;
-
-    fn try_from(v: serde_json::Value) -> std::result::Result<Self, Self::Error> {
+    type Error = anyhow::Error;
+    fn try_from(v: serde_json::Value) -> Result<Self, Self::Error> {
         let mut r = Vec::new();
         if let Some(a) = v["list"]["vlist"].as_array() {
             for (i, v) in a.iter().enumerate() {
@@ -183,19 +182,21 @@ impl TryFrom<serde_json::Value> for VideoVector {
                     vid: v["bvid"]
                         .as_str()
                         .map(ToString::to_string)
-                        .ok_or_else(|| format!("list.vlist.{}.bvid not found", i))?,
+                        .ok_or_else(|| anyhow!("list.vlist.{}.bvid not found", i))?,
                     title: v["title"]
                         .as_str()
                         .map(ToString::to_string)
-                        .ok_or_else(|| format!("list.vlist.{}.title not found", i))?,
+                        .ok_or_else(|| anyhow!("list.vlist.{}.title not found", i))?,
                     pic_url: v["pic"]
                         .as_str()
                         .map(ToString::to_string)
-                        .ok_or_else(|| format!("list.vlist.{}.pic not found", i))?,
+                        .ok_or_else(|| anyhow!("list.vlist.{}.pic not found", i))?,
                     utime: v["created"]
                         .as_i64()
-                        .map(|x| Utc.timestamp(x, 0))
-                        .ok_or_else(|| format!("list.vlist.{}.created not found", i))?,
+                        .map(|x| Utc.timestamp_opt(x, 0))
+                        .ok_or_else(|| anyhow!("list.vlist.{}.created not found", i))?
+                        .latest()
+                        .unwrap_or(chrono::DateTime::<Utc>::MIN_UTC),
                 })
             }
         }
@@ -213,43 +214,8 @@ lazy_static::lazy_static! {
                 ::std::process::exit(1);
             }
         };
-        let create_result = db.execute_batch("BEGIN;
-                          CREATE TABLE IF NOT EXISTS userinfo(
-                                                id INTEGER PRIMARY KEY, \
-                                                name TEXT NOT NULL, \
-                                                face_url TEXT NOT NULL, \
-                                                live_room_url TEXT, \
-                                                live_room_title TEXT, \
-                                                live_open INTEGER, \
-                                                live_entropy INTEGER);
-                          CREATE TABLE IF NOT EXISTS usersync(\
-                                                id INTEGER NOT NULL UNIQUE, \
-                                                enable INTEGER NOT NULL DEFAULT 1, \
-                                                ctime TEXT NOT NULL, \
-                                                ctimestamp INTEGER NOT NULL DEFAULT 0, \
-                                                new_video_ts INTEGER NOT NULL DEFAULT 0, \
-                                                new_video_title TEXT NOT NULL);
-                          CREATE TABLE IF NOT EXISTS videoinfo(\
-                                                vid TEXT PRIMARY KEY, \
-                                                title TEXT NOT NULL, \
-                                                pic_url TEXT NOT NULL, \
-                                                utime TEXT NOT NULL);
-                          CREATE TABLE IF NOT EXISTS videoowner(\
-                                                uid INTEGER NOT NULL, \
-                                                vid TEXT NOT NULL, \
-                                                timestamp INTEGER NOT NULL, \
-                                                UNIQUE(vid, uid));
-                          CREATE TABLE IF NOT EXISTS userfilters(\
-                                                uid INTEGER NOT NULL, \
-                                                fid INTEGER NOT NULL, \
-                                                priority INTEGER NOT NULL, \
-                                                UNIQUE(uid, fid));
-                          CREATE TABLE IF NOT EXISTS filtermeta(\
-                                                fid INTEGER PRIMARY KEY AUTOINCREMENT, \
-                                                name TEXT NOT NULL);
-                          INSERT OR IGNORE INTO filtermeta VALUES (0, \"全部\");
-                          INSERT OR IGNORE INTO filtermeta VALUES (1, \"特别关注\");
-                          COMMIT;");
+        let db_init_cmds = include_str!("../assets/db_init.sql");
+        let create_result = db.execute_batch(db_init_cmds);
         match create_result {
             Ok(_) => log::info!("Database tables created!"),
             Err(e) => log::warn!("Database tables creation error(s): {}", e),
@@ -306,6 +272,7 @@ impl From<&str> for Order {
     }
 }
 
+#[derive(Clone)]
 pub struct User {
     uid: i64,
 }
@@ -354,10 +321,19 @@ impl User {
         )
         .map_err(|e| log::warn!("Replace into userinfo error(s): {}", e))
         .ok();
+        self.db_upd_ctime(db, info.id);
+    }
+
+    pub fn force_upd_ctime(&self) {
+        conn_db!(db);
+        self.db_upd_ctime(db, self.id());
+    }
+
+    fn db_upd_ctime(&self, db: DbType, id: i64) {
         let now = Utc::now();
         db.execute(
             "UPDATE usersync SET ctime=?2, ctimestamp=?3 WHERE id=?1",
-            params![info.id, now, now.timestamp(),],
+            params![id, now, now.timestamp(),],
         )
         .map_err(|e| log::warn!("Update usersync error(s): {}", e))
         .ok();
@@ -465,7 +441,7 @@ impl User {
     }
 
     fn db_disable(&self, db: DbType, b: bool) {
-        let z = Utc.timestamp(0, 0);
+        let z = DateTime::<Utc>::MIN_UTC;
         db.execute(
             "REPLACE INTO usersync VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![self.uid, b, z, z.timestamp(), z.timestamp(), ""],
@@ -601,7 +577,7 @@ impl FilterMeta {
 }
 
 impl TryFrom<i64> for FilterMeta {
-    type Error = crate::Error;
+    type Error = anyhow::Error;
 
     fn try_from(fid: i64) -> Result<Self> {
         conn_db!(db);

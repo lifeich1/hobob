@@ -1,25 +1,27 @@
-use error_chain::error_chain;
+use anyhow::Result;
 use log::LevelFilter;
 use log4rs::append::file::FileAppender;
 use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;
 
+macro_rules! var_path {
+    () => {
+        "/var/lifeich1/hobob"
+    };
+    (@log) => {
+        concat!(var_path!(), "/log4rs.yml")
+    };
+}
+
 pub mod db;
 pub mod engine;
 pub mod www;
 
-error_chain! {
-    foreign_links {
-        Db(rusqlite::Error);
-        BiliApi(bilibili_api_rs::error::ApiError);
-        InitLog(log::SetLoggerError);
-        ConfigLog(log4rs::config::runtime::ConfigErrors);
-        Io(std::io::Error);
-        CommandMpsc(tokio::sync::mpsc::error::SendError<engine::Command>);
-    }
-}
-
 pub fn prepare_log() -> Result<()> {
+    std::fs::create_dir_all(var_path!())?;
+
+    // TODO
+
     let logfile = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(
             "{d(%Y-%m-%d %H:%M:%S)} # {M}/{l} - {P}:{I} # {m}{n}",
