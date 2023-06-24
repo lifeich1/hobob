@@ -9,6 +9,37 @@
 
 An web app for hobo kicked from bibi&lili.
 
+
+## Design
+
+### Data
+
+- up_info
+    - <id>:json
+        - raw
+            - videos
+            - info
+        - pick
+            - live::{title, url, entropy}
+            - video::{title, url, ts}
+            - basic::{name, face_url, id, ctime, fid, ban}
+- up_by_fid: <fid>:{id}
+- up_by_video: <ts>:{id}
+- up_by_entropy: <entropy>:{id}
+- up_by_group: <gid>:{id}
+- group_info: <gid>::{name, removable}
+- logs: fifo[json{ts, level, msg}]
+- runtime (json)
+    - bucket::{atime, min_gap, min_change_gap, gap}
+
+### Code
+
+- www
+    - get(any)
+    - new::{group, up}
+    - del::{group, up}
+    - cf(path, value)
+
 ## Cross compilation
 
 Use [`cross`](https://github.com/cross-rs/cross).
@@ -17,21 +48,20 @@ Use [`cross`](https://github.com/cross-rs/cross).
 
 ## Todo
 
-- [x] persistence fetch and cache user/video info from remote.
-- [x] webpage: user list in default/video-upload/live-entropy order.
-- [x] rename to hobob, remove deprecated hobob\_app.
-- [x] webpage: backend refresh status display.
-- [x] webpage: server notify data update.
-- [x] backend refresh status control.
+- [ ] persistence fetch and cache user/video info from remote.
+- [ ] webpage: user list in default/video-upload/live-entropy order.
+- [ ] rename to hobob, remove deprecated hobob\_app.
+- [ ] webpage: backend refresh status display.
+- [ ] webpage: server notify data update.
+- [ ] backend refresh status control.
 - [ ] webpage: upzhu list filter
-    - [x] webpage: display filter with 3 order
-    - [x] webpage: custom filter default order can be modified.
+    - [ ] webpage: display filter with 3 order
+    - [ ] webpage: custom filter default order can be modified.
     - [ ] webpage: able to add/remove customized filter (filter 1 is specially unmovable)
-- [x] webpage: show recent stop refresh reason, for banned checking.
+- [ ] webpage: show recent stop refresh reason, for banned checking.
 - [ ] webpage: feature that get search page of containing words in name.
 - [ ] webpage: a video list of user X for temporary utilizing while being banned.
-- [x] webpage: unfollow upzhu.
-- [ ] *publish*: use `include_str!()` to make bin ok to publish.
+- [ ] webpage: unfollow upzhu.
 
 
 ## License
