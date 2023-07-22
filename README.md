@@ -14,31 +14,55 @@ An web app for hobo kicked from bibi&lili.
 
 ### Data
 
-- up_info
-    - <id>:json
-        - raw
-            - videos
-            - info
-        - pick
-            - live::{title, url, entropy}
-            - video::{title, url, ts}
-            - basic::{name, face_url, id, ctime, fid, ban}
-- up_by_fid: <fid>:{id}
-- up_by_video: <ts>:{id}
-- up_by_entropy: <entropy>:{id}
-- up_by_group: <gid>:{id}
-- group_info: <gid>::{name, removable}
-- logs: fifo[json{ts, level, msg}]
-- runtime (json)
-    - bucket::{atime, min_gap, min_change_gap, gap}
+```json
+{
+    "up_info": {
+        "<id>": {
+            "raw": {
+                "videos": "...",
+                "info": "..."
+            },
+            "pick": {
+                "live": {"title", "url", "entropy", "isopen"},
+                "video": {"title", "url", "ts"},
+                "post": {"..."},
+                "basic": {"name", "face_url", "id", "ctime", "fid", "ban"}
+            }
+        }
+    },
+    "up_by_fid": ["<id>"],
+    "up_join_group": { "<group>": {"<uid>":1} },
+    "events": [ {
+        "type": "live/video/post",
+        "live": {"isopen", "..."},
+        "video": {"..."},
+        "post": {"..."}
+    } ],
+    "group_info": {
+        "<gid>": {"name", "removable"}
+    },
+    "logs": [{"ts", "level", "msg"}],
+    "runtime": {
+        "bucket": {"atime", "min_gap", "min_change_gap", "gap"},
+        "log_filter": {"..."},
+        "event_filter": {"..."}
+    }
+}
+```
 
 ### Code
 
-- www
-    - get(any)
-    - new::{group, up}
-    - del::{group, up}
-    - cf(path, value)
+```json
+{
+    "www": {
+        "get": ["<any>"],
+        "new": {"group", "up"},
+        "del": {"group", "up"},
+        "cf": {"path", "value"},
+        "sse": ""
+    }
+}
+```
 
 ## Cross compilation
 
