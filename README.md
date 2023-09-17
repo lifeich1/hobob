@@ -46,7 +46,7 @@ An web app for hobo kicked from bibi&lili.
         "bucket": {"atime", "min_gap", "min_change_gap", "gap"},
         "log_filter": {"..."},
         "event_filter": {"..."},
-        "db": {"dump_time"}
+        "db": {"dump_time", "dump_timeout_min"}
     }
 }
 ```

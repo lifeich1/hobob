@@ -14,8 +14,8 @@ macro_rules! var_path {
 }
 
 pub mod db;
-pub mod engine;
-pub mod www;
+//pub mod engine;
+//pub mod www;
 
 pub fn prepare_log() -> Result<()> {
     std::fs::create_dir_all(var_path!())?;
@@ -44,8 +44,9 @@ pub fn prepare_log() -> Result<()> {
 }
 
 pub async fn main_loop() -> Result<()> {
-    let (_shutdown0, rx) = tokio::sync::oneshot::channel::<i32>();
+    let (_shutdown0, _rx) = tokio::sync::oneshot::channel::<i32>();
 
+    /*
     tokio::spawn(async move {
         www::run(rx).await;
     });
@@ -53,6 +54,7 @@ pub async fn main_loop() -> Result<()> {
     tokio::signal::ctrl_c().await?;
     log::info!("Caught ^C, quiting");
     engine::handle().send(engine::Command::Shutdown).await?;
+    */
 
     Ok(())
 }

@@ -11,8 +11,8 @@ async fn main() {
     }
 
     log::info!("waiting on graceful shutdown");
-    engine::done_shutdown().await;
-    db::blocking_shutdown();
+    //engine::done_shutdown().await;
+    //db::blocking_shutdown();
 
     log::info!("quit");
 }

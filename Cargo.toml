@@ -10,7 +10,6 @@ warp = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tera = "1.12"
-rusqlite = { version = "0.25", features = ["chrono"] }
 log = "0.4"
 log4rs = "1"
 lazy_static = "1.4"
