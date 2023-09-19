@@ -5,8 +5,8 @@ use serde_json::{from_value, to_value, Value};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, watch};
 
 pub type UpInfo = im::HashMap<String, Value>;
 pub type UpJoinGroup = im::HashMap<String, im::HashSet<String>>;
@@ -28,18 +28,35 @@ pub struct FullBench {
 
 pub struct BenchUpdate(FullBench, FullBench);
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WeiYuanHui {
-    updates: Vec<Receiver<BenchUpdate>>,
-    publish: Vec<Sender<FullBench>>,
+    updates: mpsc::Receiver<BenchUpdate>,
+    updates_src: mpsc::Sender<BenchUpdate>,
+    publish: watch::Sender<FullBench>,
+    publish_dst: watch::Receiver<FullBench>,
     bench: FullBench,
     savepath: Option<Box<Path>>,
 }
 
 pub struct WeiYuan {
-    update: Sender<BenchUpdate>,
-    fetch: Receiver<FullBench>,
+    update: mpsc::Sender<BenchUpdate>,
+    fetch: watch::Receiver<FullBench>,
     bench: FullBench,
+}
+
+impl Default for WeiYuanHui {
+    fn default() -> Self {
+        let (updates_src, updates) = mpsc::channel(64);
+        let (publish, publish_dst) = watch::channel(FullBench::default());
+        Self {
+            updates,
+            updates_src,
+            publish,
+            publish_dst,
+            bench: Default::default(),
+            savepath: Default::default(),
+        }
+    }
 }
 
 impl WeiYuanHui {
@@ -65,15 +82,10 @@ impl WeiYuanHui {
     }
 
     pub fn new_chair(&mut self) -> WeiYuan {
-        let (update, rx) = mpsc::channel();
-        self.updates.push(rx);
-        let (tx, fetch) = mpsc::channel();
-        self.publish.push(tx);
-        let bench = self.bench.clone();
         WeiYuan {
-            update,
-            fetch,
-            bench,
+            update: self.updates_src.clone(),
+            fetch: self.publish_dst.clone(),
+            bench: self.bench.clone(),
         }
     }
 
@@ -88,18 +100,18 @@ impl WeiYuanHui {
     }
 
     fn try_update(&mut self) -> bool {
-        let msgs: Vec<_> = self.updates.iter_mut().map(|rx| rx.try_recv()).collect();
-        for msg in msgs {
-            match msg {
-                Ok(msg) => {
-                    if self.try_push(msg) {
-                        return true;
-                    }
+        let msg = self.updates.try_recv();
+        match msg {
+            Ok(msg) => {
+                if self.try_push(msg) {
+                    return true;
                 }
-                // FIXME disconn is shut not panic
-                Err(mpsc::TryRecvError::Disconnected) => panic!("WeiYuanHui receiver offline !!!"),
-                _ => (),
             }
+            // FIXME disconn is shut not panic
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                panic!("WeiYuanHui receiver offline !!!")
+            }
+            _ => (),
         }
         false
     }
@@ -126,26 +138,17 @@ impl WeiYuanHui {
     }
 
     fn push(&mut self, next: FullBench) {
-        self.bench = next;
-        for tx in self.publish.iter() {
-            let data = self.bench.clone();
-            if let Err(e) = tx.send(data) {
-                log::error!("send update err: {}", e);
-            }
-        }
+        self.bench = next.clone();
+        self.publish.send_modify(move |v| *v = next);
     }
 }
 
 impl WeiYuan {
     pub fn recv(&mut self) -> &FullBench {
-        loop {
-            let res = self.fetch.try_recv();
-            match res {
-                Ok(data) => self.bench = data,
-                // FIXME disconn is shut not panic
-                Err(mpsc::TryRecvError::Disconnected) => panic!("this WeiYuan DISCONNECTED !!!"),
-                _ => break,
-            }
+        match self.fetch.has_changed() {
+            Ok(true) => self.bench = self.fetch.borrow_and_update().clone(),
+            Err(_) => panic!("FIXME: it should be shutdown signal"),
+            _ => (),
         }
         &self.bench
     }
@@ -160,8 +163,12 @@ impl WeiYuan {
                 break;
             }
         }
-        if let Err(e) = self.update.send(msg) {
-            log::error!("send update failed: {}", e);
+        if let Err(e) = self.update.try_send(msg) {
+            if let TrySendError::Closed(_) = e {
+                panic!("FIXME: it should be shutdown signal");
+            } else {
+                log::error!("send update failed: {}", e);
+            }
         }
     }
 }
@@ -203,6 +210,18 @@ impl FullBench {
             .and_then(|v| v["dump_timeout_min"].as_u64())
             .unwrap_or(720)
     }
+
+    /// General api, for www use
+    pub fn runtime_field(&self, key: &str, path: &str) -> Value {
+        // TODO
+        Value::Null
+    }
+
+    /// General api, for www use
+    pub fn runtiem_set_field(&self, key: &str, path: &str) -> Self {
+        // TODO
+        Self::default()
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +241,12 @@ mod tests {
         assert!(bench.runtime_dump_now());
         let next = bench.set_runtime_next_dump();
         assert!(!next.runtime_dump_now());
+    }
+
+    #[test]
+    fn test_runtime_field_set_n_get() {
+        // TODO
+        assert!(true);
     }
 
     #[test]
