@@ -274,7 +274,12 @@ mod tests {
 
     #[test]
     fn test_two_chairs() {
-        // TODO
-        assert!(true);
+        let mut center = WeiYuanHui::default();
+        let mut chair = center.new_chair();
+        let mut chair_rx = center.new_chair();
+        chair.update(|b| b.runtime_set_field("bucket", "min_gap", json!(23)));
+        center.nonblocking_run();
+        let cur = chair_rx.recv();
+        assert_eq!(cur.runtime_field("bucket", "min_gap"), json!(23));
     }
 }
