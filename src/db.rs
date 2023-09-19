@@ -174,7 +174,7 @@ impl WeiYuan {
 }
 
 impl FullBench {
-    fn mut_runtime_field<F: Fn(&mut Value)>(&self, key: &str, f: F) -> Self {
+    fn mut_runtime_field<F: FnOnce(&mut Value)>(&self, key: &str, f: F) -> Self {
         let mut v = self
             .runtime
             .get(key)
@@ -213,20 +213,38 @@ impl FullBench {
 
     /// General api, for www use
     pub fn runtime_field(&self, key: &str, path: &str) -> Value {
-        // TODO
-        Value::Null
+        im::get_in!(self.runtime, key)
+            .and_then(|v| {
+                let mut t: &Value = v;
+                for p in path.split('/') {
+                    match t.get(p) {
+                        Some(r) => t = r,
+                        None => return None,
+                    }
+                }
+                Some(t.clone())
+            })
+            .unwrap_or(Value::Null)
     }
 
     /// General api, for www use
-    pub fn runtiem_set_field(&self, key: &str, path: &str) -> Self {
-        // TODO
-        Self::default()
+    pub fn runtime_set_field(&self, key: &str, path: &str, val: Value) -> Self {
+        self.mut_runtime_field(key, |mut v| {
+            for p in path.split('/') {
+                if v.get(p).is_none() {
+                    v[p] = Value::Object(Default::default());
+                }
+                v = v.get_mut(p).unwrap();
+            }
+            *v = val;
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_runtime_dump_now_default() {
@@ -245,8 +263,13 @@ mod tests {
 
     #[test]
     fn test_runtime_field_set_n_get() {
-        // TODO
-        assert!(true);
+        let mut bench = FullBench::default();
+        bench = bench.runtime_set_field("db", "bucket/min_gap", json!(42));
+        assert_eq!(
+            bench.runtime.get("db"),
+            Some(&json!({"bucket":{"min_gap":42}}))
+        );
+        assert_eq!(bench.runtime_field("db", "bucket/min_gap"), json!(42));
     }
 
     #[test]
