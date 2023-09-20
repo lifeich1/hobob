@@ -44,9 +44,9 @@ An web app for hobo kicked from bibi&lili.
     "logs": [{"ts", "level", "msg"}],
     "runtime": {
         "bucket": {"atime", "min_gap", "min_change_gap", "gap"},
-        "log_filter": {"..."},
-        "event_filter": {"..."},
-        "db": {"dump_time", "dump_timeout_min"}
+        "log_filter": {"minlevel", "dump_timeout_ms", "//dump_time is per chair"},
+        "event_filter": {"dump_timeout_ms"},
+        "db": {"dump_time", "dump_timeout_min", "dump_err_ts"}
     }
 }
 ```

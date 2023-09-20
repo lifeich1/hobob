@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_derive::{Deserialize, Serialize};
+use serde_json::json;
 use serde_json::{from_value, to_value, Value};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -42,6 +43,10 @@ pub struct WeiYuan {
     update: mpsc::Sender<BenchUpdate>,
     fetch: watch::Receiver<FullBench>,
     bench: FullBench,
+    buf_logs: Vec<Value>,
+    buf_events: Vec<Value>,
+    logs_dump_time: DateTime<Utc>,
+    events_dump_time: DateTime<Utc>,
 }
 
 impl Default for WeiYuanHui {
@@ -86,6 +91,10 @@ impl WeiYuanHui {
             update: self.updates_src.clone(),
             fetch: self.publish_dst.clone(),
             bench: self.bench.clone(),
+            buf_logs: Default::default(),
+            buf_events: Default::default(),
+            logs_dump_time: Utc::now(),
+            events_dump_time: Utc::now(),
         }
     }
 
@@ -93,6 +102,7 @@ impl WeiYuanHui {
         while self.try_update() {
             if self.bench.runtime_dump_now() {
                 if let Err(e) = self.save_disk() {
+                    // TODO update dump_err_ts
                     log::error!("save_disk error: {}", e);
                 }
             }
@@ -167,10 +177,28 @@ impl WeiYuan {
             if let TrySendError::Closed(_) = e {
                 panic!("FIXME: it should be shutdown signal");
             } else {
+                // TODO push in buflogqueue
                 log::error!("send update failed: {}", e);
             }
         }
     }
+
+    pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
+        self.buf_logs.push(
+            json!({"ts": to_value(Utc::now()).unwrap(), "level": level, "msg": msg.to_string()}),
+        );
+    }
+
+    pub fn event(&mut self, ev: Value) {
+        self.buf_events.push(ev);
+    }
+
+    pub async fn step_sidecar() {
+        // select dumpers
+    }
+
+    async fn dump_logs() {}
+    async fn dump_events() {}
 }
 
 impl FullBench {
@@ -244,7 +272,6 @@ impl FullBench {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_runtime_dump_now_default() {
