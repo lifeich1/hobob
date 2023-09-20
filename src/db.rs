@@ -39,6 +39,7 @@ pub struct WeiYuanHui {
     savepath: Option<Box<Path>>,
 }
 
+#[derive(Clone)]
 pub struct WeiYuan {
     update: mpsc::Sender<BenchUpdate>,
     fetch: watch::Receiver<FullBench>,
@@ -94,7 +95,10 @@ impl WeiYuanHui {
         while self.try_update() {
             if self.bench.runtime_dump_now() {
                 if let Err(e) = self.save_disk() {
-                    // TODO update dump_err_ts
+                    self.push(
+                        self.bench
+                            .add_log(0, format!("#WeiYuanHui# save_disk error: {}", &e)),
+                    );
                     log::error!("save_disk error: {}", e);
                 }
             }
@@ -303,7 +307,7 @@ mod tests {
     fn test_two_chairs() {
         let mut center = WeiYuanHui::default();
         let mut chair = center.new_chair();
-        let mut chair_rx = center.new_chair();
+        let mut chair_rx = chair.clone();
         chair.update(|b| b.runtime_set_field("bucket", "min_gap", json!(23)));
         center.nonblocking_run();
         let cur = chair_rx.recv();
