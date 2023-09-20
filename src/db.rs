@@ -43,10 +43,6 @@ pub struct WeiYuan {
     update: mpsc::Sender<BenchUpdate>,
     fetch: watch::Receiver<FullBench>,
     bench: FullBench,
-    buf_logs: Vec<Value>,
-    buf_events: Vec<Value>,
-    logs_dump_time: DateTime<Utc>,
-    events_dump_time: DateTime<Utc>,
 }
 
 impl Default for WeiYuanHui {
@@ -91,10 +87,6 @@ impl WeiYuanHui {
             update: self.updates_src.clone(),
             fetch: self.publish_dst.clone(),
             bench: self.bench.clone(),
-            buf_logs: Default::default(),
-            buf_events: Default::default(),
-            logs_dump_time: Utc::now(),
-            events_dump_time: Utc::now(),
         }
     }
 
@@ -168,7 +160,7 @@ impl WeiYuan {
         loop {
             let old = self.recv().clone();
             let new = f(&old);
-            if old == *self.recv() {
+            if old.ptr_eq(self.recv()) {
                 msg = BenchUpdate(old, new);
                 break;
             }
@@ -177,55 +169,63 @@ impl WeiYuan {
             if let TrySendError::Closed(_) = e {
                 panic!("FIXME: it should be shutdown signal");
             } else {
-                // TODO push in buflogqueue
                 log::error!("send update failed: {}", e);
             }
         }
     }
 
     pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
-        self.buf_logs.push(
-            json!({"ts": to_value(Utc::now()).unwrap(), "level": level, "msg": msg.to_string()}),
-        );
+        self.update(|b| b.add_log(level, msg.to_string()));
     }
+}
 
-    pub fn event(&mut self, ev: Value) {
-        self.buf_events.push(ev);
+fn im_vector_p_eq<A: Clone + Eq>(lhs: &im::Vector<A>, rhs: &im::Vector<A>) -> bool {
+    match (lhs.is_inline(), rhs.is_inline()) {
+        (true, true) => *lhs == *rhs,
+        (false, false) => lhs.ptr_eq(rhs),
+        _ => false,
     }
-
-    pub async fn step_sidecar() {
-        // select dumpers
-    }
-
-    async fn dump_logs() {}
-    async fn dump_events() {}
 }
 
 impl FullBench {
-    fn mut_runtime_field<F: FnOnce(&mut Value)>(&self, key: &str, f: F) -> Self {
-        let mut v = self
-            .runtime
-            .get(key)
-            .cloned()
-            .unwrap_or_else(|| Value::default());
-        f(&mut v);
+    fn ptr_eq(&self, other: &Self) -> bool {
+        self.up_info.ptr_eq(&other.up_info)
+            && im_vector_p_eq(&self.up_by_fid, &other.up_by_fid)
+            && self.up_join_group.ptr_eq(&other.up_join_group)
+            && im_vector_p_eq(&self.events, &other.events)
+            && self.group_info.ptr_eq(&other.group_info)
+            && im_vector_p_eq(&self.logs, &other.logs)
+            && self.runtime.ptr_eq(&other.runtime)
+    }
+
+    fn add_log(&self, level: i32, msg: String) -> Self {
         let mut r = self.clone();
-        r.runtime = self.runtime.update(key.into(), v);
+        r.logs
+            .push_back(json!({"ts": to_value(Utc::now()).unwrap(), "level": level, "msg": msg}));
         r
     }
 
-    pub fn runtime_dump_time(&self) -> Option<DateTime<Utc>> {
+    fn mut_runtime_field<F: FnOnce(&mut Value)>(&self, key: &str, f: F) -> Self {
+        let mut r = self.clone();
+        if r.runtime.get(key).is_none() {
+            r.runtime.insert(key.into(), Value::default());
+        }
+        f(r.runtime.get_mut(key).unwrap());
+        r
+    }
+
+    fn runtime_dump_time(&self) -> Option<DateTime<Utc>> {
         im::get_in!(self.runtime, "db")
             .and_then(|v| from_value::<DateTime<Utc>>(v["dump_time"].clone()).ok())
     }
 
-    pub fn runtime_dump_now(&self) -> bool {
+    fn runtime_dump_now(&self) -> bool {
         self.runtime_dump_time()
             .map(|t| t < Utc::now())
             .unwrap_or(true)
     }
 
-    pub fn set_runtime_next_dump(&self) -> Self {
+    fn set_runtime_next_dump(&self) -> Self {
         self.mut_runtime_field("db", |v| {
             v["dump_time"] =
                 to_value(Utc::now() + Duration::minutes(self.runtime_dump_timeout_min() as i64))
@@ -233,7 +233,7 @@ impl FullBench {
         })
     }
 
-    pub fn runtime_dump_timeout_min(&self) -> u64 {
+    fn runtime_dump_timeout_min(&self) -> u64 {
         im::get_in!(self.runtime, "db")
             .and_then(|v| v["dump_timeout_min"].as_u64())
             .unwrap_or(720)
