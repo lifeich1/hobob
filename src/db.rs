@@ -43,7 +43,7 @@ pub struct WeiYuanHui {
     updates: mpsc::Receiver<BenchUpdate>,
     updates_src: Option<mpsc::Sender<BenchUpdate>>,
     publish: watch::Sender<FullBench>,
-    publish_dst: watch::Receiver<FullBench>,
+    publish_dst: Option<watch::Receiver<FullBench>>,
     bench: FullBench,
     savepath: Option<Box<Path>>,
     counter: VCounter,
@@ -61,6 +61,7 @@ impl Default for WeiYuanHui {
         let (updates_src, updates) = mpsc::channel(64);
         let (publish, publish_dst) = watch::channel(FullBench::default());
         let updates_src = Some(updates_src);
+        let publish_dst = Some(publish_dst);
         Self {
             updates,
             updates_src,
@@ -103,16 +104,25 @@ impl WeiYuanHui {
                 .as_ref()
                 .expect("new_chair in closing")
                 .clone(),
-            fetch: self.publish_dst.clone(),
+            fetch: self
+                .publish_dst
+                .as_ref()
+                .expect("new_chair in closing")
+                .clone(),
             bench: self.bench.clone(),
         }
     }
 
     pub fn close(&mut self) {
         self.updates_src = None;
+        self.publish_dst = None;
         self.save_disk().ok();
         self.push(self.bench.runtime_set_closing());
         self.updates.close();
+    }
+
+    pub async fn closed(&self) {
+        self.publish.closed().await;
     }
 
     /// @return is running
@@ -130,6 +140,10 @@ impl WeiYuanHui {
             }
         }
         true
+    }
+
+    pub async fn run_for(&mut self, duration: Duration) -> Result<bool> {
+        Ok(tokio::time::timeout(duration.to_std()?, self.run()).await?)
     }
 
     /// @return is running
@@ -347,6 +361,8 @@ impl VCounter {
 mod tests {
     use super::*;
     use std::mem;
+    use std::time::Duration as Dur;
+    use tokio::time::timeout;
 
     #[test]
     fn test_runtime_dump_now_default() {
@@ -374,6 +390,18 @@ mod tests {
         assert_eq!(bench.runtime_field("db", "bucket/min_gap"), json!(42));
     }
 
+    async fn run_1s(center: &mut WeiYuanHui) -> bool {
+        center
+            .run_for(Duration::seconds(1))
+            .await
+            .ok()
+            .unwrap_or(false)
+    }
+
+    async fn check_closed(center: &WeiYuanHui) {
+        assert!(timeout(Dur::from_secs(1), center.closed()).await.is_ok());
+    }
+
     #[tokio::test]
     async fn test_two_chairs() {
         let mut center = WeiYuanHui::default();
@@ -389,12 +417,13 @@ mod tests {
                     .map(|e| format!("{:?}", e)),
                 None
             );
-            assert!(center.run().await);
+            assert!(run_1s(&mut center).await);
             let cur = chair_rx.recv().unwrap();
             assert_eq!(cur.runtime_field("bucket", "min_gap"), json!(23));
         }
         center.close();
-        assert!(!center.run().await);
+        assert!(!run_1s(&mut center).await);
+        check_closed(&center).await;
     }
 
     #[tokio::test]
@@ -437,4 +466,6 @@ mod tests {
     }
 
     // TODO: VCounter
+    // TODO: expect "new_chair in closing"
+    // TODO: check weiyuan get closing
 }
