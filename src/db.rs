@@ -5,9 +5,12 @@ use serde_json::json;
 use serde_json::{from_value, to_value, Value};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
+use std::ops::Not;
 use std::path::Path;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
+
+const FLAG_CLOSING: &str = "#CLOSING#";
 
 pub type UpInfo = im::HashMap<String, Value>;
 pub type UpJoinGroup = im::HashMap<String, im::HashSet<String>>;
@@ -29,14 +32,21 @@ pub struct FullBench {
 
 pub struct BenchUpdate(FullBench, FullBench);
 
+#[derive(Default, Debug)]
+struct VCounter {
+    last_dump_ts: Option<DateTime<Utc>>,
+    push_miss_cnt: u64,
+}
+
 #[derive(Debug)]
 pub struct WeiYuanHui {
     updates: mpsc::Receiver<BenchUpdate>,
-    updates_src: mpsc::Sender<BenchUpdate>,
+    updates_src: Option<mpsc::Sender<BenchUpdate>>,
     publish: watch::Sender<FullBench>,
     publish_dst: watch::Receiver<FullBench>,
     bench: FullBench,
     savepath: Option<Box<Path>>,
+    counter: VCounter,
 }
 
 #[derive(Clone)]
@@ -50,6 +60,7 @@ impl Default for WeiYuanHui {
     fn default() -> Self {
         let (updates_src, updates) = mpsc::channel(64);
         let (publish, publish_dst) = watch::channel(FullBench::default());
+        let updates_src = Some(updates_src);
         Self {
             updates,
             updates_src,
@@ -57,6 +68,7 @@ impl Default for WeiYuanHui {
             publish_dst,
             bench: Default::default(),
             savepath: Default::default(),
+            counter: Default::default(),
         }
     }
 }
@@ -75,7 +87,8 @@ impl WeiYuanHui {
         let savepath: Option<Box<Path>> = Some(path.as_ref().into());
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let bench: FullBench = serde_json::from_reader(reader)?;
+        let mut bench: FullBench = serde_json::from_reader(reader)?;
+        bench.runtime_rm_closing();
         Ok(Self {
             bench,
             savepath,
@@ -85,49 +98,60 @@ impl WeiYuanHui {
 
     pub fn new_chair(&mut self) -> WeiYuan {
         WeiYuan {
-            update: self.updates_src.clone(),
+            update: self
+                .updates_src
+                .as_ref()
+                .expect("new_chair in closing")
+                .clone(),
             fetch: self.publish_dst.clone(),
             bench: self.bench.clone(),
         }
     }
 
-    pub fn nonblocking_run(&mut self) {
-        while self.try_update() {
-            if self.bench.runtime_dump_now() {
-                if let Err(e) = self.save_disk() {
-                    self.push(
-                        self.bench
-                            .add_log(0, format!("#WeiYuanHui# save_disk error: {}", &e)),
-                    );
-                    log::error!("save_disk error: {}", e);
-                }
-            }
-        }
+    pub fn close(&mut self) {
+        self.updates_src = None;
+        self.save_disk().ok();
+        self.push(self.bench.runtime_set_closing());
+        self.updates.close();
     }
 
-    fn try_update(&mut self) -> bool {
-        let msg = self.updates.try_recv();
+    /// @return is running
+    pub async fn run(&mut self) -> bool {
+        if !self.try_update().await {
+            return false;
+        }
+        if self.bench.runtime_dump_now() {
+            if let Err(e) = self.save_disk() {
+                self.push(
+                    self.bench
+                        .add_log(0, format!("#WeiYuanHui# save_disk error: {}", &e)),
+                );
+                log::error!("save_disk error: {}", e);
+            }
+        }
+        true
+    }
+
+    /// @return is running
+    async fn try_update(&mut self) -> bool {
+        let msg = self.updates.recv().await;
         match msg {
-            Ok(msg) => {
-                if self.try_push(msg) {
-                    return true;
-                }
+            Some(msg) => {
+                self.try_push(msg);
+                true
             }
-            // FIXME disconn is shut not panic
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                panic!("WeiYuanHui receiver offline !!!")
-            }
-            _ => (),
+            None => false,
         }
-        false
     }
 
-    fn try_push(&mut self, upd: BenchUpdate) -> bool {
-        if upd.0 == self.bench {
+    fn try_push(&mut self, upd: BenchUpdate) {
+        if upd.0.ptr_eq(&self.bench) {
             self.push(upd.1);
-            true
         } else {
-            false
+            self.counter.push_miss_cnt += 1;
+            if let Some(msg) = self.counter.try_log(&self.bench) {
+                self.push(self.bench.add_log(1, msg));
+            }
         }
     }
 
@@ -150,36 +174,46 @@ impl WeiYuanHui {
 }
 
 impl WeiYuan {
-    pub fn recv(&mut self) -> &FullBench {
+    /// @return None for closing
+    pub fn recv(&mut self) -> Result<&FullBench> {
         match self.fetch.has_changed() {
             Ok(true) => self.bench = self.fetch.borrow_and_update().clone(),
-            Err(_) => panic!("FIXME: it should be shutdown signal"),
+            Err(_) => panic!("watch chan: WeiYuanHui drop too fast"),
             _ => (),
         }
-        &self.bench
+        self.bench
+            .runtime_is_closing()
+            .not()
+            .then_some(&self.bench)
+            .ok_or_else(|| anyhow!("WeiYuanHui closing"))
     }
 
-    pub fn update<F: Fn(&FullBench) -> FullBench>(&mut self, f: F) {
+    pub fn update<F: Fn(&FullBench) -> FullBench>(&mut self, f: F) -> Result<()> {
         let msg: BenchUpdate;
         loop {
-            let old = self.recv().clone();
+            let old = self.recv()?.clone();
             let new = f(&old);
-            if old.ptr_eq(self.recv()) {
+            if old.ptr_eq(self.recv()?) {
                 msg = BenchUpdate(old, new);
                 break;
             }
         }
         if let Err(e) = self.update.try_send(msg) {
             if let TrySendError::Closed(_) = e {
-                panic!("FIXME: it should be shutdown signal");
+                self.recv()
+                    .map(|_| {
+                        panic!("Update channel disconnected without WeiYuanHui closing flag !!")
+                    })
+                    .ok();
             } else {
                 log::error!("send update failed: {}", e);
             }
         }
+        Ok(())
     }
 
     pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
-        self.update(|b| b.add_log(level, msg.to_string()));
+        self.update(|b| b.add_log(level, msg.to_string())).ok();
     }
 }
 
@@ -243,6 +277,27 @@ impl FullBench {
             .unwrap_or(720)
     }
 
+    fn runtime_vlog_dump_gap(&self) -> Duration {
+        self.runtime
+            .get("db")
+            .and_then(|v| v["vlog_dump_gap_sec"].as_u64())
+            .map(|sec| sec as i64)
+            .map(Duration::seconds)
+            .unwrap_or_else(|| Duration::seconds(10))
+    }
+
+    fn runtime_set_closing(&self) -> Self {
+        self.mut_runtime_field(FLAG_CLOSING, |v| *v = Value::Null)
+    }
+
+    fn runtime_rm_closing(&mut self) {
+        self.runtime.remove(FLAG_CLOSING);
+    }
+
+    fn runtime_is_closing(&self) -> bool {
+        self.runtime.get(FLAG_CLOSING).is_some()
+    }
+
     /// General api, for www use
     pub fn runtime_field(&self, key: &str, path: &str) -> Value {
         im::get_in!(self.runtime, key)
@@ -273,9 +328,25 @@ impl FullBench {
     }
 }
 
+impl VCounter {
+    pub fn try_log(&mut self, bench: &FullBench) -> Option<String> {
+        if self.last_dump_ts.map(|t| Utc::now() > t).unwrap_or(true) {
+            self.last_dump_ts = Some(Utc::now() + bench.runtime_vlog_dump_gap());
+            Some(self.do_log())
+        } else {
+            None
+        }
+    }
+
+    fn do_log(&self) -> String {
+        format!("push_miss_cnt: {},", self.push_miss_cnt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem;
 
     #[test]
     fn test_runtime_dump_now_default() {
@@ -303,14 +374,67 @@ mod tests {
         assert_eq!(bench.runtime_field("db", "bucket/min_gap"), json!(42));
     }
 
-    #[test]
-    fn test_two_chairs() {
+    #[tokio::test]
+    async fn test_two_chairs() {
+        let mut center = WeiYuanHui::default();
+        assert_eq!(center.bench.runtime.get(FLAG_CLOSING), None);
+        assert_eq!(center.bench.runtime_is_closing(), false);
+        {
+            let mut chair = center.new_chair();
+            let mut chair_rx = chair.clone();
+            assert_eq!(
+                chair
+                    .update(|b| b.runtime_set_field("bucket", "min_gap", json!(23)))
+                    .err()
+                    .map(|e| format!("{:?}", e)),
+                None
+            );
+            assert!(center.run().await);
+            let cur = chair_rx.recv().unwrap();
+            assert_eq!(cur.runtime_field("bucket", "min_gap"), json!(23));
+        }
+        center.close();
+        assert!(!center.run().await);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "watch chan: WeiYuanHui drop too fast")]
+    async fn test_weiyuanhui_drop_too_fast() {
         let mut center = WeiYuanHui::default();
         let mut chair = center.new_chair();
-        let mut chair_rx = chair.clone();
-        chair.update(|b| b.runtime_set_field("bucket", "min_gap", json!(23)));
-        center.nonblocking_run();
-        let cur = chair_rx.recv();
-        assert_eq!(cur.runtime_field("bucket", "min_gap"), json!(23));
+        center.close();
+        mem::drop(center);
+        chair.recv().ok();
     }
+
+    #[tokio::test]
+    async fn test_weiyuan_log() {
+        let mut center = WeiYuanHui::default();
+        let mut chair = center.new_chair();
+        chair.log(3, "Ooga-Chaka Ooga-Ooga");
+        assert_eq!(center.bench.logs.len(), 0);
+        assert!(center.run().await);
+        assert_ne!(center.bench.logs.len(), 0);
+        let mut v = center.bench.logs[0].clone();
+        v["ts"] = json!(null);
+        assert_eq!(
+            v,
+            json!({
+                "ts": null,
+                "level": 3,
+                "msg": "Ooga-Chaka Ooga-Ooga",
+            })
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "Update channel disconnected without WeiYuanHui closing flag !!")]
+    async fn test_weiyuanhui_channel_error() {
+        let mut center = WeiYuanHui::default();
+        let mut chair = center.new_chair();
+        center.updates.close();
+        chair.log(3, "Ooga-Chaka Ooga-Ooga");
+    }
+
+    // TODO: VCounter
 }
