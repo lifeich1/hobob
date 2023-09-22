@@ -383,8 +383,8 @@ impl FullBench {
         })
     }
 
-    pub fn follow(&mut self, opt: Value) -> Result<()> {
-        ChairData::expect("https://lintd.xyz/hobob/follow.json", &opt)?;
+    pub fn follow(&mut self, opt: &Value) -> Result<()> {
+        ChairData::expect("https://lintd.xyz/hobob/follow.json", opt)?;
         let uid = opt["uid"].as_i64().unwrap();
         let enable = opt["enable"].as_bool().unwrap_or(true);
         if enable {
@@ -408,8 +408,8 @@ impl FullBench {
         Ok(())
     }
 
-    pub fn refresh(&mut self, opt: Value) -> Result<()> {
-        ChairData::expect("https://lintd.xyz/hobob/refresh.json", &opt)?;
+    pub fn refresh(&mut self, opt: &Value) -> Result<()> {
+        ChairData::expect("https://lintd.xyz/hobob/refresh.json", opt)?;
         let uid = opt["uid"].as_i64().unwrap().to_string();
         if self.up_info.contains_key(&uid) {
             self.commands.push_back(json!({

@@ -88,18 +88,19 @@ pub async fn run(runner: WeiYuan) {
     }
     fn do_api<F>(hdl: &WeiYuan, name: &str, opt: Value, f: F) -> reply::Json
     where
-        F: Fn(&mut FullBench, Value) -> Result<()>,
+        F: Fn(&mut FullBench, &Value) -> Result<()>,
     {
+        let msg = format!("{} arg: {:?}", name, &opt);
         reply::json(
-            &info(hdl.clone(), format!("{} arg: {:?}", name, &opt))
-                .apply(|b| f(b, opt.clone()))
+            &info(hdl.clone(), msg)
+                .apply(|b| f(b, &opt))
                 .map(|_| json!("success"))
                 .unwrap_or_else(|e| json!({"err": e.to_string()})),
         )
     }
     fn create_op<F>(runner: &WeiYuan, name: &'static str, f: F) -> BoxedFilter<(impl reply::Reply,)>
     where
-        F: Fn(&mut FullBench, Value) -> Result<()>
+        F: Fn(&mut FullBench, &Value) -> Result<()>
             + std::marker::Sync
             + std::marker::Send
             + Copy
@@ -114,6 +115,8 @@ pub async fn run(runner: WeiYuan) {
     let op_follow = warp::path!("follow").and(create_op(&runner, "follow", |b, opt| b.follow(opt)));
     let op_refresh =
         warp::path!("refresh").and(create_op(&runner, "refresh", |b, opt| b.refresh(opt)));
+    //let op_refresh =
+    //warp::path!("silence").and(create_op(&runner, "silence", |b, opt| b.force_silence(opt)));
     /*
     let op_silence = warp::path!("silence")
         .and(req_type!(@post))
