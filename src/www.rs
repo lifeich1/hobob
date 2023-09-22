@@ -115,30 +115,16 @@ pub async fn run(runner: WeiYuan) {
     let op_follow = warp::path!("follow").and(create_op(&runner, "follow", |b, opt| b.follow(opt)));
     let op_refresh =
         warp::path!("refresh").and(create_op(&runner, "refresh", |b, opt| b.refresh(opt)));
-    //let op_refresh =
-    //warp::path!("silence").and(create_op(&runner, "silence", |b, opt| b.force_silence(opt)));
-    /*
-    let op_silence = warp::path!("silence")
-        .and(req_type!(@post))
-        .map(|opt: ForceSilenceOptions| jsnapi!(@cmd Command::ForceSilence(opt.silence)));
-    let op_mod_filter =
-        warp::path!("mod" / "filter")
-            .and(req_type!(@post))
-            .map(|opt: ModFilterOptions| {
-                db::User::new(opt.uid).mod_filter(opt.fid, opt.priority);
-                jsnapi!(@ok)
-            });
-    let op_new_filter =
-        warp::path!("new" / "filter")
-            .and(req_type!(@post))
-            .map(|opt: NewFilterOptions| {
-                jsnapi!(@try db::FilterMeta::new(&opt.name); e; {
-                    log::error!("new filter error(s): {}", e);
-                    format!("Db error: {}", e)
-                })
-            });
-    */
-    let op = warp::path("op");
+    let op_silence =
+        warp::path!("silence").and(create_op(&runner, "silence", |b, opt| b.force_silence(opt)));
+    let op_toggle_group =
+        warp::path!("toggle" / "group").and(create_op(&runner, "toggle/group", |b, opt| {
+            b.toggle_group(opt)
+        }));
+    let op_new_group =
+        warp::path!("touch" / "group").and(create_op(&runner, "touch/group", |b, opt| {
+            b.touch_group(opt)
+        }));
     /*
 
     let get_user =
@@ -178,8 +164,6 @@ pub async fn run(runner: WeiYuan) {
     });
     let ev = warp::path("ev");
 
-    let static_files = warp::path("static").and(warp::fs::dir("./static"));
-    let favicon = warp::path!("favicon.ico").and(warp::fs::file("./static/favicon.ico"));
 
     let app = index
         .or(op.and(op_follow))
@@ -198,7 +182,19 @@ pub async fn run(runner: WeiYuan) {
         .or(ev.and(ev_engine))
         .or(favicon);
     */
-    let app = index.or(op.and(op_follow.or(op_refresh)));
+    let static_files = warp::path("static").and(warp::fs::dir("./static"));
+    let favicon = warp::path!("favicon.ico").and(warp::fs::file("./static/favicon.ico"));
+
+    let app = index
+        .or(warp::path("op").and(
+            op_follow
+                .or(op_refresh)
+                .or(op_silence)
+                .or(op_toggle_group)
+                .or(op_new_group),
+        ))
+        .or(static_files)
+        .or(favicon);
     log::info!("www running");
     let (_, run) = warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
         runner.clone().until_closing().await

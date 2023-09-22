@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, watch};
 const FLAG_CLOSING: &str = "#CLOSING#";
 
 pub type UpInfo = im::HashMap<String, Value>;
-pub type UpJoinGroup = im::HashMap<String, im::HashSet<String>>;
+pub type UpJoinGroup = im::HashMap<String, im::OrdSet<String>>;
 pub type Events = im::Vector<Value>;
 pub type GroupInfo = im::HashMap<String, Value>;
 pub type LogRecords = im::Vector<Value>;
@@ -354,6 +354,31 @@ impl FullBench {
         self.runtime.get(FLAG_CLOSING).is_some()
     }
 
+    fn bucket_check_init(&mut self) {
+        if self
+            .runtime
+            .get("bucket")
+            .and_then(|v| ChairData::expect("https://lintd.xyz/hobob/runtime/bucket.json", v).ok())
+            .is_none()
+        {
+            self.runtime.insert(
+                "bucket".into(),
+                json!({
+                    "atime": to_value(Utc::now()).unwrap(),
+                    "min_gap": 10,
+                    "min_change_gap": 10,
+                    "gap": 30,
+                }),
+            );
+        }
+    }
+
+    fn bucket_double_gap(&mut self) {
+        self.bucket_check_init();
+        let v: &mut Value = self.runtime.get_mut("bucket").unwrap();
+        v["gap"] = (v["gap"].as_u64().unwrap() * 2).into();
+    }
+
     /// General api, for www use
     pub fn runtime_field(&self, key: &str, path: &str) -> Value {
         im::get_in!(self.runtime, key)
@@ -408,20 +433,72 @@ impl FullBench {
         Ok(())
     }
 
+    fn checked_uid(&mut self, opt: &Value, key: &str) -> Result<String> {
+        let uid = opt[key].as_i64().unwrap().to_string();
+        self.up_info
+            .contains_key(&uid)
+            .then_some(uid)
+            .ok_or_else(|| anyhow!("operate on not tracing uid"))
+    }
+
     pub fn refresh(&mut self, opt: &Value) -> Result<()> {
         ChairData::expect("https://lintd.xyz/hobob/refresh.json", opt)?;
-        let uid = opt["uid"].as_i64().unwrap().to_string();
-        if self.up_info.contains_key(&uid) {
-            self.commands.push_back(json!({
-                "cmd": "fetch",
-                "args": {
-                    "uid": uid,
-                }
-            }));
-            Ok(())
+        let uid = self.checked_uid(opt, "uid")?;
+        self.commands.push_back(json!({
+            "cmd": "fetch",
+            "args": {
+                "uid": uid,
+            }
+        }));
+        Ok(())
+    }
+
+    pub fn force_silence(&mut self, _opt: &Value) -> Result<()> {
+        self.bucket_double_gap();
+        Ok(())
+    }
+
+    fn inited_gid(&mut self, opt: &Value, key: &str) -> String {
+        let gid = opt[key].as_i64().unwrap().to_string();
+        self.group_info.contains_key(&gid).not().then(|| {
+            self.group_info.insert(
+                gid.clone(),
+                json!({
+                    "name": "[placeholder]",
+                    "removable": true,
+                }),
+            )
+        });
+        self.up_join_group.contains_key(&gid).not().then(|| {
+            self.up_join_group.insert(gid.clone(), Default::default());
+        });
+        gid
+    }
+
+    pub fn toggle_group(&mut self, opt: &Value) -> Result<()> {
+        ChairData::expect("https://lintd.xyz/hobob/toggle_group.json", opt)?;
+        let uid = self.checked_uid(opt, "uid")?;
+        let gid = self.inited_gid(opt, "gid");
+        if self
+            .up_join_group
+            .get(&gid)
+            .map(|s| s.contains(&uid))
+            .unwrap_or(false)
+        {
+            self.up_join_group.get_mut(&gid).unwrap().remove(&uid);
         } else {
-            Err(anyhow!("try fetch not tracing uid"))
+            self.up_join_group.get_mut(&gid).unwrap().insert(uid);
         }
+        Ok(())
+    }
+
+    pub fn touch_group(&mut self, opt: &Value) -> Result<()> {
+        ChairData::expect("https://lintd.xyz/hobob/toggle_group.json", opt)?;
+        let gid = self.inited_gid(opt, "gid");
+        opt["pin"]
+            .as_bool()
+            .map(|p| self.group_info.get_mut(&gid).unwrap()["remove"] = p.into());
+        Ok(())
     }
 }
 
