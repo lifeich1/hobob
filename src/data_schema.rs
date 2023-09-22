@@ -33,21 +33,39 @@ impl ChairData {
 }
 
 fn log_schema() -> Value {
-    // TODO
-    json!({})
+    json!({
+        "description": "backend logging messages to frontend",
+        "type": "object",
+        "properties": {
+            "ts": {
+                "type": "string",
+                "pattern": "^\\d{4}(-\\d\\d){2}T\\d\\d(:\\d\\d){2}\\.\\d{3,}",
+            },
+            "level": {
+                "type": "integer",
+                "minimum": -9,
+                "maximum": 9,
+            },
+            "msg": {
+                "type": "string",
+            },
+        },
+        "required": [
+            "ts", "level", "msg",
+        ],
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // FIXME enable when ok
-    // #[test]
+    #[test]
     fn test_log_schema() {
         let validator = ChairData::new();
         validator.expect_log(&json!({
-            "ts": "2023-09-20 22:16:33 +0800",
-            "level": 0,
+            "ts": serde_json::to_value(chrono::Utc::now()).unwrap(),
+            "level": 1,
             "msg": "msg from recoverable error level",
         }));
     }
