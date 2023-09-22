@@ -264,8 +264,20 @@ impl FullBench {
 
     fn add_log(&self, level: i32, msg: String) -> Self {
         let mut r = self.clone();
+        let cf = self.runtime.get("log_filter").unwrap_or(&Value::Null);
+        let maxlv = cf["maxlevel"].as_i64().unwrap_or(3) as i32;
+        if level > maxlv {
+            return r;
+        }
         r.logs
             .push_back(json!({"ts": to_value(Utc::now()).unwrap(), "level": level, "msg": msg}));
+        let bufl = cf["buffer_lines"].as_u64().unwrap_or(2048) as usize;
+        if r.logs.len() > bufl {
+            let fitl = cf["fit_lines"].as_u64().unwrap_or(16);
+            for _ in 0..=fitl {
+                r.logs.pop_front();
+            }
+        }
         r
     }
 
@@ -466,6 +478,19 @@ mod tests {
                 "msg": "Ooga-Chaka Ooga-Ooga",
             })
         );
+    }
+
+    #[test]
+    fn test_circular_log() {
+        let mut bench = FullBench::default();
+        for i in 0..2048 {
+            bench = bench.add_log(2, format!("test log {}", i));
+        }
+        assert_eq!(bench.logs.len(), 2048);
+        bench = bench.add_log(4, "will discard log".into());
+        assert_eq!(bench.logs.len(), 2048);
+        bench = bench.add_log(-1, "this log trigger buffer shorten".into());
+        assert_eq!(bench.logs.len(), 2048 - 16);
     }
 
     #[tokio::test]
