@@ -230,6 +230,14 @@ impl WeiYuan {
         }
     }
 
+    pub fn apply<F: Fn(&mut FullBench)>(&mut self, f: F) -> Result<()> {
+        self.update(|b| {
+            let mut v = b.clone();
+            f(&mut v);
+            v
+        })
+    }
+
     pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
         self.update(|b| b.add_log(level, msg.to_string())).ok();
     }
@@ -492,5 +500,18 @@ mod tests {
         center.close();
         assert!(chair.recv().is_err());
         assert!(chair.update(Clone::clone).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_weiyuanhui_closed_after_members_release() {
+        let center = &mut WeiYuanHui::default();
+        let chair = center.new_chair();
+        center.close();
+        assert!(!run_1s(center).await);
+        assert!(timeout(Dur::from_millis(100), center.closed())
+            .await
+            .is_err());
+        mem::drop(chair);
+        check_closed(center).await;
     }
 }
