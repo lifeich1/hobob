@@ -241,6 +241,14 @@ impl WeiYuan {
     pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
         self.update(|b| b.add_log(level, msg.to_string())).ok();
     }
+
+    pub async fn until_closing(&mut self) {
+        self.fetch
+            .wait_for(|b| b.runtime_is_closing())
+            .await
+            .map_err(|e| panic!("fetch channel unexpected closed: {}", e))
+            .ok();
+    }
 }
 
 fn im_vector_p_eq<A: Clone + Eq>(lhs: &im::Vector<A>, rhs: &im::Vector<A>) -> bool {
@@ -530,12 +538,18 @@ mod tests {
     #[tokio::test]
     async fn test_weiyuanhui_closed_after_members_release() {
         let center = &mut WeiYuanHui::default();
-        let chair = center.new_chair();
+        let mut chair = center.new_chair();
+        assert!(timeout(Dur::from_millis(100), chair.until_closing())
+            .await
+            .is_err());
         center.close();
         assert!(!run_1s(center).await);
         assert!(timeout(Dur::from_millis(100), center.closed())
             .await
             .is_err());
+        assert!(timeout(Dur::from_millis(100), chair.until_closing())
+            .await
+            .is_ok());
         mem::drop(chair);
         check_closed(center).await;
     }
