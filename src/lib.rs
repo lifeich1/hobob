@@ -16,7 +16,7 @@ macro_rules! var_path {
 mod data_schema;
 pub mod db;
 //pub mod engine;
-//pub mod www;
+pub mod www;
 
 pub fn prepare_log() -> Result<()> {
     std::fs::create_dir_all(var_path!())?;

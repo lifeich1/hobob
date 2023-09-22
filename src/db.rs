@@ -1,3 +1,4 @@
+use crate::data_schema::ChairData;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_derive::{Deserialize, Serialize};
@@ -18,6 +19,7 @@ pub type Events = im::Vector<Value>;
 pub type GroupInfo = im::HashMap<String, Value>;
 pub type LogRecords = im::Vector<Value>;
 pub type RuntimeCfg = im::HashMap<String, Value>;
+pub type Commands = im::Vector<Value>;
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 pub struct FullBench {
@@ -28,6 +30,7 @@ pub struct FullBench {
     pub group_info: GroupInfo,
     pub logs: LogRecords,
     pub runtime: RuntimeCfg,
+    pub commands: Commands,
 }
 
 #[derive(Debug)]
@@ -203,11 +206,14 @@ impl WeiYuan {
             .ok_or_else(|| anyhow!("WeiYuanHui closing"))
     }
 
-    pub fn update<F: Fn(&FullBench) -> FullBench>(&mut self, f: F) -> Result<()> {
+    pub fn update<F>(&mut self, f: F) -> Result<()>
+    where
+        F: Fn(&FullBench) -> Result<FullBench>,
+    {
         let msg: BenchUpdate;
         loop {
             let old = self.recv()?.clone();
-            let new = f(&old);
+            let new = f(&old)?;
             if old.ptr_eq(self.recv()?) {
                 msg = BenchUpdate(old, new);
                 break;
@@ -230,16 +236,19 @@ impl WeiYuan {
         }
     }
 
-    pub fn apply<F: Fn(&mut FullBench)>(&mut self, f: F) -> Result<()> {
+    pub fn apply<F>(&mut self, f: F) -> Result<()>
+    where
+        F: Fn(&mut FullBench) -> Result<()>,
+    {
         self.update(|b| {
             let mut v = b.clone();
-            f(&mut v);
-            v
+            f(&mut v)?;
+            Ok(v)
         })
     }
 
     pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
-        self.update(|b| b.add_log(level, msg.to_string())).ok();
+        self.update(|b| Ok(b.add_log(level, msg.to_string()))).ok();
     }
 
     pub async fn until_closing(&mut self) {
@@ -268,6 +277,7 @@ impl FullBench {
             && self.group_info.ptr_eq(&other.group_info)
             && im_vector_p_eq(&self.logs, &other.logs)
             && self.runtime.ptr_eq(&other.runtime)
+            && im_vector_p_eq(&self.commands, &other.commands)
     }
 
     fn add_log(&self, level: i32, msg: String) -> Self {
@@ -372,6 +382,47 @@ impl FullBench {
             *v = val;
         })
     }
+
+    pub fn follow(&mut self, opt: Value) -> Result<()> {
+        ChairData::expect("https://lintd.xyz/hobob/follow.json", &opt)?;
+        let uid = opt["uid"].as_i64().unwrap();
+        let enable = opt["enable"].as_bool().unwrap_or(true);
+        if enable {
+            self.commands.push_back(json!({
+                "cmd": "fetch",
+                "args": {
+                    "uid": uid,
+                }
+            }));
+        }
+        let id = &uid.to_string();
+        self.up_info
+            .get_mut(id)
+            .map(|v| v["pick"]["basic"]["ban"] = (!enable).into())
+            .is_none()
+            .then(|| {
+                self.up_info
+                    .insert(id.into(), json!({"pick":{"basic":{"ban":!enable,}}}));
+                self.up_by_fid.push_back(id.into());
+            });
+        Ok(())
+    }
+
+    pub fn refresh(&mut self, opt: Value) -> Result<()> {
+        ChairData::expect("https://lintd.xyz/hobob/refresh.json", &opt)?;
+        let uid = opt["uid"].as_i64().unwrap().to_string();
+        if self.up_info.contains_key(&uid) {
+            self.commands.push_back(json!({
+                "cmd": "fetch",
+                "args": {
+                    "uid": uid,
+                }
+            }));
+            Ok(())
+        } else {
+            Err(anyhow!("try fetch not tracing uid"))
+        }
+    }
 }
 
 impl VCounter {
@@ -444,7 +495,7 @@ mod tests {
             let mut chair_rx = chair.clone();
             assert_eq!(
                 chair
-                    .update(|b| b.runtime_set_field("bucket", "min_gap", json!(23)))
+                    .update(|b| Ok(b.runtime_set_field("bucket", "min_gap", json!(23))))
                     .err()
                     .map(|e| format!("{:?}", e)),
                 None
@@ -532,7 +583,7 @@ mod tests {
         let mut chair = center.new_chair();
         center.close();
         assert!(chair.recv().is_err());
-        assert!(chair.update(Clone::clone).is_err());
+        assert!(chair.update(|v| Ok(v.clone())).is_err());
     }
 
     #[tokio::test]

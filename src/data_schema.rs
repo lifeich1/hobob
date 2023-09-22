@@ -1,18 +1,24 @@
+use anyhow::Result;
 use serde_json::{json, Value};
+use std::sync::Mutex;
 use url::Url;
 use valico::json_schema::scope::Scope;
 use valico::json_schema::SchemaVersion;
+
+lazy_static::lazy_static! {
+    pub static ref CHAIR_DATA_SCHEMA: Mutex<ChairData> = Mutex::new(ChairData::new());
+}
 
 pub struct ChairData {
     scope: Scope,
 }
 
 impl ChairData {
-    pub fn new() -> Self {
+    fn new() -> Self {
         let mut scope = Scope::new().set_version(SchemaVersion::Draft2019_09);
         scope
             .compile_with_id(
-                &Url::parse("http://lintd.xyz/hobob/log").unwrap(),
+                &Url::parse("https://lintd.xyz/hobob/log").unwrap(),
                 log_schema(),
                 true,
             )
@@ -23,12 +29,24 @@ impl ChairData {
     pub fn expect_log(&self, data: &Value) {
         let res = self
             .scope
-            .resolve(&Url::parse("http://lintd.xyz/hobob/log").unwrap())
+            .resolve(&Url::parse("https://lintd.xyz/hobob/log").unwrap())
             .unwrap()
             .validate(data);
         if !res.is_valid() {
             panic!("expect_log invalid: data: {:?}\nerr: {:?}", data, res);
         }
+    }
+
+    fn expect_impl(&self, id: &str, data: &Value) -> Result<()> {
+        // TODO
+        Ok(())
+    }
+
+    pub fn expect(id: &str, data: &Value) -> Result<()> {
+        CHAIR_DATA_SCHEMA
+            .lock()
+            .expect("mutex crack, must reboot")
+            .expect_impl(id, data)
     }
 }
 

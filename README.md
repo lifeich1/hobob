@@ -33,6 +33,7 @@ An web app for hobo kicked from bibi&lili.
     "up_by_fid": ["<id>"],
     "up_join_group": { "<group>": {"<uid>":1} },
     "events": [ {
+        "seq": 0,
         "type": "live/video/post",
         "live": {"isopen", "..."},
         "video": {"..."},
@@ -45,9 +46,13 @@ An web app for hobo kicked from bibi&lili.
     "runtime": {
         "bucket": {"atime", "min_gap", "min_change_gap", "gap"},
         "log_filter": {"maxlevel", "buffer_lines", "fit_lines"},
-        "event_filter": { "buffer_lines", "dump_time", "dump_timeout_min"},
+        "event_filter": { "buffer_lines", "fit_lines"},
         "db": {"dump_time", "dump_timeout_min", "dump_err_ts", "vlog_dump_gap_sec"}
-    }
+    },
+    "commands": [{
+        "cmd": "cmd",
+        "args": {}
+    }]
 }
 ```
 
