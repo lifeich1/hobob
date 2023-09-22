@@ -2,142 +2,152 @@
 <html>
 
 <head>
-<link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap-utilities.min.css" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.staticfile.org/bootstrap-icons/1.5.0/font/bootstrap-icons.css">
-<title>关注列表</title>
-<meta name="referrer" content="no-referrer" />
+    <link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/css/bootstrap-utilities.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.staticfile.org/bootstrap-icons/1.5.0/font/bootstrap-icons.css">
+    <title>关注列表</title>
+    <meta name="referrer" content="no-referrer" />
 </head>
 
 <body>
 
-<nav class="navbar navbar-light fixed-top bg-light">
-    <div class="container-fluid">
-        <button class="navbar-toggler" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasNavbar" aria-controls="offcanvasNavbar">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        <span>
-            <span id="tab-title-display" class="badge bg-primary me-1">
-                默认
+    <nav class="navbar navbar-light fixed-top bg-light">
+        <div class="container-fluid">
+            <button class="navbar-toggler" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasNavbar"
+                aria-controls="offcanvasNavbar">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <span>
+                <span id="tab-title-display" class="badge bg-primary me-1">
+                    默认
+                </span>
+                <span id="filter-name-display" class="badge bg-secondary me-3">
+                    全部
+                </span>
+                <span id="status-display">
+                    {{ status }}
+                </span>
+                <span id="status-last-sync-uid" class="badge rounded-pill bg-dark" style="display: none;">
+                </span>
             </span>
-            <span id="filter-name-display" class="badge bg-secondary me-3">
-                全部
-            </span>
-            <span id="status-display">
-                {{ data.status }}
-            </span>
-            <span id="status-last-sync-uid" class="badge rounded-pill bg-dark" style="display: none;">
-            </span>
-        </span>
-        <div class="offcanvas offcanvas-start" tabindex="-1" id="offcanvasNavbar" aria-labelledby="offcanvasNavbarLabel" aria-hidden=true>
-            <div class="offcanvas-header">
-                <h5 class="offcanvas-title" id="offcanvasNavbarLabel">导航</h5>
-                <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
-            </div>
-            <div class="offcanvas-body">
-                <ul class="nav nav-pills">
-                    <li class="nav-item">
-                        <a class="nav-link active" id="default-tab-nav" data-bs-toggle="pill" href="#default-list">默认</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" id="video-tab-nav" data-bs-toggle="pill" href="#video-list">新视频</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#live-list">直播</a>
-                    </li>
-                </ul>
-                <select class="form-select mt-1" id="select-filter-type" onchange="on_filter_changed()">
-                    <option selected value="0">全部</option>
-                    <option value="1">特别关注</option>
-                </select>
-                <div class="input-group mt-3">
-                    <input class="form-control me-2" type="search" placeholder="用户id或空间地址" aria-label="Follow">
-                    <button class="btn btn-outline-success" type="submit" id="btn-follow">Follow</button>
+            <div class="offcanvas offcanvas-start" tabindex="-1" id="offcanvasNavbar"
+                aria-labelledby="offcanvasNavbarLabel" aria-hidden=true>
+                <div class="offcanvas-header">
+                    <h5 class="offcanvas-title" id="offcanvasNavbarLabel">导航</h5>
+                    <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas"
+                        aria-label="Close"></button>
                 </div>
-                <div class="d-flex mt-3">
-                    <button class="btn btn-light me-2" onclick="tabs_reload()">
-                        <i class="bi bi-arrow-repeat"></i>
-                    </button>
-                    <div class="dropdown pe-3">
-                        <button class="btn btn-secondary dropdown-toggle" type="button" id="dropdownMenuButton1" data-bs-toggle="dropdown" aria-expanded="false">
-                            <i class="bi bi-gear-fill"></i>
+                <div class="offcanvas-body">
+                    <ul class="nav nav-pills">
+                        <li class="nav-item">
+                            <a class="nav-link active" id="default-tab-nav" data-bs-toggle="pill"
+                                href="#default-list">默认</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" id="video-tab-nav" data-bs-toggle="pill" href="#video-list">新视频</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" id="live-tab-nav" data-bs-toggle="pill" href="#live-list">直播</a>
+                        </li>
+                    </ul>
+                    <select class="form-select mt-1" id="select-filter-type" onchange="on_filter_changed()">
+                        <option selected value="0">全部</option>
+                        <option value="1">特别关注</option>
+                    </select>
+                    <div class="input-group mt-3">
+                        <input class="form-control me-2" type="search" placeholder="用户id或空间地址" aria-label="Follow">
+                        <button class="btn btn-outline-success" type="submit" id="btn-follow">Follow</button>
+                    </div>
+                    <div class="d-flex mt-3">
+                        <button class="btn btn-light me-2" onclick="tabs_reload()">
+                            <i class="bi bi-arrow-repeat"></i>
                         </button>
-                        <ul class="dropdown-menu" aria-labelledby="dropdownMenuButton1">
-                            <li><a class="dropdown-item" onclick="on_force_silence()">强制停止自动刷新</a></li>
-                            <li><a class="dropdown-item" onclick="on_force_arefresh()">强制激活自动刷新</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" onclick="on_new_user_filter()">新建列表</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" onclick="on_clear_live_toast()">清空开播消息</a></li>
-                        </ul>
+                        <div class="dropdown pe-3">
+                            <button class="btn btn-secondary dropdown-toggle" type="button" id="dropdownMenuButton1"
+                                data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-gear-fill"></i>
+                            </button>
+                            <ul class="dropdown-menu" aria-labelledby="dropdownMenuButton1">
+                                <li><a class="dropdown-item" onclick="on_force_silence()">强制停止自动刷新</a></li>
+                                <li><a class="dropdown-item" onclick="on_force_arefresh()">强制激活自动刷新</a></li>
+                                <li>
+                                    <hr class="dropdown-divider">
+                                </li>
+                                <li><a class="dropdown-item" onclick="on_new_user_filter()">新建列表</a></li>
+                                <li>
+                                    <hr class="dropdown-divider">
+                                </li>
+                                <li><a class="dropdown-item" onclick="on_clear_live_toast()">清空开播消息</a></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div>
+                        <span id="silence-reason-display" class="badge bg-danger">
+                        </span>
                     </div>
                 </div>
-                <div>
-                    <span id="silence-reason-display" class="badge bg-danger">
-                    </span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="tab-content pt-3" style="padding-bottom: 3em;">
+        <div class="tab-pane active" id="default-list" role="tabpanel">
+            <div class="d-flex flex-row flex-wrap mb-1" id="default-list-content" role="list-content">
+                default-list
+            </div>
+        </div>
+        <div class="tab-pane" id="video-list" role="tabpanel">
+            <div class="d-flex flex-row flex-wrap mb-1" id="video-list-content" role="list-content">
+                video-list
+            </div>
+        </div>
+        <div class="tab-pane" id="live-list" role="tabpanel">
+            <div class="d-flex flex-row flex-wrap mb-1" id="live-list-content" role="list-content">
+                live-list
+            </div>
+        </div>
+    </div>
+
+    <div id="end-status" class="d-flex flex-column align-items-stretch">
+        <button class="btn btn-primary btn-lg" onclick="loadmore()">
+            更多
+        </button>
+        <span class="text-danger" id="end-status-text">
+            end status
+        </span>
+    </div>
+
+    <div class="d-flex flex-row-reverse fixed-bottom">
+        <div class="spinner-border text-primary" role="status" id="loading-spinner">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <div class="modal fade" id="yes-or-no-modal" tabindex="-1" aria-labelledby="yes-or-no-modal-label"
+        aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="yes-or-no-modal-label">Modal title</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    ...
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary">确认</button>
                 </div>
             </div>
         </div>
     </div>
-</nav>
 
-<div class="tab-content pt-3" style="padding-bottom: 3em;">
-    <div class="tab-pane active" id="default-list" role="tabpanel">
-        <div class="d-flex flex-row flex-wrap mb-1" id="default-list-content" role="list-content">
-            default-list
-        </div>
+    <div class="toast-container position-fixed bottom-0 start-50 translate-middle-x p-3" id="toast-container-new-live">
     </div>
-    <div class="tab-pane" id="video-list" role="tabpanel">
-        <div class="d-flex flex-row flex-wrap mb-1" id="video-list-content" role="list-content">
-            video-list
-        </div>
-    </div>
-    <div class="tab-pane" id="live-list" role="tabpanel">
-        <div class="d-flex flex-row flex-wrap mb-1" id="live-list-content" role="list-content">
-            live-list
-        </div>
-    </div>
-</div>
 
-<div id="end-status" class="d-flex flex-column align-items-stretch">
-    <button class="btn btn-primary btn-lg" onclick="loadmore()">
-        更多
-    </button>
-    <span class="text-danger" id="end-status-text">
-        end status
-    </span>
-</div>
-
-<div class="d-flex flex-row-reverse fixed-bottom">
-    <div class="spinner-border text-primary" role="status" id="loading-spinner">
-        <span class="visually-hidden">Loading...</span>
-    </div>
-</div>
-
-<div class="modal fade" id="yes-or-no-modal" tabindex="-1" aria-labelledby="yes-or-no-modal-label" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="yes-or-no-modal-label">Modal title</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        ...
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-        <button type="button" class="btn btn-primary">确认</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="toast-container position-fixed bottom-0 start-50 translate-middle-x p-3" id="toast-container-new-live">
-</div>
-
-<script src="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.staticfile.org/jquery/3.6.0/jquery.min.js"></script>
-<script src="/static/index.js"></script>
+    <script src="https://cdn.staticfile.org/twitter-bootstrap/5.1.1/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.staticfile.org/jquery/3.6.0/jquery.min.js"></script>
+    <script src="/static/index.js"></script>
 </body>
 
 </html>

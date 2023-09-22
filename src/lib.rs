@@ -18,6 +18,8 @@ pub mod db;
 //pub mod engine;
 pub mod www;
 
+use db::WeiYuanHui;
+
 pub fn prepare_log() -> Result<()> {
     std::fs::create_dir_all(var_path!())?;
 
@@ -45,17 +47,23 @@ pub fn prepare_log() -> Result<()> {
 }
 
 pub async fn main_loop() -> Result<()> {
-    let (_shutdown0, _rx) = tokio::sync::oneshot::channel::<i32>();
-
-    /*
-    tokio::spawn(async move {
-        www::run(rx).await;
-    });
+    // FIXME: use load
+    let mut center = WeiYuanHui::default();
+    {
+        let chair = center.new_chair();
+        tokio::spawn(async move {
+            www::run(chair).await;
+        });
+    }
+    // TODO emit engine thread
 
     tokio::signal::ctrl_c().await?;
-    log::info!("Caught ^C, quiting");
-    engine::handle().send(engine::Command::Shutdown).await?;
-    */
+    log::error!("Caught ^C, quiting");
+    center.close();
+    tokio::time::timeout(std::time::Duration::from_secs(30), center.closed())
+        .await
+        .map_err(|e| log::error!("graceful shutdown timeout: {}", e))
+        .ok();
 
     Ok(())
 }
