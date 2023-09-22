@@ -30,6 +30,7 @@ pub struct FullBench {
     pub runtime: RuntimeCfg,
 }
 
+#[derive(Debug)]
 pub struct BenchUpdate(FullBench, FullBench);
 
 #[derive(Default, Debug)]
@@ -212,18 +213,21 @@ impl WeiYuan {
                 break;
             }
         }
-        if let Err(e) = self.update.try_send(msg) {
-            if let TrySendError::Closed(_) = e {
-                self.recv()
-                    .map(|_| {
-                        panic!("Update channel disconnected without WeiYuanHui closing flag !!")
-                    })
-                    .ok();
-            } else {
-                log::error!("send update failed: {}", e);
+        match self.update.try_send(msg) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let TrySendError::Closed(_) = &e {
+                    self.recv()
+                        .map(|_| {
+                            panic!("Update channel disconnected without WeiYuanHui closing flag !!")
+                        })
+                        .ok();
+                } else {
+                    log::error!("send update failed: {}, will treat as closing", e);
+                }
+                Err(e.into())
             }
         }
-        Ok(())
     }
 
     pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
@@ -465,7 +469,28 @@ mod tests {
         chair.log(3, "Ooga-Chaka Ooga-Ooga");
     }
 
-    // TODO: VCounter
-    // TODO: expect "new_chair in closing"
-    // TODO: check weiyuan get closing
+    #[test]
+    fn test_vcounter() {
+        let mut c = VCounter::default();
+        let b = FullBench::default();
+        assert_ne!(c.try_log(&b), None);
+        assert_eq!(c.try_log(&b), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "new_chair in closing")]
+    fn test_panic_at_new_chair_in_closing() {
+        let mut center = WeiYuanHui::default();
+        center.close();
+        let _ = center.new_chair();
+    }
+
+    #[test]
+    fn test_weiyuan_notified_closing() {
+        let mut center = WeiYuanHui::default();
+        let mut chair = center.new_chair();
+        center.close();
+        assert!(chair.recv().is_err());
+        assert!(chair.update(Clone::clone).is_err());
+    }
 }
