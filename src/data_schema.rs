@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use url::Url;
@@ -15,31 +15,30 @@ pub struct ChairData {
 
 impl ChairData {
     fn new() -> Self {
-        let mut scope = Scope::new().set_version(SchemaVersion::Draft2019_09);
-        scope
-            .compile_with_id(
-                &Url::parse("https://lintd.xyz/hobob/log").unwrap(),
-                log_schema(),
-                true,
-            )
-            .expect("must be valid schema");
-        Self { scope }
+        let this = Self {
+            scope: Scope::new().set_version(SchemaVersion::Draft2019_09),
+        };
+        this.schema(schema_uri!("log"), log_schema())
     }
 
-    pub fn expect_log(&self, data: &Value) {
-        let res = self
-            .scope
-            .resolve(&Url::parse("https://lintd.xyz/hobob/log").unwrap())
-            .unwrap()
-            .validate(data);
-        if !res.is_valid() {
-            panic!("expect_log invalid: data: {:?}\nerr: {:?}", data, res);
-        }
+    fn schema(mut self, id: &str, schema: Value) -> Self {
+        self.scope
+            .compile_with_id(&Url::parse(id).expect("valid uri"), schema, true)
+            .expect("mush be valid schema");
+        self
     }
 
     fn expect_impl(&self, id: &str, data: &Value) -> Result<()> {
-        // TODO
-        Ok(())
+        let result = self
+            .scope
+            .resolve(&Url::parse(id).expect("valid uri"))
+            .expect("registered schema")
+            .validate(data);
+        if result.is_valid() {
+            Ok(())
+        } else {
+            Err(anyhow!("Not pass schema {}: {:?}", id, result))
+        }
     }
 
     pub fn expect(id: &str, data: &Value) -> Result<()> {
@@ -80,11 +79,17 @@ mod tests {
 
     #[test]
     fn test_log_schema() {
-        let validator = ChairData::new();
-        validator.expect_log(&json!({
+        let val = json!({
             "ts": serde_json::to_value(chrono::Utc::now()).unwrap(),
             "level": 1,
             "msg": "msg from recoverable error level",
-        }));
+        });
+        assert!(ChairData::expect(schema_uri!("log"), &val).is_ok());
+        let val = json!({
+            "ts": "bad-ts",
+            "level": 1,
+            "msg": "msg from recoverable error level",
+        });
+        assert!(ChairData::expect(schema_uri!("log"), &val).is_err());
     }
 }

@@ -12,6 +12,14 @@ macro_rules! var_path {
         concat!(var_path!(), "/log4rs.yml")
     };
 }
+macro_rules! schema_uri {
+    ($id:literal) => {
+        concat!("https://lintd.xyz/hobob/", $id, ".json")
+    };
+    ($id:literal, $v:expr) => {
+        &format!(concat!("https://lintd.xyz/hobob/", $id, "/{}.json"), $v)
+    };
+}
 
 mod data_schema;
 pub mod db;
