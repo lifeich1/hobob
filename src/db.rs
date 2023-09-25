@@ -585,6 +585,7 @@ mod tests {
             );
             assert!(run_1s(&mut center).await);
             let cur = chair_rx.recv().unwrap();
+            println!("bucket: {:?}", cur.runtime.get("bucket").unwrap());
             assert_eq!(cur.runtime_field("bucket", "min_gap").ok(), Some(json!(23)));
         }
         center.close();

@@ -18,7 +18,9 @@ impl ChairData {
         let this = Self {
             scope: Scope::new().set_version(SchemaVersion::Draft2019_09),
         };
-        this.schema(schema_uri!("log"), log_schema())
+        this.schema(schema_uri!("utils/ts"), utils_ts_string())
+            .schema(schema_uri!("log"), log_schema())
+            .schema(schema_uri!("runtime/bucket"), rt_bucket_schema())
     }
 
     fn schema(mut self, id: &str, schema: Value) -> Self {
@@ -49,27 +51,47 @@ impl ChairData {
     }
 }
 
+fn utils_ts_string() -> Value {
+    json!({
+        "description": "A string deserializable to chrono timestamp",
+        "type": "string",
+        "pattern": "^\\d{4}(-\\d\\d){2}T\\d\\d(:\\d\\d){2}\\.\\d{3,}",
+    })
+}
+
 fn log_schema() -> Value {
     json!({
         "description": "backend logging messages to frontend",
         "type": "object",
         "properties": {
             "ts": {
-                "type": "string",
-                "pattern": "^\\d{4}(-\\d\\d){2}T\\d\\d(:\\d\\d){2}\\.\\d{3,}",
+                "$ref": schema_uri!("utils/ts"),
             },
             "level": {
                 "type": "integer",
                 "minimum": -9,
                 "maximum": 9,
             },
-            "msg": {
-                "type": "string",
-            },
+            "msg": { "type": "string", },
         },
         "required": [
             "ts", "level", "msg",
         ],
+    })
+}
+
+fn rt_bucket_schema() -> Value {
+    json!({
+        "description": "runtime.bucket schema",
+        "type": "object",
+        "properties": {
+            "atime": {
+                "$ref": schema_uri!("utils/ts"),
+            },
+            "min_gap": { "type": "integer", "minimum": 1, },
+            "min_change_gap": { "type": "integer", "minimum": 1, },
+            "gap": { "type": "integer", "minimum": 1, },
+        }
     })
 }
 
@@ -91,5 +113,10 @@ mod tests {
             "msg": "msg from recoverable error level",
         });
         assert!(ChairData::expect(schema_uri!("log"), &val).is_err());
+    }
+
+    #[test]
+    fn test_rt_bucket_schema() {
+        // TODO
     }
 }
