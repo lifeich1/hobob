@@ -1,53 +1,78 @@
 use anyhow::{anyhow, Result};
+use boon::{Compiler, SchemaIndex, Schemas};
 use serde_json::{json, Value};
-use std::sync::Mutex;
-use url::Url;
-use valico::json_schema::scope::Scope;
-use valico::json_schema::SchemaVersion;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 lazy_static::lazy_static! {
-    pub static ref CHAIR_DATA_SCHEMA: Mutex<ChairData> = Mutex::new(ChairData::new());
+    pub static ref CHAIR_DATA_SCHEMA: Arc<ChairData> = Arc::new(ChairData::new());
 }
 
 pub struct ChairData {
-    scope: Scope,
+    scope: Schemas,
+    uri_sid: HashMap<String, SchemaIndex>,
+}
+
+struct ChairDataBuilder {
+    scope: Schemas,
+    uri_sid: HashMap<String, SchemaIndex>,
+    compiler: Compiler,
+}
+
+impl ChairDataBuilder {
+    fn new() -> Self {
+        let mut compiler = Compiler::new();
+        compiler.set_default_draft(boon::Draft::V2020_12);
+        Self {
+            scope: Schemas::new(),
+            uri_sid: Default::default(),
+            compiler,
+        }
+    }
+
+    fn schema(mut self, uri: &str, value: Value) -> Self {
+        self.compiler
+            .add_resource(uri, value)
+            .map_err(|e| panic!("ChairDataBuilder add_resource error: {}", e))
+            .ok();
+        self.compiler
+            .compile(uri, &mut self.scope)
+            .map_err(|e| panic!("ChairDataBuilder compiler error: {}", e))
+            .ok()
+            .map(|id| self.uri_sid.insert(uri.into(), id));
+        self
+    }
+
+    fn done(self) -> ChairData {
+        ChairData {
+            scope: self.scope,
+            uri_sid: self.uri_sid,
+        }
+    }
 }
 
 impl ChairData {
     fn new() -> Self {
-        let this = Self {
-            scope: Scope::new().set_version(SchemaVersion::Draft2019_09),
-        };
-        this.schema(schema_uri!("utils/ts"), utils_ts_string())
+        ChairDataBuilder::new()
+            .schema(schema_uri!("utils/ts"), utils_ts_string())
             .schema(schema_uri!("log"), log_schema())
             .schema(schema_uri!("runtime/bucket"), rt_bucket_schema())
-    }
-
-    fn schema(mut self, id: &str, schema: Value) -> Self {
-        self.scope
-            .compile_with_id(&Url::parse(id).expect("valid uri"), schema, true)
-            .expect("mush be valid schema");
-        self
+            .done()
     }
 
     fn expect_impl(&self, id: &str, data: &Value) -> Result<()> {
-        let result = self
+        let id = self
+            .uri_sid
+            .get(id)
+            .unwrap_or_else(|| panic!("not registered schema: {}", id));
+        Ok(self
             .scope
-            .resolve(&Url::parse(id).expect("valid uri"))
-            .expect("registered schema")
-            .validate(data);
-        if result.is_valid() {
-            Ok(())
-        } else {
-            Err(anyhow!("Not pass schema {}: {:?}", id, result))
-        }
+            .validate(data, *id)
+            .map_err(|e| anyhow!("boon: {:?}", e))?)
     }
 
     pub fn expect(id: &str, data: &Value) -> Result<()> {
-        CHAIR_DATA_SCHEMA
-            .lock()
-            .expect("mutex crack, must reboot")
-            .expect_impl(id, data)
+        CHAIR_DATA_SCHEMA.expect_impl(id, data)
     }
 }
 

@@ -543,18 +543,21 @@ mod tests {
         assert!(!next.runtime_dump_now());
     }
 
-    /* FIXME enable if ok
     #[test]
     fn test_runtime_field_set_n_get() {
         let mut bench = FullBench::default();
-        bench = bench.runtime_set_field("db", "bucket/min_gap", json!(42));
+        assert!(bench
+            .runtime_set_field("db", "bucket/min_gap", json!(42))
+            .is_ok());
         assert_eq!(
             bench.runtime.get("db"),
             Some(&json!({"bucket":{"min_gap":42}}))
         );
-        assert_eq!(bench.runtime_field("db", "bucket/min_gap"), json!(42));
+        assert_eq!(
+            bench.runtime_field("db", "bucket/min_gap").ok(),
+            Some(json!(42))
+        );
     }
-    */
 
     async fn run_1s(center: &mut WeiYuanHui) -> bool {
         center
