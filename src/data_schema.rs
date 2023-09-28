@@ -57,6 +57,7 @@ impl ChairData {
             .schema(schema_uri!("utils/ts"), utils_ts_string())
             .schema(schema_uri!("log"), log_schema())
             .schema(schema_uri!("runtime/bucket"), rt_bucket_schema())
+            .schema(schema_uri!("runtime/db"), rt_db_schema())
             .done()
     }
 
@@ -84,6 +85,27 @@ fn utils_ts_string() -> Value {
     })
 }
 
+fn rt_db_schema() -> Value {
+    json!({
+        "description": "runtime.db schema",
+        "type": "object",
+        "properties": {
+            "dump_time": {
+                "$ref": schema_uri!("utils/ts"),
+            },
+            "dump_timeout_min": {
+                "type": "integer",
+                "minimum": 1,
+            },
+            "vlog_dump_gap_sec": {
+                "type": "integer",
+                "minimum": 1,
+            }
+        },
+        "additionalProperties": false,
+    })
+}
+
 fn log_schema() -> Value {
     json!({
         "description": "backend logging messages to frontend",
@@ -102,6 +124,7 @@ fn log_schema() -> Value {
         "required": [
             "ts", "level", "msg",
         ],
+        "additionalProperties": false,
     })
 }
 
@@ -116,7 +139,8 @@ fn rt_bucket_schema() -> Value {
             "min_gap": { "type": "integer", "minimum": 1, },
             "min_change_gap": { "type": "integer", "minimum": 1, },
             "gap": { "type": "integer", "minimum": 1, },
-        }
+        },
+        "additionalProperties": false,
     })
 }
 
@@ -138,10 +162,5 @@ mod tests {
             "msg": "msg from recoverable error level",
         });
         assert!(ChairData::expect(schema_uri!("log"), &val).is_err());
-    }
-
-    #[test]
-    fn test_rt_bucket_schema() {
-        // TODO
     }
 }

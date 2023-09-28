@@ -381,7 +381,8 @@ impl FullBench {
 
     /// General api, for www use
     pub fn runtime_field(&self, key: &str, path: &str) -> Result<Value> {
-        im::get_in!(self.runtime, key)
+        self.runtime
+            .get(key)
             .ok_or_else(|| anyhow!("runtime miss field {}", key))
             .and_then(|v| {
                 let mut t: &Value = v;
@@ -399,7 +400,8 @@ impl FullBench {
 
     /// General api, for www use
     pub fn runtime_set_field(&mut self, key: &str, path: &str, val: Value) -> Result<()> {
-        let mut o = self.runtime.get(path).cloned().unwrap_or(Value::Null);
+        let mut o = self.runtime.get(key).cloned().unwrap_or(Value::Null);
+        let ins = o.is_null();
         let mut v = &mut o;
         for p in path.split('/') {
             if v.get(p).is_none() {
@@ -409,6 +411,9 @@ impl FullBench {
         }
         *v = val;
         ChairData::expect(schema_uri!("runtime", key), &o)?;
+        if ins {
+            self.runtime.insert(key.into(), o);
+        }
         Ok(())
     }
 
@@ -546,25 +551,35 @@ mod tests {
     #[test]
     fn test_runtime_field_set_n_get() {
         let mut bench = FullBench::default();
-        assert!(bench
-            .runtime_set_field("db", "bucket/min_gap", json!(42))
-            .is_ok());
         assert_eq!(
-            bench.runtime.get("db"),
-            Some(&json!({"bucket":{"min_gap":42}}))
+            bench
+                .runtime_set_field("db", "dump_timeout_min", json!(42))
+                .as_ref()
+                .map_err(ToString::to_string),
+            Ok(&())
         );
         assert_eq!(
-            bench.runtime_field("db", "bucket/min_gap").ok(),
+            bench.runtime.get("db"),
+            Some(&json!({"dump_timeout_min":42}))
+        );
+        assert_eq!(
+            bench.runtime_field("db", "dump_timeout_min").ok(),
             Some(json!(42))
         );
     }
 
     async fn run_1s(center: &mut WeiYuanHui) -> bool {
-        center
-            .run_for(Duration::seconds(1))
-            .await
-            .ok()
-            .unwrap_or(false)
+        let target = Utc::now() + Duration::milliseconds(100);
+        let targetd = target + Duration::milliseconds(20);
+        let mut res = true;
+        while res && Utc::now() < target {
+            res = center
+                .run_for(targetd - Utc::now())
+                .await
+                .ok()
+                .unwrap_or(true);
+        }
+        res
     }
 
     async fn check_closed(center: &WeiYuanHui) {
@@ -581,15 +596,28 @@ mod tests {
             let mut chair_rx = chair.clone();
             assert_eq!(
                 chair
-                    .apply(|b| b.runtime_set_field("bucket", "min_gap", json!(23)))
+                    .apply(|b| {
+                        let r = b.runtime_set_field("bucket", "min_gap", json!(23));
+                        println!("new bench: {:?}", b);
+                        r
+                    })
                     .err()
                     .map(|e| format!("{:?}", e)),
                 None
             );
             assert!(run_1s(&mut center).await);
+            assert!(matches!(
+                chair_rx.recv().as_ref().map_err(ToString::to_string),
+                Ok(_)
+            ));
             let cur = chair_rx.recv().unwrap();
-            println!("bucket: {:?}", cur.runtime.get("bucket").unwrap());
-            assert_eq!(cur.runtime_field("bucket", "min_gap").ok(), Some(json!(23)));
+            println!("bucket: {:?}", cur.runtime);
+            assert_eq!(
+                cur.runtime_field("bucket", "min_gap")
+                    .as_ref()
+                    .map_err(ToString::to_string),
+                Ok(&json!(23))
+            );
         }
         center.close();
         assert!(!run_1s(&mut center).await);
