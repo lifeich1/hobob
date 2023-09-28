@@ -36,7 +36,7 @@ fn sse_ev_engine(e: engine::Event) -> std::result::Result<Event, Infallible> {
 }
 */
 
-pub async fn run(runner: WeiYuan) {
+pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
     fn render_fail<E: std::fmt::Display>(page: &str, e: E) -> String {
         let mut c = Context::new();
         c.insert("kind", "render process");
@@ -195,10 +195,23 @@ pub async fn run(runner: WeiYuan) {
         ))
         .or(static_files)
         .or(favicon);
-    log::info!("www running");
+    app.boxed()
+    /*
     let (_, run) = warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
         runner.clone().until_closing().await
     });
     run.await;
     log::info!("www stopped");
+        */
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn test_index() {
+        panic!("TODO");
+    }
 }

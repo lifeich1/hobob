@@ -60,7 +60,14 @@ pub async fn main_loop() -> Result<()> {
     {
         let chair = center.new_chair();
         tokio::spawn(async move {
-            www::run(chair).await;
+            let app = www::build_app(chair.clone());
+            let (_, run) = warp::serve(app)
+                .bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
+                    chair.clone().until_closing().await
+                });
+            log::info!("www app running");
+            run.await;
+            log::info!("www app stopped");
         });
     }
     // TODO emit engine thread
