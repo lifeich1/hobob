@@ -65,12 +65,12 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
         let hdl = runner.clone();
         path::end().map(move || {
             reply::html(render(
-                "index",
+                "index.html",
                 hdl.clone().recv().map(|v| {
                     v.runtime
                         .get("index")
                         .cloned()
-                        .unwrap_or_else(|| json!("booting"))
+                        .unwrap_or_else(|| json!({"status":"booting"}))
                 }),
             ))
         })
@@ -208,10 +208,89 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::WeiYuanHui;
+    use chrono::Duration;
+    use hyper::body::{to_bytes, Buf};
+    use warp::reply::Reply;
 
-    #[test]
-    #[ignore]
-    fn test_index() {
-        panic!("TODO");
+    async fn resp_to_st(resp: warp::reply::Response) -> String {
+        std::str::from_utf8(to_bytes(resp.into_body()).await.unwrap().chunk())
+            .unwrap()
+            .into()
     }
+
+    async fn check_n_step(center: &mut WeiYuanHui) {
+        assert!(matches!(
+            center
+                .run_for(Duration::milliseconds(20))
+                .await
+                .as_ref()
+                .map_err(ToString::to_string),
+            Ok(true)
+        ));
+    }
+
+    fn bench(center: &mut WeiYuanHui) -> FullBench {
+        center
+            .new_chair()
+            .recv()
+            .cloned()
+            .unwrap_or_else(|e| panic!("get bench err: {:?}", e))
+    }
+
+    #[tokio::test]
+    async fn test_index() {
+        let mut center = WeiYuanHui::default();
+        let app = build_app(center.new_chair());
+        let index = warp::test::request()
+            .path("/")
+            .filter(&app)
+            .await
+            .unwrap()
+            .into_response();
+        println!("index: {:?}", &index);
+        assert_eq!(index.status(), StatusCode::OK);
+        let s = resp_to_st(index).await;
+        println!("body: {:?}", &s);
+        assert!(!s.contains("render process failure"));
+    }
+
+    #[tokio::test]
+    async fn test_op_follow() {
+        let center = &mut WeiYuanHui::default();
+        let app = build_app(center.new_chair());
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/op/follow")
+            .json(&json!({
+                "uid": 12345,
+                "enable": true,
+            }))
+            .filter(&app)
+            .await
+            .unwrap()
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        assert_eq!(s, "success");
+        check_n_step(center).await;
+        let b = bench(center);
+        assert_eq!(b.commands.len(), 1);
+        assert_eq!(
+            b.commands.front(),
+            Some(&json!({
+                "cmd": "fetch",
+                "args": { "uid": 12345, },
+            }))
+        );
+        assert_eq!(b.up_info.len(), 1);
+        assert_eq!(
+            b.up_info.get("12345"),
+            Some(&json!({
+                "pick":{"basic":{"ban":false}}
+            }))
+        );
+    }
+
+    // TODO test other op
 }

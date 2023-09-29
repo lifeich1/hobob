@@ -146,8 +146,23 @@ impl WeiYuanHui {
         true
     }
 
+    pub async fn run_until(&mut self, deadline: DateTime<Utc>) -> Result<bool> {
+        loop {
+            let now = Utc::now();
+            if now > deadline {
+                return Ok(true);
+            }
+            let duration = deadline - now;
+            match tokio::time::timeout(duration.to_std()?, self.run()).await {
+                Ok(false) => return Ok(false),
+                Err(_) => return Ok(true),
+                _ => (),
+            }
+        }
+    }
+
     pub async fn run_for(&mut self, duration: Duration) -> Result<bool> {
-        Ok(tokio::time::timeout(duration.to_std()?, self.run()).await?)
+        self.run_until(Utc::now() + duration).await
     }
 
     /// @return is running
@@ -569,17 +584,10 @@ mod tests {
     }
 
     async fn run_1s(center: &mut WeiYuanHui) -> bool {
-        let target = Utc::now() + Duration::milliseconds(100);
-        let targetd = target + Duration::milliseconds(20);
-        let mut res = true;
-        while res && Utc::now() < target {
-            res = center
-                .run_for(targetd - Utc::now())
-                .await
-                .ok()
-                .unwrap_or(true);
-        }
-        res
+        center
+            .run_for(Duration::milliseconds(100))
+            .await
+            .expect("should be in normal stat")
     }
 
     async fn check_closed(center: &WeiYuanHui) {
