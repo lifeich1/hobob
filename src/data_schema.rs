@@ -60,6 +60,7 @@ impl ChairData {
             .schema(schema_uri!("runtime/db"), rt_db_schema())
             .schema(schema_uri!("follow"), follow_schema())
             .schema(schema_uri!("refresh"), refresh_schema())
+            .schema(schema_uri!("toggle_group"), toggle_group_schema())
             .done()
     }
 
@@ -167,6 +168,19 @@ fn refresh_schema() -> Value {
             "uid": { "type": "integer", },
         },
         "required": [ "uid", ],
+        "additionalProperties": false,
+    })
+}
+
+fn toggle_group_schema() -> Value {
+    json!({
+        "description": "operate toggle/group option schema",
+        "type": "object",
+        "properties": {
+            "uid": { "type": "integer", },
+            "gid": { "type": "integer", },
+        },
+        "required": [ "uid", "gid", ],
         "additionalProperties": false,
     })
 }
