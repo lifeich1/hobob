@@ -179,8 +179,10 @@ impl WeiYuanHui {
 
     fn try_push(&mut self, upd: BenchUpdate) {
         if upd.0.ptr_eq(&self.bench) {
+            log::trace!("WeiYuanHui#try_push ok");
             self.push(upd.1);
         } else {
+            log::trace!("WeiYuanHui#try_push abort");
             self.counter.push_miss_cnt += 1;
             if let Some(msg) = self.counter.try_log(&self.bench) {
                 self.push(self.bench.add_log(1, msg));
@@ -235,7 +237,10 @@ impl WeiYuan {
             }
         }
         match self.update.try_send(msg) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                log::trace!("WeiYuan#update sent ok");
+                Ok(())
+            }
             Err(e) => {
                 if let TrySendError::Closed(_) = &e {
                     self.recv()
@@ -297,21 +302,25 @@ impl FullBench {
 
     fn add_log(&self, level: i32, msg: String) -> Self {
         let mut r = self.clone();
+        r.log(level, msg);
+        r
+    }
+
+    fn log(&mut self, level: i32, msg: String) {
         let cf = self.runtime.get("log_filter").unwrap_or(&Value::Null);
         let maxlv = cf["maxlevel"].as_i64().unwrap_or(3) as i32;
         if level > maxlv {
-            return r;
+            return;
         }
-        r.logs
+        self.logs
             .push_back(json!({"ts": to_value(Utc::now()).unwrap(), "level": level, "msg": msg}));
         let bufl = cf["buffer_lines"].as_u64().unwrap_or(2048) as usize;
-        if r.logs.len() > bufl {
+        if self.logs.len() > bufl {
             let fitl = cf["fit_lines"].as_u64().unwrap_or(16);
             for _ in 0..=fitl {
-                r.logs.pop_front();
+                self.logs.pop_front();
             }
         }
-        r
     }
 
     fn mut_runtime_field<F: FnOnce(&mut Value)>(&self, key: &str, f: F) -> Self {
@@ -433,9 +442,11 @@ impl FullBench {
     }
 
     pub fn follow(&mut self, opt: &Value) -> Result<()> {
+        log::trace!("bench#follow opt: {:?}", opt);
         ChairData::expect("https://lintd.xyz/hobob/follow.json", opt)?;
         let uid = opt["uid"].as_i64().unwrap();
         let enable = opt["enable"].as_bool().unwrap_or(true);
+        self.log(2, format!("follow uid:{} enable:{}", uid, enable));
         if enable {
             self.commands.push_back(json!({
                 "cmd": "fetch",
@@ -443,6 +454,7 @@ impl FullBench {
                     "uid": uid,
                 }
             }));
+            log::trace!("push cmd: {:?}", self.commands.back());
         }
         let id = &uid.to_string();
         self.up_info

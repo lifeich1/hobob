@@ -58,6 +58,7 @@ impl ChairData {
             .schema(schema_uri!("log"), log_schema())
             .schema(schema_uri!("runtime/bucket"), rt_bucket_schema())
             .schema(schema_uri!("runtime/db"), rt_db_schema())
+            .schema(schema_uri!("follow"), follow_schema())
             .done()
     }
 
@@ -140,6 +141,19 @@ fn rt_bucket_schema() -> Value {
             "min_change_gap": { "type": "integer", "minimum": 1, },
             "gap": { "type": "integer", "minimum": 1, },
         },
+        "additionalProperties": false,
+    })
+}
+
+fn follow_schema() -> Value {
+    json!({
+        "description": "operate follow option schema",
+        "type": "object",
+        "properties": {
+            "uid": { "type": "integer", },
+            "enable": { "type": "boolean", },
+        },
+        "required": [ "uid", ],
         "additionalProperties": false,
     })
 }

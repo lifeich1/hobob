@@ -53,13 +53,6 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
             .and_then(|c| Ok(TERA.render(page, &c)?))
             .unwrap_or_else(|e| render_fail(page, e))
     }
-    fn log(mut hdl: WeiYuan, lv: i32, msg: String) -> WeiYuan {
-        hdl.log(lv, msg);
-        hdl
-    }
-    fn info(hdl: WeiYuan, msg: String) -> WeiYuan {
-        log(hdl, 2, msg)
-    }
 
     let index = {
         let hdl = runner.clone();
@@ -81,24 +74,27 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
             .and(warp::body::content_length_limit(1024 * 16))
             .and(warp::body::bytes())
             .and_then(|bytes: bytes::Bytes| async move {
-                serde_json::to_value(bytes.as_ref())
-                    .map_err(|_| warp::reject::custom(UnparsableQuery()))
+                let r = std::str::from_utf8(bytes.as_ref())
+                    .ok()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .ok_or_else(|| warp::reject::custom(UnparsableQuery()));
+                log::trace!("simpleapi()#parsed: {:?}", &r);
+                r
             })
             .boxed()
     }
-    fn do_api<F>(hdl: &WeiYuan, name: &str, opt: Value, f: F) -> reply::Json
+    fn do_api<F>(hdl: &WeiYuan, opt: Value, f: F) -> reply::Json
     where
         F: Fn(&mut FullBench, &Value) -> Result<()>,
     {
-        let msg = format!("{} arg: {:?}", name, &opt);
         reply::json(
-            &info(hdl.clone(), msg)
+            &hdl.clone()
                 .apply(|b| f(b, &opt))
                 .map(|_| json!("success"))
                 .unwrap_or_else(|e| json!({"err": e.to_string()})),
         )
     }
-    fn create_op<F>(runner: &WeiYuan, name: &'static str, f: F) -> BoxedFilter<(impl reply::Reply,)>
+    fn create_op<F>(runner: &WeiYuan, f: F) -> BoxedFilter<(impl reply::Reply,)>
     where
         F: Fn(&mut FullBench, &Value) -> Result<()>
             + std::marker::Sync
@@ -108,23 +104,17 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
     {
         let hdl = runner.clone();
         simpleapi()
-            .map(move |opt: Value| do_api(&hdl, name, opt, f))
+            .map(move |opt: Value| do_api(&hdl, opt, f))
             .boxed()
     }
 
-    let op_follow = warp::path!("follow").and(create_op(&runner, "follow", |b, opt| b.follow(opt)));
-    let op_refresh =
-        warp::path!("refresh").and(create_op(&runner, "refresh", |b, opt| b.refresh(opt)));
-    let op_silence =
-        warp::path!("silence").and(create_op(&runner, "silence", |b, opt| b.force_silence(opt)));
+    let op_follow = warp::path!("follow").and(create_op(&runner, |b, opt| b.follow(opt)));
+    let op_refresh = warp::path!("refresh").and(create_op(&runner, |b, opt| b.refresh(opt)));
+    let op_silence = warp::path!("silence").and(create_op(&runner, |b, opt| b.force_silence(opt)));
     let op_toggle_group =
-        warp::path!("toggle" / "group").and(create_op(&runner, "toggle/group", |b, opt| {
-            b.toggle_group(opt)
-        }));
+        warp::path!("toggle" / "group").and(create_op(&runner, |b, opt| b.toggle_group(opt)));
     let op_new_group =
-        warp::path!("touch" / "group").and(create_op(&runner, "touch/group", |b, opt| {
-            b.touch_group(opt)
-        }));
+        warp::path!("touch" / "group").and(create_op(&runner, |b, opt| b.touch_group(opt)));
     /*
 
     let get_user =
@@ -213,6 +203,10 @@ mod tests {
     use hyper::body::{to_bytes, Buf};
     use warp::reply::Reply;
 
+    fn init() {
+        env_logger::builder().is_test(true).try_init().ok();
+    }
+
     async fn resp_to_st(resp: warp::reply::Response) -> String {
         std::str::from_utf8(to_bytes(resp.into_body()).await.unwrap().chunk())
             .unwrap()
@@ -255,26 +249,48 @@ mod tests {
         assert!(!s.contains("render process failure"));
     }
 
-    #[tokio::test]
-    async fn test_op_follow() {
-        let center = &mut WeiYuanHui::default();
+    async fn do_op(
+        path: &str,
+        jsn: Value,
+    ) -> (
+        WeiYuanHui,
+        warp::reply::Response,
+        BoxedFilter<(impl warp::Reply,)>,
+    ) {
+        let mut center = WeiYuanHui::default();
+        let mut init = center.new_chair();
+        init.log(0, "trigger first save disk");
+        assert!(center.run().await);
         let app = build_app(center.new_chair());
         let resp = warp::test::request()
             .method("POST")
-            .path("/op/follow")
-            .json(&json!({
-                "uid": 12345,
-                "enable": true,
-            }))
+            .path(path)
+            .json(&jsn)
             .filter(&app)
             .await
             .unwrap()
             .into_response();
+        (center, resp, app)
+    }
+
+    #[tokio::test]
+    async fn test_op_follow() {
+        init();
+        let (mut center, resp, _app) = do_op(
+            "/op/follow",
+            json!({
+                "uid": 12345,
+                "enable": true,
+            }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let s = resp_to_st(resp).await;
-        assert_eq!(s, "success");
-        check_n_step(center).await;
-        let b = bench(center);
+        assert_eq!(serde_json::from_str(&s).ok(), Some(json!("success")));
+
+        check_n_step(&mut center).await;
+        let b = bench(&mut center);
+        println!("cur bench: {:?}", b);
         assert_eq!(b.commands.len(), 1);
         assert_eq!(
             b.commands.front(),
