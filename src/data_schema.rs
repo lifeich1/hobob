@@ -59,6 +59,7 @@ impl ChairData {
             .schema(schema_uri!("runtime/bucket"), rt_bucket_schema())
             .schema(schema_uri!("runtime/db"), rt_db_schema())
             .schema(schema_uri!("follow"), follow_schema())
+            .schema(schema_uri!("refresh"), refresh_schema())
             .done()
     }
 
@@ -152,6 +153,18 @@ fn follow_schema() -> Value {
         "properties": {
             "uid": { "type": "integer", },
             "enable": { "type": "boolean", },
+        },
+        "required": [ "uid", ],
+        "additionalProperties": false,
+    })
+}
+
+fn refresh_schema() -> Value {
+    json!({
+        "description": "operate refresh option schema",
+        "type": "object",
+        "properties": {
+            "uid": { "type": "integer", },
         },
         "required": [ "uid", ],
         "additionalProperties": false,

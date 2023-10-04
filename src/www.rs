@@ -249,7 +249,8 @@ mod tests {
         assert!(!s.contains("render process failure"));
     }
 
-    async fn do_op(
+    async fn do_op3(
+        mut center: WeiYuanHui,
         path: &str,
         jsn: Value,
     ) -> (
@@ -257,7 +258,6 @@ mod tests {
         warp::reply::Response,
         BoxedFilter<(impl warp::Reply,)>,
     ) {
-        let mut center = WeiYuanHui::default();
         let mut init = center.new_chair();
         init.log(0, "trigger first save disk");
         assert!(center.run().await);
@@ -271,6 +271,16 @@ mod tests {
             .unwrap()
             .into_response();
         (center, resp, app)
+    }
+    async fn do_op(
+        path: &str,
+        jsn: Value,
+    ) -> (
+        WeiYuanHui,
+        warp::reply::Response,
+        BoxedFilter<(impl warp::Reply,)>,
+    ) {
+        do_op3(Default::default(), path, jsn).await
     }
 
     #[tokio::test]
@@ -308,5 +318,34 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_op_refresh() {
+        init();
+        let mut b = FullBench::default();
+        assert!(b.follow(&json!({"uid": 12345})).is_ok());
+        let (mut center, resp, _app) = do_op3(
+            b.into(),
+            "/op/refresh",
+            json!({
+                "uid": 12345,
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        assert_eq!(serde_json::from_str(&s).ok(), Some(json!("success")));
+
+        check_n_step(&mut center).await;
+        let b = bench(&mut center);
+        assert_eq!(b.commands.len(), 2);
+        assert_eq!(
+            b.commands.back(),
+            Some(&json!({
+                "cmd": "fetch",
+                "args": { "uid": 12345, },
+            }))
+        );
+        assert_eq!(b.up_info.len(), 1);
+    }
     // TODO test other op
 }

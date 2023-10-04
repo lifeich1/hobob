@@ -78,6 +78,15 @@ impl Default for WeiYuanHui {
     }
 }
 
+impl From<FullBench> for WeiYuanHui {
+    fn from(bench: FullBench) -> Self {
+        Self {
+            bench,
+            ..Default::default()
+        }
+    }
+}
+
 impl WeiYuanHui {
     pub fn load<P: AsRef<Path>>(path: P) -> Self {
         log::info!("loading full bench from {}", path.as_ref().display());
@@ -469,10 +478,11 @@ impl FullBench {
         Ok(())
     }
 
-    fn checked_uid(&mut self, opt: &Value, key: &str) -> Result<String> {
-        let uid = opt[key].as_i64().unwrap().to_string();
+    fn checked_uid(&mut self, opt: &Value, key: &str) -> Result<i64> {
+        let uid = opt[key].as_i64().unwrap();
+        let suid = uid.to_string();
         self.up_info
-            .contains_key(&uid)
+            .contains_key(&suid)
             .then_some(uid)
             .ok_or_else(|| anyhow!("operate on not tracing uid"))
     }
@@ -513,17 +523,17 @@ impl FullBench {
 
     pub fn toggle_group(&mut self, opt: &Value) -> Result<()> {
         ChairData::expect("https://lintd.xyz/hobob/toggle_group.json", opt)?;
-        let uid = self.checked_uid(opt, "uid")?;
+        let suid = self.checked_uid(opt, "uid")?.to_string();
         let gid = self.inited_gid(opt, "gid");
         if self
             .up_join_group
             .get(&gid)
-            .map(|s| s.contains(&uid))
+            .map(|s| s.contains(&suid))
             .unwrap_or(false)
         {
-            self.up_join_group.get_mut(&gid).unwrap().remove(&uid);
+            self.up_join_group.get_mut(&gid).unwrap().remove(&suid);
         } else {
-            self.up_join_group.get_mut(&gid).unwrap().insert(uid);
+            self.up_join_group.get_mut(&gid).unwrap().insert(suid);
         }
         Ok(())
     }
