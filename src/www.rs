@@ -347,5 +347,26 @@ mod tests {
         );
         assert_eq!(b.up_info.len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_op_silence() {
+        init();
+        let mut b = FullBench::default();
+        assert_eq!(b.runtime.insert("bucket".into(), json!({"gap": 21})), None);
+        let (mut center, resp, _app) = do_op3(b.into(), "/op/silence", json!({})).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        assert_eq!(serde_json::from_str(&s).ok(), Some(json!("success")));
+
+        check_n_step(&mut center).await;
+        let b = bench(&mut center);
+        assert_eq!(b.commands.len(), 0);
+        assert_eq!(
+            b.runtime.get("bucket"),
+            Some(&json!({
+                "gap": 42,
+            }))
+        );
+    }
     // TODO test other op
 }
