@@ -55,7 +55,7 @@ pub struct WeiYuanHui {
 
 #[derive(Clone)]
 pub struct WeiYuan {
-    update: mpsc::Sender<BenchUpdate>,
+    update: Option<mpsc::Sender<BenchUpdate>>,
     fetch: watch::Receiver<FullBench>,
     bench: FullBench,
 }
@@ -112,11 +112,12 @@ impl WeiYuanHui {
 
     pub fn new_chair(&mut self) -> WeiYuan {
         WeiYuan {
-            update: self
-                .updates_src
-                .as_ref()
-                .expect("new_chair in closing")
-                .clone(),
+            update: Some(
+                self.updates_src
+                    .as_ref()
+                    .expect("new_chair in closing")
+                    .clone(),
+            ),
             fetch: self
                 .publish_dst
                 .as_ref()
@@ -218,6 +219,13 @@ impl WeiYuanHui {
 }
 
 impl WeiYuan {
+    pub fn readonly(&self) -> Self {
+        Self {
+            update: None,
+            ..Clone::clone(self)
+        }
+    }
+
     /// @return None for closing
     pub fn recv(&mut self) -> Result<&FullBench> {
         match self.fetch.has_changed() {
@@ -245,7 +253,12 @@ impl WeiYuan {
                 break;
             }
         }
-        match self.update.try_send(msg) {
+        match self
+            .update
+            .as_ref()
+            .expect("try update in READONLY WeiYuan")
+            .try_send(msg)
+        {
             Ok(_) => {
                 log::trace!("WeiYuan#update sent ok");
                 Ok(())
@@ -525,6 +538,7 @@ impl FullBench {
         ChairData::expect("https://lintd.xyz/hobob/toggle_group.json", opt)?;
         let suid = self.checked_uid(opt, "uid")?.to_string();
         let gid = self.inited_gid(opt, "gid");
+        self.log(2, format!("toggle_group uid:{} gid:{}", &suid, &gid));
         if self
             .up_join_group
             .get(&gid)

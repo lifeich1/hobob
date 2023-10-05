@@ -1,5 +1,5 @@
 use crate::db::{FullBench, WeiYuan};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{TimeZone, Utc};
 use futures::StreamExt;
 use serde_derive::{Deserialize, Serialize};
@@ -55,7 +55,7 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
     }
 
     let index = {
-        let hdl = runner.clone();
+        let hdl = runner.readonly();
         path::end().map(move || {
             reply::html(render(
                 "index.html",
@@ -115,37 +115,35 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
         warp::path!("toggle" / "group").and(create_op(&runner, |b, opt| b.toggle_group(opt)));
     let op_new_group =
         warp::path!("touch" / "group").and(create_op(&runner, |b, opt| b.touch_group(opt)));
+
+    let card_one = {
+        let hdl = runner.readonly();
+        warp::path!("one" / i64).map(move |uid: i64| {
+            let r = hdl
+                .clone()
+                .recv()
+                .and_then(|b| {
+                    b.up_info
+                        .get(&uid.to_string())
+                        .ok_or_else(|| anyhow!("uid {} not found", uid))
+                })
+                .map(|v| json!({"users": [v["pick"]]}));
+            reply::html(render("user_cards.html", r))
+        })
+    };
+
     /*
-
-    let get_user =
-        warp::path!("user" / i64).map(|uid| reply_json_result!(db::User::new(uid).info()));
-    let get_vlist = warp::path!("vlist" / i64)
-        .map(|uid| reply_json_result!(db::User::new(uid).recent_videos(30)));
-    let get_flist = warp::path!("flist").map(|| reply_json_result!(db::FilterMeta::all()));
-    let get = warp::path("get").and(warp::get());
-
-    let list = warp::path!("list" / i64 / String / i64 / i64)
-        .and(warp::get())
-        .map(|fid, typ: String, start, len| {
-            reply_json_result!(db::User::list(fid, typ.as_str().into(), start, len))
-        });
-
     let card_ulist =
         warp::path!("ulist" / i64 / String / i64 / i64).map(|fid, typ: String, start, len| {
             let uids = db::User::list(fid, typ.as_str().into(), start, len);
             ulist_render!(uids, true)
         });
-    let card_one = warp::path!("one" / i64).map(|uid| {
-        let users = vec![UserPack::from(db::User::new(uid).info())];
-        ulist_render!(@pack users, false)
-    });
     let card_filter_options = warp::path!("filter" / "options").map(|| {
         let filters = www_try!(@db db::FilterMeta::all());
         let mut ctx = TeraContext::new();
         ctx.insert("filters", &filters);
         render!("filter_options.html", &ctx)
     });
-    let card = warp::path("card");
 
     let ev_engine = warp::path!("engine").map(|| {
         warp::sse::reply(
@@ -183,6 +181,7 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
                 .or(op_toggle_group)
                 .or(op_new_group),
         ))
+        .or(warp::path("card").and(card_one))
         .or(static_files)
         .or(favicon);
     app.boxed()
@@ -458,4 +457,6 @@ mod tests {
             }))
         );
     }
+
+    // TODO test card_one
 }

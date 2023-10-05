@@ -1,68 +1,84 @@
 {% for user in users %}
+{% set card_id = "user-card-" ~ user.basic.id %}
 {% if in_div %}
-<div class="card m-2 p-1 shadow" id={{ user.ext.card_id }}>
-{% endif %}
+<div class="card m-2 p-1 shadow" id={{ card_id }}>
+    {% endif %}
+    {% set space_url = 'https://space.bilibili.com/' ~ user.basic.id %}
     <div class="d-flex flex-row">
-    <a href="{{ user.ext.space_link }}" target="_blank">
-        <img src={{ user.data.face_url ~ "@128w_128h_1o.webp" }}
-        class="card-img-top rounded-circle" style="width: 128px;">
-    </a>
-    <div class="card-body">
-        <h5 class="card-title">
-            <a href="{{ user.ext.space_link }}" target="_blank" class="btn btn-light">
-                {{ user.data.name }}
-                <span class="badge bg-secondary">
-                    {{ user.data.id }}
-                    <span class="tag-latest-sync-user position-absolute top-0 start-100 translate-middle p-2 bg-danger border border-light rounded-circle">
-                    </span>
-                </span>
-            </a>
-        </h5>
-        <a href="{{ user.ext.live_link }}" target="_blank" class="{{ user.ext.live_link_cls }}">
-        {% if user.ext.live_open %}
-            {{ user.data.live_room_title }}
-        {% else %}
-            直播间
-        {% endif %}
-            <span class="badge bg-info">{{ user.ext.live_entropy }}</span>
+        <a href="{{ space_url }}" target="_blank">
+            <img src={{ user.basic.face_url ~ "@128w_128h_1o.webp" }} class="card-img-top rounded-circle"
+                style="width: 128px;">
         </a>
-        {% if user.ext.new_video_ts > 0 %}
-        <p>
-            最新视频：{{ user.ext.new_video_title }}
-            <span class="badge bg-info">
-                {{ user.ext.new_video_tsrepr }}
-            </span>
-        </p>
-        {% endif %}
-        <div class="dropdown">
-            <a class="btn btn-sm btn-dark dropdown-toggle"
-                href="#" role="button"
-                id="dropdownMenuLink-{{ user.ext.card_id }}"
-                data-bs-toggle="dropdown" aria-expanded="false">
-                <i class="bi bi-sliders"></i>
-                更多
-            </a>
-
-            <ul class="dropdown-menu" aria-labelledby="dropdownMenuLink-{{ user.ext.card_id }}">
-                <li><a class="dropdown-item" onclick="on_move2top_filter({{ user.data.id }})">移至顶部</a></li>
-                <li><a class="dropdown-item" onclick="on_ui_addto_filter({{ user.data.id }}, '{{ user.data.name }}')">添加到列表</a></li>
-                <li><a class="dropdown-item" onclick="on_drop_from_filter({{ user.data.id }}, '{{ user.data.name }}')">从当前列表移除</a></li>
-                <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item" onclick="on_try_refresh({{ user.data.id }})">尝试同步</a></li>
-                <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item" onclick="on_check_unfollow({{ user.data.id }}, '{{ user.data.name }}')">
-                        <span class="text-danger">
-                            取消关注
+        <div class="card-body">
+            <h5 class="card-title">
+                <a href="{{ space_url }}" target="_blank" class="btn btn-light">
+                    {{ user.basic.name }}
+                    <span class="badge bg-secondary">
+                        {{ user.basic.id }}
+                        <span
+                            class="tag-latest-sync-user position-absolute top-0 start-100 translate-middle p-2 bg-danger border border-light rounded-circle">
                         </span>
-                    </a></li>
-            </ul>
-            <span class="badge rounded-pill bg-warning">
-                CST {{ user.ext.ctimestamp + 8 * 3600 | date(format="%Y-%m-%d %H:%M:%S") }}
-            </span>
+                    </span>
+                </a>
+            </h5>
+
+            {% if user.live %}
+            {% if user.live.isopen %}
+            {% set live_link_cls = 'btn btn-success' %}
+            {% else %}
+            {% set live_link_cls = 'btn btn-secondary' %}
+            {% endif %}
+            <a href="{{ user.live.url }}" target="_blank" class="{{ live_link_cls }}">
+                {{ user.live.title }}
+                <span class="badge bg-info">{{ user.live.entropy }}</span>
+            </a>
+            {% endif %}
+
+            {% if user.video %}
+            <p>
+                <a href="{{ user.video.url }}" target="_blank">
+                    最新视频：{{ user.video.title }}
+                </a>
+                <span class="badge bg-info">
+                    {{ user.video.ts }}
+                </span>
+            </p>
+            {% endif %}
+
+            <div class="dropdown">
+                <a class="btn btn-sm btn-dark dropdown-toggle" href="#" role="button"
+                    id="dropdownMenuLink-{{ card_id }}" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-sliders"></i>
+                    更多
+                </a>
+
+                <ul class="dropdown-menu" aria-labelledby="dropdownMenuLink-{{ card_id }}">
+                    <li><a class="dropdown-item" onclick="on_move2top_filter({{ user.basic.id }})">移至顶部</a></li>
+                    <li><a class="dropdown-item"
+                            onclick="on_ui_addto_filter({{ user.basic.id }}, '{{ user.basic.name }}')">添加到列表</a></li>
+                    <li><a class="dropdown-item"
+                            onclick="on_drop_from_filter({{ user.basic.id }}, '{{ user.basic.name }}')">从当前列表移除</a></li>
+                    <li>
+                        <hr class="dropdown-divider">
+                    </li>
+                    <li><a class="dropdown-item" onclick="on_try_refresh({{ user.basic.id }})">尝试同步</a></li>
+                    <li>
+                        <hr class="dropdown-divider">
+                    </li>
+                    <li><a class="dropdown-item"
+                            onclick="on_check_unfollow({{ user.basic.id }}, '{{ user.basic.name }}')">
+                            <span class="text-danger">
+                                取消关注
+                            </span>
+                        </a></li>
+                </ul>
+                <span class="badge rounded-pill bg-warning">
+                    CST {{ user.basic.ctime + 8 * 3600 | date(format="%Y-%m-%d %H:%M:%S") }}
+                </span>
+            </div>
         </div>
     </div>
-    </div>
-{% if in_div %}
+    {% if in_div %}
 </div>
 {% endif %}
 {% endfor %}
