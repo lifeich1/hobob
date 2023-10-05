@@ -1,12 +1,14 @@
 use crate::data_schema::ChairData;
-use crate::db::{FullBench, WeiYuan};
+use crate::db::{FullBench, WeiYuan, WeiYuanHui};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use serde_derive::Deserialize;
 use serde_json::{json, Value};
+use std::convert::Infallible;
+use std::sync::Arc;
 use tera::{Context, Tera};
-use tokio_stream::wrappers::WatchStream;
-use warp::{filters::BoxedFilter, http::StatusCode, path, reply, sse::Event, Filter};
+use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
+use warp::{filters::BoxedFilter, path, reply, sse::Event, Filter};
 
 lazy_static::lazy_static! {
     pub static ref TERA: Tera = {
@@ -25,15 +27,8 @@ struct UnparsableQuery();
 
 impl warp::reject::Reject for UnparsableQuery {}
 
-/*
-fn sse_ev_engine(e: engine::Event) -> std::result::Result<Event, Infallible> {
-    Ok(Event::default()
-        .json_data(e)
-        .expect("engine event json-stringify should never fail"))
-}
-*/
-
-pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
+pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)> {
+    let runner = weiyuanhui.new_chair();
     fn render_fail<E: std::fmt::Display>(page: &str, e: E) -> String {
         let mut c = Context::new();
         c.insert("kind", "render process");
@@ -155,39 +150,49 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
         })
     };
 
-    /*
-    let card_filter_options = warp::path!("filter" / "options").map(|| {
-        let filters = www_try!(@db db::FilterMeta::all());
-        let mut ctx = TeraContext::new();
-        ctx.insert("filters", &filters);
-        render!("filter_options.html", &ctx)
-    });
+    let card_filter_options = {
+        let hdl = runner.readonly();
+        warp::path!("filter" / "options").map(move || {
+            let r = hdl
+                .clone()
+                .recv()
+                .map(|b| {
+                    Value::from(
+                        b.group_info
+                            .iter()
+                            .map(|(k, v)| {
+                                json!({
+                                    "fid": k,
+                                    "name": v["name"],
+                                    "removable": v["removable"],
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .and_then(ChairData::checker(schema_uri!("filter_options")));
+            reply::html(render("filter_options.html", r))
+        })
+    };
 
-    let ev_engine = warp::path!("engine").map(|| {
-        warp::sse::reply(
-            warp::sse::keep_alive().stream(WatchStream::new(engine::event_rx()).map(sse_ev_engine)),
-        )
-    });
-    let ev = warp::path("ev");
+    let ev_engine = {
+        let rx = Arc::new(weiyuanhui.listen_events());
+        warp::path!("engine").map(move || {
+            warp::sse::reply(warp::sse::keep_alive().stream(
+                BroadcastStream::new(rx.resubscribe()).map(|v| -> Result<Event, Infallible> {
+                    Ok(match v {
+                        Ok(ev) => Event::default()
+                            .json_data(ev)
+                            .expect("im::Vector<Value> SHOULD never serde fail"),
+                        Err(BroadcastStreamRecvError::Lagged(l)) => {
+                            Event::default().comment(format!("event rx lagged {}", l))
+                        }
+                    })
+                }),
+            ))
+        })
+    };
 
-
-    let app = index
-        .or(op.and(op_follow))
-        .or(op.and(op_refresh))
-        .or(op.and(op_silence))
-        .or(op.and(op_mod_filter))
-        .or(op.and(op_new_filter))
-        .or(get.and(get_user))
-        .or(get.and(get_vlist))
-        .or(get.and(get_flist))
-        .or(list)
-        .or(static_files)
-        .or(card.and(card_ulist))
-        .or(card.and(card_one))
-        .or(card.and(card_filter_options))
-        .or(ev.and(ev_engine))
-        .or(favicon);
-    */
     let static_files = warp::path("static").and(warp::fs::dir("./static"));
     let favicon = warp::path!("favicon.ico").and(warp::fs::file("./static/favicon.ico"));
 
@@ -199,17 +204,11 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
                 .or(op_toggle_group)
                 .or(op_new_group),
         ))
-        .or(warp::path("card").and(card_one.or(card_ulist)))
+        .or(warp::path("card").and(card_one.or(card_ulist).or(card_filter_options)))
+        .or(warp::path("ev").and(ev_engine))
         .or(static_files)
         .or(favicon);
     app.boxed()
-    /*
-    let (_, run) = warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
-        runner.clone().until_closing().await
-    });
-    run.await;
-    log::info!("www stopped");
-        */
 }
 
 #[cfg(test)]
@@ -218,6 +217,7 @@ mod tests {
     use crate::db::WeiYuanHui;
     use chrono::Duration;
     use hyper::body::{to_bytes, Buf};
+    use warp::http::StatusCode;
     use warp::reply::Reply;
 
     fn init() {
@@ -252,7 +252,7 @@ mod tests {
     #[tokio::test]
     async fn test_index() {
         let mut center = WeiYuanHui::default();
-        let app = build_app(center.new_chair());
+        let app = build_app(&mut center);
         let index = warp::test::request()
             .path("/")
             .filter(&app)
@@ -278,7 +278,7 @@ mod tests {
         let mut init = center.new_chair();
         init.log(0, "trigger first save disk");
         assert!(center.run().await);
-        let app = build_app(center.new_chair());
+        let app = build_app(&mut center);
         let resp = warp::test::request()
             .method("POST")
             .path(path)
@@ -310,7 +310,7 @@ mod tests {
         let mut init = center.new_chair();
         init.log(0, "trigger first save disk");
         assert!(center.run().await);
-        let app = build_app(center.new_chair());
+        let app = build_app(&mut center);
         let resp = warp::test::request()
             .method("GET")
             .path(path)
@@ -512,4 +512,6 @@ mod tests {
     }
 
     // TODO test card_ulist
+    // TODO test card_filter_options
+    // TODO test sse
 }

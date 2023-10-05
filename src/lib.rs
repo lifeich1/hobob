@@ -59,8 +59,8 @@ pub async fn main_loop() -> Result<()> {
     let mut center = WeiYuanHui::default();
     {
         let chair = center.new_chair();
+        let app = www::build_app(&mut center);
         tokio::spawn(async move {
-            let app = www::build_app(chair.clone());
             let (_, run) = warp::serve(app)
                 .bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
                     chair.clone().until_closing().await
@@ -77,7 +77,7 @@ pub async fn main_loop() -> Result<()> {
     center.close();
     tokio::time::timeout(std::time::Duration::from_secs(30), center.closed())
         .await
-        .map_err(|e| log::error!("graceful shutdown timeout: {}", e))
+        .map_err(|e| log::error!("force killing, graceful shutdown timeout: {}", e))
         .ok();
 
     Ok(())

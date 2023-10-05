@@ -9,7 +9,7 @@ use std::io::{BufReader, BufWriter};
 use std::ops::Not;
 use std::path::Path;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
 const FLAG_CLOSING: &str = "#CLOSING#";
 
@@ -17,7 +17,7 @@ pub type UpInfo = im::HashMap<String, Value>;
 pub type UpIndex = im::HashMap<String, im::OrdSet<(i64, String)>>;
 pub type UpJoinGroup = im::HashMap<String, im::OrdSet<String>>;
 pub type Events = im::Vector<Value>;
-pub type GroupInfo = im::HashMap<String, Value>;
+pub type GroupInfo = im::OrdMap<String, Value>;
 pub type LogRecords = im::Vector<Value>;
 pub type RuntimeCfg = im::HashMap<String, Value>;
 pub type Commands = im::Vector<Value>;
@@ -42,6 +42,7 @@ pub struct BenchUpdate(FullBench, FullBench);
 struct VCounter {
     last_dump_ts: Option<DateTime<Utc>>,
     push_miss_cnt: u64,
+    broadcast_void_cnt: u64,
 }
 
 #[derive(Debug)]
@@ -50,6 +51,8 @@ pub struct WeiYuanHui {
     updates_src: Option<mpsc::Sender<BenchUpdate>>,
     publish: watch::Sender<FullBench>,
     publish_dst: Option<watch::Receiver<FullBench>>,
+    ev_tx: broadcast::Sender<Events>,
+    ev_rx: broadcast::Receiver<Events>,
     bench: FullBench,
     savepath: Option<Box<Path>>,
     counter: VCounter,
@@ -65,6 +68,7 @@ pub struct WeiYuan {
 impl Default for WeiYuanHui {
     fn default() -> Self {
         let (updates_src, updates) = mpsc::channel(64);
+        let (ev_tx, ev_rx) = broadcast::channel(64);
         let (publish, publish_dst) = watch::channel(FullBench::default());
         let updates_src = Some(updates_src);
         let publish_dst = Some(publish_dst);
@@ -73,6 +77,8 @@ impl Default for WeiYuanHui {
             updates_src,
             publish,
             publish_dst,
+            ev_tx,
+            ev_rx,
             bench: Default::default(),
             savepath: Default::default(),
             counter: Default::default(),
@@ -110,6 +116,10 @@ impl WeiYuanHui {
             savepath,
             ..Default::default()
         })
+    }
+
+    pub fn listen_events(&self) -> broadcast::Receiver<Events> {
+        self.ev_rx.resubscribe()
     }
 
     pub fn new_chair(&mut self) -> WeiYuan {
@@ -197,7 +207,7 @@ impl WeiYuanHui {
             log::trace!("WeiYuanHui#try_push abort");
             self.counter.push_miss_cnt += 1;
             if let Some(msg) = self.counter.try_log(&self.bench) {
-                self.push(self.bench.add_log(1, msg));
+                self.push(self.bench.add_log(3, msg));
             }
         }
     }
@@ -214,7 +224,13 @@ impl WeiYuanHui {
         Ok(())
     }
 
-    fn push(&mut self, next: FullBench) {
+    fn push(&mut self, mut next: FullBench) {
+        if next.events.len() > 0 {
+            if self.ev_tx.send(next.events.clone()).is_err() {
+                self.counter.broadcast_void_cnt += 1;
+            }
+            next.events.clear();
+        }
         self.bench = next.clone();
         self.publish.send_modify(move |v| *v = next);
     }
@@ -415,7 +431,7 @@ impl FullBench {
             .and_then(|v| v["vlog_dump_gap_sec"].as_u64())
             .map(|sec| sec as i64)
             .map(Duration::seconds)
-            .unwrap_or_else(|| Duration::seconds(10))
+            .unwrap_or_else(|| Duration::seconds(60))
     }
 
     fn runtime_set_closing(&self) -> Self {
@@ -635,15 +651,12 @@ impl FullBench {
 impl VCounter {
     pub fn try_log(&mut self, bench: &FullBench) -> Option<String> {
         if self.last_dump_ts.map(|t| Utc::now() > t).unwrap_or(true) {
+            let r = format!("VCounter: {:?}", self);
             self.last_dump_ts = Some(Utc::now() + bench.runtime_vlog_dump_gap());
-            Some(self.do_log())
+            Some(r)
         } else {
             None
         }
-    }
-
-    fn do_log(&self) -> String {
-        format!("push_miss_cnt: {},", self.push_miss_cnt)
     }
 }
 
