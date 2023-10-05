@@ -30,7 +30,7 @@ An web app for hobo kicked from bibi&lili.
             }
         }
     },
-    "up_orders": [{"<order>": "<id>"}],
+    "up_index": {"<index_type>": ["__by_weight__", ["<weight>", "<id>"]]}},
     "up_join_group": { "<group>": {"<uid>":null} },
     "events": [ {
         "seq": 0,

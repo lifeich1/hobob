@@ -40,7 +40,7 @@
                     最新视频：{{ user.video.title }}
                 </a>
                 <span class="badge bg-info">
-                    {{ user.video.ts }}
+                    {{ user.video.ts | date(format="%Y-%m-%d %H:%M:%S") }}
                 </span>
             </p>
             {% endif %}

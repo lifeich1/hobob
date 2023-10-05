@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, watch};
 const FLAG_CLOSING: &str = "#CLOSING#";
 
 pub type UpInfo = im::HashMap<String, Value>;
+pub type UpIndex = im::HashMap<String, im::OrdSet<(i64, String)>>;
 pub type UpJoinGroup = im::HashMap<String, im::OrdSet<String>>;
 pub type Events = im::Vector<Value>;
 pub type GroupInfo = im::HashMap<String, Value>;
@@ -24,6 +25,7 @@ pub type Commands = im::Vector<Value>;
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 pub struct FullBench {
     pub up_info: UpInfo,
+    pub up_index: UpIndex,
     pub up_by_fid: im::Vector<String>,
     pub up_join_group: UpJoinGroup,
     pub events: Events,
@@ -329,9 +331,18 @@ fn pending_up_info(id: i64, fid: usize, ban: bool) -> Value {
     })
 }
 
+fn live_entropy(v: &Value) -> i64 {
+    v["pick"]["live"]["entropy"].as_i64().unwrap_or(-1)
+}
+
+fn new_video_ts(v: &Value) -> i64 {
+    v["pick"]["video"]["ts"].as_i64().unwrap_or(0)
+}
+
 impl FullBench {
     fn ptr_eq(&self, other: &Self) -> bool {
         self.up_info.ptr_eq(&other.up_info)
+            && self.up_index.ptr_eq(&other.up_index)
             && im_vector_p_eq(&self.up_by_fid, &other.up_by_fid)
             && self.up_join_group.ptr_eq(&other.up_join_group)
             && im_vector_p_eq(&self.events, &other.events)
@@ -423,7 +434,7 @@ impl FullBench {
         if self
             .runtime
             .get("bucket")
-            .and_then(|v| ChairData::expect("https://lintd.xyz/hobob/runtime/bucket.json", v).ok())
+            .and_then(|v| ChairData::expect(schema_uri!("runtime/bucket"), v).ok())
             .is_none()
         {
             self.runtime.insert(
@@ -452,7 +463,7 @@ impl FullBench {
             .and_then(|v| {
                 let mut t: &Value = v;
                 // FIXME consider use default if broken
-                ChairData::expect(&format!("https://lintd.xyz/hobob/runtime/{}.json", key), t)?;
+                ChairData::expect(schema_uri!("runtime", key), t)?;
                 for p in path.split('/') {
                     match t.get(p) {
                         Some(r) => t = r,
@@ -484,7 +495,7 @@ impl FullBench {
 
     pub fn follow(&mut self, opt: &Value) -> Result<()> {
         log::trace!("bench#follow opt: {:?}", opt);
-        ChairData::expect("https://lintd.xyz/hobob/follow.json", opt)?;
+        ChairData::expect(schema_uri!("follow"), opt)?;
         let uid = opt["uid"].as_i64().unwrap();
         let enable = opt["enable"].as_bool().unwrap_or(true);
         self.log(2, format!("follow uid:{} enable:{}", uid, enable));
@@ -522,7 +533,7 @@ impl FullBench {
     }
 
     pub fn refresh(&mut self, opt: &Value) -> Result<()> {
-        ChairData::expect("https://lintd.xyz/hobob/refresh.json", opt)?;
+        ChairData::expect(schema_uri!("refresh"), opt)?;
         let uid = self.checked_uid(opt, "uid")?;
         self.commands.push_back(json!({
             "cmd": "fetch",
@@ -556,7 +567,7 @@ impl FullBench {
     }
 
     pub fn toggle_group(&mut self, opt: &Value) -> Result<()> {
-        ChairData::expect("https://lintd.xyz/hobob/toggle_group.json", opt)?;
+        ChairData::expect(schema_uri!("toggle_group"), opt)?;
         let suid = self.checked_uid(opt, "uid")?.to_string();
         let gid = self.inited_gid(opt, "gid");
         self.log(2, format!("toggle_group uid:{} gid:{}", &suid, &gid));
@@ -574,7 +585,7 @@ impl FullBench {
     }
 
     pub fn touch_group(&mut self, opt: &Value) -> Result<()> {
-        ChairData::expect("https://lintd.xyz/hobob/touch_group.json", opt)?;
+        ChairData::expect(schema_uri!("touch_group"), opt)?;
         let gid = self.inited_gid(opt, "gid");
         let info = self
             .group_info
@@ -593,6 +604,31 @@ impl FullBench {
         ChairData::expect(schema_uri!("users_pick"), opt)?;
         // TODO
         Ok(json!({}))
+    }
+
+    fn update_index(&mut self, typ: &str, old_value: i64, value: i64, uid: &str) {
+        if old_value == value {
+            return;
+        }
+        let index = self.up_index.entry(typ.into()).or_default();
+        index.remove(&(old_value, uid.into()));
+        index.insert((value, uid.into()));
+    }
+
+    pub fn modify_up_info<F>(&mut self, uid: &str, mut f: F)
+    where
+        F: FnMut(&mut Value),
+    {
+        let info = self
+            .up_info
+            .get_mut(uid)
+            .expect("modifing up_info SHOULD be inited");
+        let old_info = &info.clone();
+        f(info);
+        let video = new_video_ts(info);
+        let live = live_entropy(info);
+        self.update_index("video", new_video_ts(old_info), video, uid);
+        self.update_index("live", live_entropy(old_info), live, uid);
     }
 }
 
@@ -797,4 +833,6 @@ mod tests {
         mem::drop(chair);
         check_closed(center).await;
     }
+
+    // TODO test update up_index
 }
