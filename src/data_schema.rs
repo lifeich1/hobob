@@ -79,6 +79,13 @@ impl ChairData {
     pub fn expect(id: &str, data: &Value) -> Result<()> {
         CHAIR_DATA_SCHEMA.expect_impl(id, data)
     }
+
+    pub fn checker(id: &'static str) -> impl FnOnce(Value) -> Result<Value> {
+        |v| {
+            Self::expect(id, &v)?;
+            Ok(v)
+        }
+    }
 }
 
 fn utils_ts_string() -> Value {

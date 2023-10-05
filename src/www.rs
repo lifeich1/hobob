@@ -1,13 +1,10 @@
+use crate::data_schema::ChairData;
 use crate::db::{FullBench, WeiYuan};
 use anyhow::{anyhow, Result};
-use chrono::{TimeZone, Utc};
 use futures::StreamExt;
-use serde_derive::{Deserialize, Serialize};
+use serde_derive::Deserialize;
 use serde_json::{json, Value};
-use std::convert::From;
-use std::convert::Infallible;
 use tera::{Context, Tera};
-use tokio::sync::oneshot;
 use tokio_stream::wrappers::WatchStream;
 use warp::{filters::BoxedFilter, http::StatusCode, path, reply, sse::Event, Filter};
 
@@ -127,7 +124,8 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
                         .get(&uid.to_string())
                         .ok_or_else(|| anyhow!("uid {} not found", uid))
                 })
-                .map(|v| json!({"users": [v["pick"]]}));
+                .map(|v| json!({"users": [v["pick"]]}))
+                .and_then(ChairData::checker(schema_uri!("user_cards")));
             reply::html(render("user_cards.html", r))
         })
     };
@@ -151,7 +149,8 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
                         "users": v,
                         "in_div": true,
                     })
-                });
+                })
+                .and_then(ChairData::checker(schema_uri!("user_cards")));
             reply::html(render("user_cards.html", r))
         })
     };
