@@ -3,15 +3,15 @@
 {% if in_div %}
 <div class="card m-2 p-1 shadow" id={{ card_id }}>
     {% endif %}
-    {% set space_url = 'https://space.bilibili.com/' ~ user.basic.id %}
+    {% set space_url = "https://space.bilibili.com/" ~ user.basic.id %}
     <div class="d-flex flex-row">
-        <a href="{{ space_url }}" target="_blank">
-            <img src={{ user.basic.face_url ~ "@128w_128h_1o.webp" }} class="card-img-top rounded-circle"
+        <a href="{{ space_url | safe }}" target="_blank">
+            <img src="{{ user.basic.face_url ~ '@128w_128h_1o.webp' }}" class="card-img-top rounded-circle"
                 style="width: 128px;">
         </a>
         <div class="card-body">
             <h5 class="card-title">
-                <a href="{{ space_url }}" target="_blank" class="btn btn-light">
+                <a href="{{ space_url | safe }}" target="_blank" class="btn btn-light">
                     {{ user.basic.name }}
                     <span class="badge bg-secondary">
                         {{ user.basic.id }}

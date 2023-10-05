@@ -310,6 +310,25 @@ fn im_vector_p_eq<A: Clone + Eq>(lhs: &im::Vector<A>, rhs: &im::Vector<A>) -> bo
     }
 }
 
+fn now_timestamp() -> i64 {
+    Utc::now().timestamp()
+}
+
+fn pending_up_info(id: i64, fid: usize, ban: bool) -> Value {
+    json!({
+        "pick": {
+            "basic": {
+                "face_url": "https://i2.hdslb.com/bfs/face/0badf24e42d23a14255ee3809866791a9080461e.jpg",
+                "name": "pending ...",
+                "ban": ban,
+                "id": id,
+                "fid": fid,
+                "ctime": now_timestamp(),
+            }
+        }
+    })
+}
+
 impl FullBench {
     fn ptr_eq(&self, other: &Self) -> bool {
         self.up_info.ptr_eq(&other.up_info)
@@ -484,8 +503,10 @@ impl FullBench {
             .map(|v| v["pick"]["basic"]["ban"] = (!enable).into())
             .is_none()
             .then(|| {
-                self.up_info
-                    .insert(id.into(), json!({"pick":{"basic":{"ban":!enable,}}}));
+                self.up_info.insert(
+                    id.into(),
+                    pending_up_info(uid, self.up_by_fid.len(), !enable),
+                );
                 self.up_by_fid.push_back(id.into());
             });
         Ok(())

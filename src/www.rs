@@ -300,6 +300,27 @@ mod tests {
     ) {
         do_op3(Default::default(), path, jsn).await
     }
+    async fn do_get(
+        mut center: WeiYuanHui,
+        path: &str,
+    ) -> (
+        WeiYuanHui,
+        warp::reply::Response,
+        BoxedFilter<(impl warp::Reply,)>,
+    ) {
+        let mut init = center.new_chair();
+        init.log(0, "trigger first save disk");
+        assert!(center.run().await);
+        let app = build_app(center.new_chair());
+        let resp = warp::test::request()
+            .method("GET")
+            .path(path)
+            .filter(&app)
+            .await
+            .unwrap()
+            .into_response();
+        (center, resp, app)
+    }
 
     #[tokio::test]
     async fn test_op_follow() {
@@ -329,10 +350,10 @@ mod tests {
         );
         assert_eq!(b.up_info.len(), 1);
         assert_eq!(
-            b.up_info.get("12345"),
-            Some(&json!({
-                "pick":{"basic":{"ban":false}}
-            }))
+            b.up_info
+                .get("12345")
+                .map(|v| v["pick"]["basic"]["ban"].clone()),
+            Some(json!(false))
         );
         assert_eq!(b.up_by_fid.len(), 1);
         assert_eq!(b.up_by_fid.front(), Some(&"12345".into()));
@@ -477,6 +498,19 @@ mod tests {
         );
     }
 
-    // TODO test card_one
+    #[tokio::test]
+    async fn test_card_one() {
+        init();
+        let mut b = FullBench::default();
+        assert!(b.follow(&json!({"uid": 12345})).is_ok());
+        let (_center, resp, _app) = do_get(b.into(), "/card/one/12345").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        println!("{}", &s);
+        assert!(s.contains(r#"<a href="https://space.bilibili.com/12345" target="_blank">"#));
+        assert!(!s.contains(r#"failure</title>"#));
+        assert!(!s.contains(r#"<div class="card m-2 p-1 shadow" id="#));
+    }
+
     // TODO test card_ulist
 }
