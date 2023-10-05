@@ -10,6 +10,7 @@ use tera::{Context, Tera};
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 use warp::{filters::BoxedFilter, path, reply, sse::Event, Filter};
 
+// TODO: use rocket_include_tera
 lazy_static::lazy_static! {
     pub static ref TERA: Tera = {
         match Tera::new("templates/**/*.html") {

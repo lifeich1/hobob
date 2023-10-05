@@ -23,7 +23,7 @@ macro_rules! schema_uri {
 
 mod data_schema;
 pub mod db;
-//pub mod engine;
+pub mod engine;
 pub mod www;
 
 use db::WeiYuanHui;

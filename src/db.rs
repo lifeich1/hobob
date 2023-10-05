@@ -139,6 +139,10 @@ impl WeiYuanHui {
         }
     }
 
+    pub fn bench(&self) -> &FullBench {
+        &self.bench
+    }
+
     pub fn close(&mut self) {
         self.updates_src = None;
         self.publish_dst = None;
@@ -242,6 +246,14 @@ impl WeiYuan {
             update: None,
             ..Clone::clone(self)
         }
+    }
+
+    pub async fn changed(&mut self) {
+        self.fetch
+            .changed()
+            .await
+            .is_ok()
+            .then(|| self.bench = self.fetch.borrow().clone());
     }
 
     /// @return None for closing
@@ -355,6 +367,15 @@ fn new_video_ts(v: &Value) -> i64 {
     v["pick"]["video"]["ts"].as_i64().unwrap_or(0)
 }
 
+fn default_bucket() -> Value {
+    json!({
+        "atime": to_value(Utc::now()).unwrap(),
+        "min_gap": 10,
+        "min_change_gap": 10,
+        "gap": 30,
+    })
+}
+
 impl FullBench {
     fn ptr_eq(&self, other: &Self) -> bool {
         self.up_info.ptr_eq(&other.up_info)
@@ -435,7 +456,7 @@ impl FullBench {
     }
 
     fn runtime_set_closing(&self) -> Self {
-        self.mut_runtime_field(FLAG_CLOSING, |v| *v = Value::Null)
+        self.mut_runtime_field(FLAG_CLOSING, |v| *v = Value::Bool(true))
     }
 
     fn runtime_rm_closing(&mut self) {
@@ -446,28 +467,29 @@ impl FullBench {
         self.runtime.get(FLAG_CLOSING).is_some()
     }
 
-    fn bucket_check_init(&mut self) {
-        if self
-            .runtime
+    fn bucket_checked(&mut self) -> &mut Value {
+        self.runtime
+            .entry("bucket".into())
+            .or_insert_with(|| default_bucket())
+    }
+
+    fn bucket_or_default(&self) -> Value {
+        self.runtime
             .get("bucket")
-            .and_then(|v| ChairData::expect(schema_uri!("runtime/bucket"), v).ok())
-            .is_none()
-        {
-            self.runtime.insert(
-                "bucket".into(),
-                json!({
-                    "atime": to_value(Utc::now()).unwrap(),
-                    "min_gap": 10,
-                    "min_change_gap": 10,
-                    "gap": 30,
-                }),
-            );
-        }
+            .cloned()
+            .unwrap_or_else(|| default_bucket())
+    }
+
+    pub fn bucket_duration_to_next(&self) -> Duration {
+        let v = self.bucket_or_default();
+        let deadline = from_value::<DateTime<Utc>>(v["atime"].clone())
+            .unwrap_or_else(|e| panic!("runtime.bucket.atime corrupted: {}", e))
+            + Duration::seconds(v["gap"].as_i64().expect("runtime.bucket.gap SHOULD be i64"));
+        std::cmp::max(deadline - Utc::now(), Duration::milliseconds(100))
     }
 
     fn bucket_double_gap(&mut self) {
-        self.bucket_check_init();
-        let v: &mut Value = self.runtime.get_mut("bucket").unwrap();
+        let v = self.bucket_checked();
         v["gap"] = (v["gap"].as_u64().unwrap() * 2).into();
     }
 
