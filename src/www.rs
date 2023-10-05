@@ -431,5 +431,31 @@ mod tests {
         assert_eq!(b.up_info.len(), 1);
         assert_eq!(b.up_join_group.get("5").map(|l| l.len()), Some(0));
     }
-    // TODO test other op
+
+    #[tokio::test]
+    async fn test_op_new_group() {
+        init();
+        let (mut center, resp, _app) = do_op(
+            "/op/touch/group",
+            json!({
+                "gid": 5,
+                "pin": true,
+                "name": "test2",
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        assert_eq!(serde_json::from_str(&s).ok(), Some(json!("success")));
+
+        check_n_step(&mut center).await;
+        let b = bench(&mut center);
+        assert_eq!(
+            b.group_info.get("5"),
+            Some(&json!({
+                "name": "test2",
+                "removable": false,
+            }))
+        );
+    }
 }

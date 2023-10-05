@@ -61,6 +61,7 @@ impl ChairData {
             .schema(schema_uri!("follow"), follow_schema())
             .schema(schema_uri!("refresh"), refresh_schema())
             .schema(schema_uri!("toggle_group"), toggle_group_schema())
+            .schema(schema_uri!("touch_group"), touch_group_schema())
             .done()
     }
 
@@ -181,6 +182,24 @@ fn toggle_group_schema() -> Value {
             "gid": { "type": "integer", },
         },
         "required": [ "uid", "gid", ],
+        "additionalProperties": false,
+    })
+}
+
+fn touch_group_schema() -> Value {
+    json!({
+        "description": "operate touch/group option schema",
+        "type": "object",
+        "properties": {
+            "gid": { "type": "integer", },
+            "pin": { "type": "boolean", },
+            "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 24,
+            },
+        },
+        "required": [ "gid", "name", ],
         "additionalProperties": false,
     })
 }

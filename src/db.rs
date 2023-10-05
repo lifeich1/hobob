@@ -539,11 +539,18 @@ impl FullBench {
     }
 
     pub fn touch_group(&mut self, opt: &Value) -> Result<()> {
-        ChairData::expect("https://lintd.xyz/hobob/toggle_group.json", opt)?;
+        ChairData::expect("https://lintd.xyz/hobob/touch_group.json", opt)?;
         let gid = self.inited_gid(opt, "gid");
-        opt["pin"]
-            .as_bool()
-            .map(|p| self.group_info.get_mut(&gid).unwrap()["remove"] = p.into());
+        let info = self
+            .group_info
+            .get_mut(&gid)
+            .expect("inited_gid SHOULD inited group info");
+        if let Some(pin) = opt["pin"].as_bool() {
+            info["removable"] = (!pin).into();
+        }
+        if let Some(name) = opt["name"].as_str() {
+            info["name"] = name.into();
+        }
         Ok(())
     }
 }
