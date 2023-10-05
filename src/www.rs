@@ -402,5 +402,34 @@ mod tests {
             Some(&"12345".into())
         );
     }
+
+    #[tokio::test]
+    async fn test_op_toggle_group_is_remove() {
+        init();
+        let mut b = FullBench::default();
+        assert!(b.follow(&json!({"uid": 12345})).is_ok());
+        assert_eq!(b.up_join_group.insert("5".into(), Default::default()), None);
+        assert_eq!(
+            b.up_join_group.get_mut("5").unwrap().insert("12345".into()),
+            None
+        );
+        let (mut center, resp, _app) = do_op3(
+            b.into(),
+            "/op/toggle/group",
+            json!({
+                "uid": 12345,
+                "gid": 5,
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        assert_eq!(serde_json::from_str(&s).ok(), Some(json!("success")));
+
+        check_n_step(&mut center).await;
+        let b = bench(&mut center);
+        assert_eq!(b.up_info.len(), 1);
+        assert_eq!(b.up_join_group.get("5").map(|l| l.len()), Some(0));
+    }
     // TODO test other op
 }
