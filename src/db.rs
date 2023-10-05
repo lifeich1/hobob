@@ -567,6 +567,12 @@ impl FullBench {
         }
         Ok(())
     }
+
+    pub fn users_pick(&self, opt: &Value) -> Result<Value> {
+        ChairData::expect(schema_uri!("users_pick"), opt)?;
+        // TODO
+        Ok(json!({}))
+    }
 }
 
 impl VCounter {

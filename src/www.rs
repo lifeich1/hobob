@@ -132,12 +132,31 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
         })
     };
 
+    let card_ulist = {
+        let hdl = runner.readonly();
+        warp::path!("ulist" / i64 / String / i64 / i64).map(move |gid, typ: String, start, len| {
+            let r = hdl
+                .clone()
+                .recv()
+                .and_then(|b| {
+                    b.users_pick(&json!({
+                        "gid": gid,
+                        "order_desc": typ,
+                        "range_start": start,
+                        "range_len": len,
+                    }))
+                })
+                .map(|v| {
+                    json!({
+                        "users": v,
+                        "in_div": true,
+                    })
+                });
+            reply::html(render("user_cards.html", r))
+        })
+    };
+
     /*
-    let card_ulist =
-        warp::path!("ulist" / i64 / String / i64 / i64).map(|fid, typ: String, start, len| {
-            let uids = db::User::list(fid, typ.as_str().into(), start, len);
-            ulist_render!(uids, true)
-        });
     let card_filter_options = warp::path!("filter" / "options").map(|| {
         let filters = www_try!(@db db::FilterMeta::all());
         let mut ctx = TeraContext::new();
@@ -181,7 +200,7 @@ pub fn build_app(runner: WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
                 .or(op_toggle_group)
                 .or(op_new_group),
         ))
-        .or(warp::path("card").and(card_one))
+        .or(warp::path("card").and(card_one.or(card_ulist)))
         .or(static_files)
         .or(favicon);
     app.boxed()
@@ -459,4 +478,5 @@ mod tests {
     }
 
     // TODO test card_one
+    // TODO test card_ulist
 }
