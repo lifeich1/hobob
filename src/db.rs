@@ -76,6 +76,8 @@ impl Default for WeiYuanHui {
         let updates_src = Some(updates_src);
         let publish_dst = Some(publish_dst);
         let ev_tx = Some(ev_tx);
+        let mut bench = FullBench::default();
+        bench.init();
         Self {
             updates,
             updates_src,
@@ -83,7 +85,7 @@ impl Default for WeiYuanHui {
             publish_dst,
             ev_tx,
             ev_rx,
-            bench: Default::default(),
+            bench,
             savepath: Default::default(),
             counter: Default::default(),
         }
@@ -114,7 +116,7 @@ impl WeiYuanHui {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut bench: FullBench = serde_json::from_reader(reader)?;
-        bench.runtime_rm_closing();
+        bench.init();
         Ok(Self {
             bench,
             savepath,
@@ -407,6 +409,12 @@ fn default_bucket() -> Value {
 }
 
 impl FullBench {
+    pub fn new() -> Self {
+        let mut r = Self::default();
+        r.init();
+        r
+    }
+
     fn ptr_eq(&self, other: &Self) -> bool {
         self.up_info.ptr_eq(&other.up_info)
             && self.up_index.ptr_eq(&other.up_index)
@@ -447,6 +455,22 @@ impl FullBench {
             self.log(1, format!("inspect: {:#}", e));
         }
         res
+    }
+
+    fn init(&mut self) {
+        self.runtime_rm_closing();
+        self.touch_group_unchecked(&json!({
+            "gid": 0,
+            "name": "全部",
+            "pin": true,
+        }))
+        .expect("gid 0 init MUST ok");
+        self.touch_group_unchecked(&json!({
+            "gid": 1,
+            "name": "特殊关注",
+            "pin": true,
+        }))
+        .expect("gid 0 init MUST ok");
     }
 
     fn mut_runtime_field<F: FnOnce(&mut Value)>(&self, key: &str, f: F) -> Self {
@@ -683,6 +707,10 @@ impl FullBench {
 
     pub fn touch_group(&mut self, opt: &Value) -> Result<()> {
         ChairData::expect(schema_uri!("touch_group"), opt)?;
+        self.touch_group_unchecked(opt)
+    }
+
+    fn touch_group_unchecked(&mut self, opt: &Value) -> Result<()> {
         let gid = self.inited_gid(opt, "gid");
         let info = self
             .group_info

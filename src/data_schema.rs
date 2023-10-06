@@ -63,6 +63,7 @@ impl ChairData {
             .schema(schema_uri!("toggle_group"), toggle_group_schema())
             .schema(schema_uri!("touch_group"), touch_group_schema())
             .schema(schema_uri!("user_cards"), user_cards_schema())
+            .schema(schema_uri!("filter_options"), filter_options_schema())
             .done()
     }
 
@@ -199,7 +200,10 @@ fn touch_group_schema() -> Value {
         "description": "operate touch/group option schema",
         "type": "object",
         "properties": {
-            "gid": { "type": "integer", },
+            "gid": {
+                "type": "integer",
+                "minimum": 2,
+            },
             "pin": { "type": "boolean", },
             "name": {
                 "type": "string",
@@ -272,6 +276,31 @@ fn user_cards_schema() -> Value {
                         "pattern": r#"^https://live.bilibili.com/\d+"#
                     },
                 }
+            },
+        },
+    })
+}
+
+fn filter_options_schema() -> Value {
+    json!({
+        "description": "output filter options schema",
+        "type": "object",
+        "properties": {
+            "filters": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/option" }
+            },
+        },
+        "required": [ "filters", ],
+        "additionalProperties": false,
+        "$defs": {
+            "option": {
+                "type": "object",
+                "properties": {
+                    "fid": { "type": "string", },
+                    "name": { "type": "string", },
+                },
+                "required": [ "fid", "name", ],
             },
         },
     })

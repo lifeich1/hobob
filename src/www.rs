@@ -159,18 +159,18 @@ pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)
                 .clone()
                 .recv()
                 .map(|b| {
-                    Value::from(
-                        b.group_info
-                            .iter()
-                            .map(|(k, v)| {
-                                json!({
-                                    "fid": k,
-                                    "name": v["name"],
-                                    "removable": v["removable"],
-                                })
+                    let a = b
+                        .group_info
+                        .iter()
+                        .map(|(k, v)| {
+                            json!({
+                                "fid": k,
+                                "name": v["name"],
+                                "removable": v["removable"],
                             })
-                            .collect::<Vec<_>>(),
-                    )
+                        })
+                        .collect::<Vec<_>>();
+                    json!({"filters": a})
                 })
                 .and_then(ChairData::checker(schema_uri!("filter_options")));
             reply::html(render("filter_options.html", r))
@@ -539,7 +539,7 @@ mod tests {
     #[tokio::test]
     async fn test_card_filter_options() {
         init();
-        let mut b = FullBench::default();
+        let mut b = FullBench::new();
         assert!(b.touch_group(&json!({"gid": 7, "name": "g7"})).is_ok());
         let (_center, resp, _app) = do_get(b.into(), "/card/filter/options").await;
         assert_eq!(resp.status(), StatusCode::OK);
