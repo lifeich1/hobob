@@ -1,9 +1,8 @@
-use crate::db::{Commands, FullBench, WeiYuan};
+use crate::db::{now_timestamp, Commands, FullBench, WeiYuan};
 use anyhow::Context;
 use anyhow::{anyhow, Result};
 use bilibili_api_rs::Client;
 use serde_json::{json, Value};
-use std::num::NonZeroI64;
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -29,6 +28,7 @@ fn pick_basic(a: &Value, b: &Value) -> Value {
         "id": a["mid"],
         "name": a["name"],
         "face_url": a["face"],
+        "ctime": now_timestamp(),
     });
     r.as_object_mut()
         .expect("up_info SHOULD inited basic")
@@ -75,7 +75,7 @@ async fn do_fetch(cli: &Client, runner: &mut WeiYuan, args: &Value) -> Result<()
         let info = b.inspect(&info).as_ref().ok();
         let vid = b.inspect(&vid).as_ref().ok();
         if info.is_none() || vid.is_none() {
-            return Ok(());
+            return Ok(b.bucket_double_gap());
         }
         let info = info.unwrap();
         let vid = vid.unwrap();
@@ -90,7 +90,7 @@ async fn do_fetch(cli: &Client, runner: &mut WeiYuan, args: &Value) -> Result<()
                 "video": pick_video(vid),
             });
         });
-        Ok(())
+        Ok(b.bucket_good())
     })?;
     info?;
     vid?;
@@ -111,7 +111,25 @@ async fn exec_cmd(cmd: Value, runner: &mut WeiYuan, cli: &Client) {
 }
 
 async fn exec_timers(bench: &FullBench, runner: &mut WeiYuan) {
-    // TODO
+    let uid: i64 = if let Some(suid) = bench.up_index.get("ctime").and_then(|i| i.get_min()) {
+        suid.1
+            .parse()
+            .unwrap_or_else(|e| panic!("suid SHOULD be valid integer: {}", e))
+    } else {
+        log::error!("empty 'ctime' index");
+        return;
+    };
+    runner
+        .apply(|b| {
+            // TODO query xlive timer
+            b.commands.push_back(json!({
+                "cmd": "fetch",
+                "args": { "uid": uid, },
+            }));
+            Ok(b.bucket_hang())
+        })
+        .map_err(|e| log::error!("exec_timers error: {}", e))
+        .ok();
 }
 
 fn next_deadline(runner: &mut WeiYuan) -> Instant {

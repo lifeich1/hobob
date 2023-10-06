@@ -340,7 +340,7 @@ fn im_vector_p_eq<A: Clone + Eq>(lhs: &im::Vector<A>, rhs: &im::Vector<A>) -> bo
     }
 }
 
-fn now_timestamp() -> i64 {
+pub fn now_timestamp() -> i64 {
     Utc::now().timestamp()
 }
 
@@ -353,7 +353,7 @@ fn pending_up_info(id: i64, fid: usize, ban: bool) -> Value {
                 "ban": ban,
                 "id": id,
                 "fid": fid,
-                "ctime": now_timestamp(),
+                "ctime": 0,
             }
         }
     })
@@ -365,6 +365,10 @@ fn live_entropy(v: &Value) -> i64 {
 
 fn new_video_ts(v: &Value) -> i64 {
     v["pick"]["video"]["ts"].as_i64().unwrap_or(0)
+}
+
+fn info_ctime(v: &Value) -> i64 {
+    v["pick"]["basic"]["ctime"].as_i64().unwrap_or(0)
 }
 
 fn default_bucket() -> Value {
@@ -500,7 +504,23 @@ impl FullBench {
         v["atime"] = to_value(Utc::now()).unwrap();
     }
 
-    fn bucket_double_gap(&mut self) {
+    pub fn bucket_good(&mut self) {
+        let v = self.bucket_checked();
+        v["gap"] = std::cmp::max(
+            v["gap"].as_i64().unwrap() - v["min_change_gap"].as_i64().unwrap(),
+            v["min_gap"].as_i64().unwrap(),
+        )
+        .into();
+    }
+
+    pub fn bucket_hang(&mut self) {
+        let v = self.bucket_checked();
+        let g = v["gap"].as_i64().unwrap();
+        let t = v["atime"].as_i64().unwrap();
+        v["gap"] = (g + v["min_change_gap"].as_i64().unwrap() + t % 7).into();
+    }
+
+    pub fn bucket_double_gap(&mut self) {
         let v = self.bucket_checked();
         v["gap"] = (v["gap"].as_u64().unwrap() * 2).into();
     }
@@ -568,6 +588,7 @@ impl FullBench {
                     id.into(),
                     pending_up_info(uid, self.up_by_fid.len(), !enable),
                 );
+                self.update_index("ctime", -1, 0, id);
                 self.up_by_fid.push_back(id.into());
             });
         Ok(())
@@ -677,8 +698,10 @@ impl FullBench {
         f(info);
         let video = new_video_ts(info);
         let live = live_entropy(info);
+        let ctm = info_ctime(info);
         self.update_index("video", new_video_ts(old_info), video, uid);
         self.update_index("live", live_entropy(old_info), live, uid);
+        self.update_index("ctime", info_ctime(old_info), ctm, uid);
         self.bucket_access();
     }
 }
