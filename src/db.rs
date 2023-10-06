@@ -412,6 +412,13 @@ impl FullBench {
         }
     }
 
+    pub fn inspect<'a, T>(&mut self, res: &'a Result<T>) -> &'a Result<T> {
+        if let Err(e) = res {
+            self.log(1, format!("inspect: {:#}", e));
+        }
+        res
+    }
+
     fn mut_runtime_field<F: FnOnce(&mut Value)>(&self, key: &str, f: F) -> Self {
         let mut r = self.clone();
         if r.runtime.get(key).is_none() {
@@ -486,6 +493,11 @@ impl FullBench {
             .unwrap_or_else(|e| panic!("runtime.bucket.atime corrupted: {}", e))
             + Duration::seconds(v["gap"].as_i64().expect("runtime.bucket.gap SHOULD be i64"));
         std::cmp::max(deadline - Utc::now(), Duration::milliseconds(100))
+    }
+
+    fn bucket_access(&mut self) {
+        let v = self.bucket_checked();
+        v["atime"] = to_value(Utc::now()).unwrap();
     }
 
     fn bucket_double_gap(&mut self) {
@@ -667,6 +679,7 @@ impl FullBench {
         let live = live_entropy(info);
         self.update_index("video", new_video_ts(old_info), video, uid);
         self.update_index("live", live_entropy(old_info), live, uid);
+        self.bucket_access();
     }
 }
 

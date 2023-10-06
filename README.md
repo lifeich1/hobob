@@ -23,7 +23,7 @@ An web app for hobo kicked from bibi&lili.
                 "info": "..."
             },
             "pick": {
-                "live": {"title", "url", "entropy", "isopen"},
+                "live": {"title", "url", "entropy", "entropy_txt", "isopen"},
                 "video": {"title", "url", "ts"},
                 "post": {"..."},
                 "basic": {"name", "face_url", "id", "ctime", "fid", "ban"}
