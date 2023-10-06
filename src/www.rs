@@ -516,7 +516,7 @@ mod tests {
     #[tokio::test]
     async fn test_card_ulist() {
         init();
-        let mut b = FullBench::default();
+        let mut b = FullBench::new();
         assert!(b.follow(&json!({"uid": 12345})).is_ok());
         assert!(b.follow(&json!({"uid": 2233})).is_ok());
         let (_center, resp, _app) = do_get(b.into(), "/card/ulist/0/default/0/10").await;
@@ -568,6 +568,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let mut body = resp.into_body();
         let mut tx = center.new_chair();
+        // FIXME use modify_up_info to trigger events
         let ls = vec![json!({
             "uid":12345,
             "live": {"isopen":"true"},

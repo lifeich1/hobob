@@ -1,5 +1,5 @@
 use crate::data_schema::ChairData;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::json;
@@ -727,8 +727,66 @@ impl FullBench {
 
     pub fn users_pick(&self, opt: &Value) -> Result<Value> {
         ChairData::expect(schema_uri!("users_pick"), opt)?;
-        // TODO
-        Ok(json!({}))
+        let st = opt["range_start"].as_u64().unwrap_or(0) as usize;
+        let len = opt["range_len"].as_u64().unwrap_or(10) as usize;
+        let gid = opt["gid"].as_i64().unwrap_or(0);
+        let group = if let Some(g) = self.up_join_group.get(&gid.to_string()) {
+            g
+        } else {
+            bail!("group {:?} not found", opt["gid"]);
+        };
+        let ids: Vec<&str> = match (
+            gid,
+            opt["order_desc"]
+                .as_str()
+                .map(|s| s == "default")
+                .unwrap_or(false),
+        ) {
+            (0, true) => self
+                .up_by_fid
+                .iter()
+                .skip(st)
+                .take(len)
+                .map(AsRef::as_ref)
+                .collect(),
+            (_, true) => self
+                .up_by_fid
+                .iter()
+                .filter(|s| group.contains(*s))
+                .skip(st)
+                .take(len)
+                .map(AsRef::as_ref)
+                .collect(),
+            (0, false) => self
+                .up_index
+                .get(opt["order_desc"].as_str().unwrap())
+                .unwrap()
+                .iter()
+                .skip(st)
+                .take(len)
+                .map(|v| v.1.as_ref())
+                .collect(),
+            (_, false) => self
+                .up_index
+                .get(opt["order_desc"].as_str().unwrap())
+                .unwrap()
+                .iter()
+                .filter(|t| group.contains(&t.1))
+                .skip(st)
+                .take(len)
+                .map(|v| v.1.as_ref())
+                .collect(),
+        };
+        let a: Vec<_> = ids
+            .into_iter()
+            .map(|id| {
+                self.up_info
+                    .get(id)
+                    .expect("id in up_index MUST have up_info")["pick"]
+                    .clone()
+            })
+            .collect();
+        Ok(json!(a))
     }
 
     fn update_index(&mut self, typ: &str, old_value: i64, value: i64, uid: &str) {
