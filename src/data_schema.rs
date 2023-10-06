@@ -64,6 +64,7 @@ impl ChairData {
             .schema(schema_uri!("touch_group"), touch_group_schema())
             .schema(schema_uri!("user_cards"), user_cards_schema())
             .schema(schema_uri!("filter_options"), filter_options_schema())
+            .schema(schema_uri!("users_pick"), users_pick_schema())
             .done()
     }
 
@@ -303,6 +304,34 @@ fn filter_options_schema() -> Value {
                 "required": [ "fid", "name", ],
             },
         },
+    })
+}
+
+fn users_pick_schema() -> Value {
+    json!({
+        "description": "FullBench input users_pick option schema",
+        "type": "object",
+        "properties": {
+            "gid": {
+                "type": "integer",
+                "minimum": 0,
+            },
+            "order_desc": {
+                "type": "string",
+                "enum": ["default", "live", "video"],
+            },
+            "range_start": {
+                "type": "integer",
+                "minimum": 0,
+            },
+            "range_len": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 127,
+            },
+        },
+        "required": [ "gid", "order_desc", "range_start", "range_len" ],
+        "additionalProperties": false,
     })
 }
 
