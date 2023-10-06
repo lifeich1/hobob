@@ -245,11 +245,12 @@ impl WeiYuanHui {
                         .is_none()
                 })
                 .collect();
-            if self
-                .ev_tx
-                .as_ref()
-                .map(|tx| tx.send(pass).is_err())
-                .unwrap_or(true)
+            if pass.len() > 0
+                && self
+                    .ev_tx
+                    .as_ref()
+                    .map(|tx| tx.send(pass).is_err())
+                    .unwrap_or(true)
             {
                 self.counter.broadcast_void_cnt += 1;
             }
