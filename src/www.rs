@@ -513,7 +513,114 @@ mod tests {
         assert!(!s.contains(r#"<div class="card m-2 p-1 shadow" id="#));
     }
 
-    // TODO test card_ulist
-    // TODO test card_filter_options
-    // TODO test sse
+    #[tokio::test]
+    async fn test_card_ulist() {
+        init();
+        let mut b = FullBench::default();
+        assert!(b.follow(&json!({"uid": 12345})).is_ok());
+        assert!(b.follow(&json!({"uid": 2233})).is_ok());
+        let (_center, resp, _app) = do_get(b.into(), "/card/ulist/0/default/0/10").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        println!("{}", &s);
+        assert!(s.contains(r#"<a href="https://space.bilibili.com/12345" target="_blank">"#));
+        assert!(s.contains(r#"<a href="https://space.bilibili.com/2233" target="_blank">"#));
+        assert!(s.contains(r#"<div class="card m-2 p-1 shadow" id=user-card-12345>"#));
+        assert!(s.contains(r#"<div class="card m-2 p-1 shadow" id=user-card-2233>"#));
+        assert!(
+            s.find(r#"<div class="card m-2 p-1 shadow" id=user-card-12345>"#)
+                .unwrap()
+                < s.find(r#"<div class="card m-2 p-1 shadow" id=user-card-2233>"#)
+                    .unwrap()
+        );
+        assert!(!s.contains(r#"failure</title>"#));
+    }
+
+    #[tokio::test]
+    async fn test_card_filter_options() {
+        init();
+        let mut b = FullBench::default();
+        assert!(b.touch_group(&json!({"gid": 7, "name": "g7"})).is_ok());
+        let (_center, resp, _app) = do_get(b.into(), "/card/filter/options").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        println!("{}", &s);
+        assert!(s.contains(r#"<option value="0">"#));
+        assert!(s.contains(r#"<option value="1">"#));
+        assert!(s.contains(r#"<option value="7">g7<"#));
+        assert!(!s.contains(r#"failure</title>"#));
+    }
+
+    async fn run_ms(center: &mut WeiYuanHui, ms: i64, running: bool) {
+        assert_eq!(
+            center
+                .run_for(chrono::Duration::milliseconds(ms))
+                .await
+                .ok(),
+            Some(running)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sse() {
+        init();
+        let (mut center, resp, app) = do_get(Default::default(), "/ev/engine").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let mut body = resp.into_body();
+        let mut tx = center.new_chair();
+        let ls = vec![json!({
+            "uid":12345,
+            "live": {"isopen":"true"},
+        })];
+        let ls_rx = ls.clone();
+        tokio::join!(
+            async move {
+                let mut it = ls_rx.iter().cloned();
+                while let Some(msg) = body.next().await {
+                    log::info!("get {:?}", &msg);
+                    let buf = if let Ok(b) = msg {
+                        b
+                    } else {
+                        continue;
+                    };
+                    const BOM: &[u8; 2] = b"\xFE\xFE";
+                    let b: &[u8] = if buf.starts_with(BOM) {
+                        buf.split_at(BOM.len()).1
+                    } else {
+                        buf.as_ref()
+                    };
+                    let s = std::str::from_utf8(b);
+                    assert!(matches!(s, Ok(_)));
+                    let s = s.unwrap();
+                    for l in s.lines() {
+                        if l.starts_with("data:") {
+                            let v = serde_json::from_str(l.strip_prefix("data:").unwrap());
+                            assert!(matches!(v, Ok(_)));
+                            assert_eq!(v.ok(), it.next().map(|v| json!([v])));
+                        }
+                    }
+                }
+                assert_eq!(it.next(), None);
+                std::mem::drop(app);
+            },
+            async {
+                tx.log(3, "clear dump");
+                for ev in ls.iter().cloned() {
+                    run_ms(&mut center, 50, true).await;
+                    log::info!("sending {:?}", &ev);
+                    assert!(tx.apply(|b| Ok(b.events.push_back(ev.clone()))).is_ok());
+                }
+                run_ms(&mut center, 50, true).await;
+                center.close();
+                std::mem::drop(tx);
+                run_ms(&mut center, 50, false).await;
+                assert!(tokio::time::timeout(
+                    tokio::time::Duration::from_millis(200),
+                    center.closed()
+                )
+                .await
+                .is_ok());
+            }
+        );
+    }
 }

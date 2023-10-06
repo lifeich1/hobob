@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::{from_value, to_value, Value};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::ops::Not;
@@ -12,6 +13,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc, watch};
 
 const FLAG_CLOSING: &str = "#CLOSING#";
+const COUNTER_TAG: &str = "#COUNTER#";
 
 pub type UpInfo = im::HashMap<String, Value>;
 pub type UpIndex = im::HashMap<String, im::OrdSet<(i64, String)>>;
@@ -43,6 +45,7 @@ struct VCounter {
     last_dump_ts: Option<DateTime<Utc>>,
     push_miss_cnt: u64,
     broadcast_void_cnt: u64,
+    ext: BTreeMap<String, u64>,
 }
 
 #[derive(Debug)]
@@ -51,7 +54,7 @@ pub struct WeiYuanHui {
     updates_src: Option<mpsc::Sender<BenchUpdate>>,
     publish: watch::Sender<FullBench>,
     publish_dst: Option<watch::Receiver<FullBench>>,
-    ev_tx: broadcast::Sender<Events>,
+    ev_tx: Option<broadcast::Sender<Events>>,
     ev_rx: broadcast::Receiver<Events>,
     bench: FullBench,
     savepath: Option<Box<Path>>,
@@ -72,6 +75,7 @@ impl Default for WeiYuanHui {
         let (publish, publish_dst) = watch::channel(FullBench::default());
         let updates_src = Some(updates_src);
         let publish_dst = Some(publish_dst);
+        let ev_tx = Some(ev_tx);
         Self {
             updates,
             updates_src,
@@ -146,6 +150,7 @@ impl WeiYuanHui {
     pub fn close(&mut self) {
         self.updates_src = None;
         self.publish_dst = None;
+        self.ev_tx = None;
         self.save_disk().ok();
         self.push(self.bench.runtime_set_closing());
         self.updates.close();
@@ -230,10 +235,25 @@ impl WeiYuanHui {
 
     fn push(&mut self, mut next: FullBench) {
         if next.events.len() > 0 {
-            if self.ev_tx.send(next.events.clone()).is_err() {
+            let pass: Events = next
+                .events
+                .into_iter()
+                .filter(|ev| {
+                    ev[COUNTER_TAG]
+                        .as_str()
+                        .map(|s| *self.counter.ext.entry(s.into()).or_default() += 1)
+                        .is_none()
+                })
+                .collect();
+            if self
+                .ev_tx
+                .as_ref()
+                .map(|tx| tx.send(pass).is_err())
+                .unwrap_or(true)
+            {
                 self.counter.broadcast_void_cnt += 1;
             }
-            next.events.clear();
+            next.events = Default::default();
         }
         self.bench = next.clone();
         self.publish.send_modify(move |v| *v = next);
@@ -321,6 +341,11 @@ impl WeiYuan {
 
     pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
         self.update(|b| Ok(b.add_log(level, msg.to_string()))).ok();
+    }
+
+    pub fn count<S: ToString>(&mut self, msg: S) {
+        self.apply(|b| Ok(b.events.push_back(json!({COUNTER_TAG: msg.to_string()}))))
+            .ok();
     }
 
     pub async fn until_closing(&mut self) {
@@ -696,6 +721,7 @@ impl FullBench {
             .expect("modifing up_info SHOULD be inited");
         let old_info = &info.clone();
         f(info);
+        // TODO epoll trigger events
         let video = new_video_ts(info);
         let live = live_entropy(info);
         let ctm = info_ctime(info);
@@ -724,6 +750,14 @@ mod tests {
     use std::mem;
     use std::time::Duration as Dur;
     use tokio::time::timeout;
+
+    fn init() {
+        env_logger::builder()
+            .is_test(true)
+            .format_timestamp(Some(env_logger::fmt::TimestampPrecision::Micros))
+            .try_init()
+            .ok();
+    }
 
     #[test]
     fn test_runtime_dump_now_default() {
@@ -765,6 +799,16 @@ mod tests {
             .run_for(Duration::milliseconds(100))
             .await
             .expect("should be in normal stat")
+    }
+
+    async fn run_ms(center: &mut WeiYuanHui, ms: i64, running: bool) {
+        assert_eq!(
+            center
+                .run_for(chrono::Duration::milliseconds(ms))
+                .await
+                .ok(),
+            Some(running)
+        );
     }
 
     async fn check_closed(center: &WeiYuanHui) {
@@ -903,6 +947,56 @@ mod tests {
             .is_ok());
         mem::drop(chair);
         check_closed(center).await;
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_events() {
+        init();
+        let ls = vec![
+            json!({
+                "uid":12345,
+                "live": {"isopen":"true"},
+            }),
+            json!({
+                "uid":2233,
+                "live": {"isopen":"true"},
+                "video": {"ts":9977},
+            }),
+        ];
+        let mut center = WeiYuanHui::default();
+        let mut tx = center.new_chair();
+        let mut rx = center.listen_events();
+        let ls_rx = ls.clone();
+        tokio::join!(
+            async move {
+                let mut it = ls_rx.iter();
+                loop {
+                    match rx.recv().await {
+                        Ok(v) => {
+                            assert_eq!(v.len(), 1);
+                            assert_eq!(v.front(), it.next());
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            assert_eq!(None, it.next());
+                            return;
+                        }
+                        _ => (),
+                    }
+                }
+            },
+            async move {
+                run_ms(&mut center, 50, true).await;
+                tx.count("ev_tx/test");
+                for ev in ls {
+                    run_ms(&mut center, 50, true).await;
+                    assert!(tx.apply(|b| Ok(b.events.push_back(ev.clone()))).is_ok());
+                }
+                run_ms(&mut center, 50, true).await;
+                center.close();
+                std::mem::drop(tx);
+                check_closed(&mut center).await;
+            }
+        );
     }
 
     // TODO test update up_index
