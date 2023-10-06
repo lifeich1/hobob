@@ -62,6 +62,7 @@ impl ChairData {
             .schema(schema_uri!("refresh"), refresh_schema())
             .schema(schema_uri!("toggle_group"), toggle_group_schema())
             .schema(schema_uri!("touch_group"), touch_group_schema())
+            .schema(schema_uri!("user_cards"), user_cards_schema())
             .done()
     }
 
@@ -208,6 +209,71 @@ fn touch_group_schema() -> Value {
         },
         "required": [ "gid", "name", ],
         "additionalProperties": false,
+    })
+}
+
+fn user_cards_schema() -> Value {
+    json!({
+        "description": "user cards context value schema",
+        "type": "object",
+        "properties": {
+            "users": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/picked", },
+            },
+            "in_div": { "type": "boolean", },
+        },
+        "required": ["users"],
+        "additionalProperties": false,
+        "$defs": {
+            "picked": {
+                "type": "object",
+                "properties": {
+                    "basic": { "$ref": "#/$defs/basic", },
+                    "live": { "$ref": "#/$defs/live", },
+                    "video": { "$ref": "#/$defs/video", },
+                },
+                "additionalProperties": false,
+            },
+            "basic": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "id": { "type": "integer" },
+                    "ctime": { "type": "integer" },
+                    "fid": { "type": "integer" },
+                    "ban": { "type": "boolean" },
+                    "face_url": {
+                        "type": "string",
+                        "pattern": r#"^https://\w+.hdslb.com/bfs/face/\w+\.\w+$"#
+                    },
+                }
+            },
+            "video": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "ts": { "type": "integer" },
+                    "url": {
+                        "type": "string",
+                        "pattern": r#"^https://www.bilibili.com/(?:medialist|video)/"#
+                    },
+                }
+            },
+            "live": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "entropy": { "type": "integer" },
+                    "entropy_txt": { "type": "string" },
+                    "isopen": { "type": "boolean" },
+                    "url": {
+                        "type": "string",
+                        "pattern": r#"^https://live.bilibili.com/\d+"#
+                    },
+                }
+            },
+        },
     })
 }
 

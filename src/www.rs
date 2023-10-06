@@ -30,7 +30,8 @@ impl warp::reject::Reject for UnparsableQuery {}
 
 pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)> {
     let runner = weiyuanhui.new_chair();
-    fn render_fail<E: std::fmt::Display>(page: &str, e: E) -> String {
+    fn render_fail<E: std::fmt::Display + std::fmt::Debug>(page: &str, e: E) -> String {
+        log::debug!("render fail: {:?}", &e);
         let mut c = Context::new();
         c.insert("kind", "render process");
         c.insert(
