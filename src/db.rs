@@ -1086,5 +1086,23 @@ mod tests {
         );
     }
 
-    // TODO test update up_index
+    #[test]
+    fn test_bench_update_index() {
+        let mut bench = FullBench::default();
+        bench.update_index("live", 9, 8, "12345");
+        assert!(bench.up_index.get("live").is_some());
+        assert_eq!(
+            bench.up_index.get("live").unwrap().get_min(),
+            Some(&(8i64, "12345".to_string()))
+        );
+        bench.update_index("live", 8, 117, "12345");
+        assert_eq!(
+            bench.up_index.get("live").unwrap().get_min(),
+            Some(&(117i64, "12345".to_string()))
+        );
+    }
+
+    // TODO test modify_up_info
+    // 1. expect events
+    // 2. index
 }

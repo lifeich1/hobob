@@ -94,10 +94,12 @@ async fn do_fetch(cli: &Client, runner: &mut WeiYuan, args: &Value) -> Result<()
     })?;
     info?;
     vid?;
+    log::info!("do fetch uid:{} ok", uid);
     Ok(())
 }
 
 async fn exec_cmd(cmd: Value, runner: &mut WeiYuan, cli: &Client) {
+    log::debug!("exec_cmd: {:?}", &cmd);
     match cmd["cmd"].as_str() {
         Some("fetch") => {
             do_fetch(cli, runner, &cmd["args"])
@@ -218,4 +220,11 @@ mod tests {
     }
 
     // TODO test next_deadline
+    // TODO test take_cmds
+    // TODO test pick_basic
+    // TODO test pick_live
+    // TODO test pick_video
+    // TODO test do_fetch
+    // TODO test exec_cmd
+    // TODO test exec_timers
 }

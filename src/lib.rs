@@ -4,12 +4,15 @@ use log4rs::append::file::FileAppender;
 use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;
 
-macro_rules! var_path {
+macro_rules! vpath {
     () => {
-        "/var/lifeich1/hobob"
+        concat!(env!("HOME"), "/.cache/hobob")
     };
-    (@log) => {
-        concat!(var_path!(), "/log4rs.yml")
+    (@log_cf) => {
+        concat!(vpath!(), "/log4rs.yml")
+    };
+    (@bench) => {
+        concat!(vpath!(), "/bench.json")
     };
 }
 macro_rules! schema_uri {
@@ -29,9 +32,9 @@ pub mod www;
 use db::WeiYuanHui;
 
 pub fn prepare_log() -> Result<()> {
-    std::fs::create_dir_all(var_path!())?;
+    std::fs::create_dir_all(vpath!())?;
 
-    // TODO
+    // TODO use log_cf
 
     let logfile = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(
