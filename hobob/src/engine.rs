@@ -52,7 +52,7 @@ fn pick_live(a: &Value) -> Value {
 }
 
 fn pick_video(a: &Value) -> Value {
-    let v = if let Some(v) = a["vlist"].as_array().filter(|v| v.len() > 0) {
+    let v = if let Some(v) = a["vlist"].as_array().filter(|v| !v.is_empty()) {
         &v[0]
     } else {
         return Value::Null;
@@ -75,7 +75,8 @@ async fn do_fetch(cli: &Client, runner: &mut WeiYuan, args: &Value) -> Result<()
         let info = b.inspect(&info).as_ref().ok();
         let vid = b.inspect(&vid).as_ref().ok();
         if info.is_none() || vid.is_none() {
-            return Ok(b.bucket_double_gap());
+            b.bucket_double_gap();
+            return Ok(());
         }
         let info = info.unwrap();
         let vid = vid.unwrap();
@@ -90,7 +91,8 @@ async fn do_fetch(cli: &Client, runner: &mut WeiYuan, args: &Value) -> Result<()
                 "video": pick_video(vid),
             });
         });
-        Ok(b.bucket_good())
+        b.bucket_good();
+        Ok(())
     })?;
     info?;
     vid?;
@@ -128,7 +130,8 @@ async fn exec_timers(bench: &FullBench, runner: &mut WeiYuan) {
                 "cmd": "fetch",
                 "args": { "uid": uid, },
             }));
-            Ok(b.bucket_hang())
+            b.bucket_hang();
+            Ok(())
         })
         .map_err(|e| log::error!("exec_timers error: {}", e))
         .ok();
@@ -151,7 +154,7 @@ pub async fn engine_loop(mut runner: WeiYuan) {
     let client = &Client::new();
     while let Ok(bench) = runner.recv().cloned() {
         log::trace!("engine_loop wake");
-        if bench.commands.len() > 0 {
+        if !bench.commands.is_empty() {
             let cmds = take_cmds(&bench, &mut runner);
 
             for cmd in cmds {

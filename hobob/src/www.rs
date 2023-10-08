@@ -591,12 +591,12 @@ mod tests {
                         buf.as_ref()
                     };
                     let s = std::str::from_utf8(b);
-                    assert!(matches!(s, Ok(_)));
+                    assert!(s.is_ok());
                     let s = s.unwrap();
                     for l in s.lines() {
                         if l.starts_with("data:") {
                             let v = serde_json::from_str(l.strip_prefix("data:").unwrap());
-                            assert!(matches!(v, Ok(_)));
+                            assert!(v.is_ok());
                             assert_eq!(v.ok(), it.next().map(|v| json!([v])));
                         }
                     }
@@ -606,10 +606,15 @@ mod tests {
             },
             async {
                 tx.log(3, "clear dump");
-                for ev in ls.iter().cloned() {
+                for ev in ls.iter() {
                     run_ms(&mut center, 50, true).await;
                     log::info!("sending {:?}", &ev);
-                    assert!(tx.apply(|b| Ok(b.events.push_back(ev.clone()))).is_ok());
+                    assert!(tx
+                        .apply(|b| {
+                            b.events.push_back(ev.clone());
+                            Ok(())
+                        })
+                        .is_ok());
                 }
                 run_ms(&mut center, 50, true).await;
                 center.close();

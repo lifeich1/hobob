@@ -236,7 +236,7 @@ impl WeiYuanHui {
     }
 
     fn push(&mut self, mut next: FullBench) {
-        if next.events.len() > 0 {
+        if !next.events.is_empty() {
             let pass: Events = next
                 .events
                 .into_iter()
@@ -247,7 +247,7 @@ impl WeiYuanHui {
                         .is_none()
                 })
                 .collect();
-            if pass.len() > 0
+            if !pass.is_empty()
                 && self
                     .ev_tx
                     .as_ref()
@@ -347,8 +347,11 @@ impl WeiYuan {
     }
 
     pub fn count<S: ToString>(&mut self, msg: S) {
-        self.apply(|b| Ok(b.events.push_back(json!({COUNTER_TAG: msg.to_string()}))))
-            .ok();
+        self.apply(|b| {
+            b.events.push_back(json!({COUNTER_TAG: msg.to_string()}));
+            Ok(())
+        })
+        .ok();
     }
 
     pub async fn until_closing(&mut self) {
@@ -531,14 +534,14 @@ impl FullBench {
     fn bucket_checked(&mut self) -> &mut Value {
         self.runtime
             .entry("bucket".into())
-            .or_insert_with(|| default_bucket())
+            .or_insert_with(default_bucket)
     }
 
     fn bucket_or_default(&self) -> Value {
         self.runtime
             .get("bucket")
             .cloned()
-            .unwrap_or_else(|| default_bucket())
+            .unwrap_or_else(default_bucket)
     }
 
     pub fn bucket_duration_to_next(&self) -> Duration {
@@ -912,7 +915,7 @@ mod tests {
     async fn test_two_chairs() {
         let mut center = WeiYuanHui::default();
         assert_eq!(center.bench.runtime.get(FLAG_CLOSING), None);
-        assert_eq!(center.bench.runtime_is_closing(), false);
+        assert!(!center.bench.runtime_is_closing());
         {
             let mut chair = center.new_chair();
             let mut chair_rx = chair.clone();
@@ -928,10 +931,11 @@ mod tests {
                 None
             );
             assert!(run_1s(&mut center).await);
-            assert!(matches!(
-                chair_rx.recv().as_ref().map_err(ToString::to_string),
-                Ok(_)
-            ));
+            assert!(chair_rx
+                .recv()
+                .as_ref()
+                .map_err(ToString::to_string)
+                .is_ok());
             let cur = chair_rx.recv().unwrap();
             println!("bucket: {:?}", cur.runtime);
             assert_eq!(
@@ -1082,12 +1086,17 @@ mod tests {
                 tx.count("ev_tx/test");
                 for ev in ls {
                     run_ms(&mut center, 50, true).await;
-                    assert!(tx.apply(|b| Ok(b.events.push_back(ev.clone()))).is_ok());
+                    assert!(tx
+                        .apply(|b| {
+                            b.events.push_back(ev.clone());
+                            Ok(())
+                        })
+                        .is_ok());
                 }
                 run_ms(&mut center, 50, true).await;
                 center.close();
                 std::mem::drop(tx);
-                check_closed(&mut center).await;
+                check_closed(&center).await;
             }
         );
     }

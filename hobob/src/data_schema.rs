@@ -73,10 +73,9 @@ impl ChairData {
             .uri_sid
             .get(id)
             .unwrap_or_else(|| panic!("not registered schema: {}", id));
-        Ok(self
-            .scope
+        self.scope
             .validate(data, *id)
-            .map_err(|e| anyhow!("boon: {:?}", e))?)
+            .map_err(|e| anyhow!("boon: {:?}", e))
     }
 
     pub fn expect(id: &str, data: &Value) -> Result<()> {
@@ -250,7 +249,7 @@ fn user_cards_schema() -> Value {
                     "ban": { "type": "boolean" },
                     "face_url": {
                         "type": "string",
-                        "pattern": r#"^https://\w+.hdslb.com/bfs/face/\w+\.\w+$"#
+                        "pattern": r"^https://\w+.hdslb.com/bfs/face/\w+\.\w+$"
                     },
                 }
             },
@@ -274,7 +273,7 @@ fn user_cards_schema() -> Value {
                     "isopen": { "type": "boolean" },
                     "url": {
                         "type": "string",
-                        "pattern": r#"^https://live.bilibili.com/\d+"#
+                        "pattern": r"^https://live.bilibili.com/\d+"
                     },
                 }
             },
