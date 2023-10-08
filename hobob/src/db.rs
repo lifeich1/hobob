@@ -108,7 +108,7 @@ impl WeiYuanHui {
         if let Err(e) = loaded.as_ref() {
             log::error!("load full bench from file failed: {}", e);
         }
-        loaded.ok().unwrap_or_else(Self::default)
+        loaded.ok().unwrap_or_default()
     }
 
     fn load_check<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -796,6 +796,13 @@ impl FullBench {
         let index = self.up_index.entry(typ.into()).or_default();
         index.remove(&(old_value, uid.into()));
         index.insert((value, uid.into()));
+        match typ {
+            "video" | "live" => self.events.push_back(json!({
+                "type": typ,
+                typ: self.up_info.get(uid).expect("updating up_info SHOULD exists")["pick"][typ],
+            })),
+            _ => (),
+        }
     }
 
     pub fn modify_up_info<F>(&mut self, uid: &str, mut f: F)
@@ -808,7 +815,6 @@ impl FullBench {
             .expect("modifing up_info SHOULD be inited");
         let old_info = &info.clone();
         f(info);
-        // TODO epoll trigger events
         let video = new_video_ts(info);
         let live = live_entropy(info);
         let ctm = info_ctime(info);
@@ -1095,6 +1101,7 @@ mod tests {
             bench.up_index.get("live").unwrap().get_min(),
             Some(&(8i64, "12345".to_string()))
         );
+        // TODO check events
         bench.update_index("live", 8, 117, "12345");
         assert_eq!(
             bench.up_index.get("live").unwrap().get_min(),
