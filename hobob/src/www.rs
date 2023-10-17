@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use serde_derive::Deserialize;
 use serde_json::{json, Value};
-use std::convert::Infallible;
+use std::convert::{AsRef, Infallible};
 use std::sync::Arc;
 use tera::{Context, Tera};
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
@@ -45,72 +45,64 @@ fn render(page: &str, value: Result<Value>) -> String {
         .and_then(|c| Ok(TERA.render(page, &c)?))
         .unwrap_or_else(|e| render_fail(page, e))
 }
-
-pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)> {
-    let runner = weiyuanhui.new_chair();
-
-    let index = {
-        let hdl = runner.readonly();
-        path::end().map(move || {
-            reply::html(render(
-                "index.html",
-                hdl.clone().recv().map(|v| {
-                    v.runtime
-                        .get("index")
-                        .cloned()
-                        .unwrap_or_else(|| json!({"status":"booting"}))
-                }),
-            ))
+fn simpleapi() -> BoxedFilter<(Value,)> {
+    warp::post()
+        .and(warp::body::content_length_limit(1024 * 16))
+        .and(warp::body::bytes())
+        .and_then(|bytes: bytes::Bytes| async move {
+            let r = std::str::from_utf8(bytes.as_ref())
+                .ok()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .ok_or_else(|| warp::reject::custom(UnparsableQuery()));
+            log::trace!("simpleapi()#parsed: {:?}", &r);
+            r
         })
-    };
+        .boxed()
+}
+fn do_api<F>(hdl: &WeiYuan, opt: &Value, f: F) -> reply::Json
+where
+    F: Fn(&mut FullBench, &Value) -> Result<()>,
+{
+    let r = hdl
+        .clone()
+        .apply(|b| f(b, opt))
+        .map_or_else(|e| json!({"err": e.to_string()}), |()| json!("success"));
+    reply::json(&r)
+}
+fn create_op<F>(runner: &WeiYuan, f: F) -> BoxedFilter<(impl reply::Reply,)>
+where
+    F: Fn(&mut FullBench, &Value) -> Result<()>
+        + std::marker::Sync
+        + std::marker::Send
+        + Copy
+        + 'static,
+{
+    let hdl = runner.clone();
+    simpleapi()
+        .map(move |opt: Value| do_api(&hdl, &opt, f))
+        .boxed()
+}
 
-    fn simpleapi() -> BoxedFilter<(Value,)> {
-        warp::post()
-            .and(warp::body::content_length_limit(1024 * 16))
-            .and(warp::body::bytes())
-            .and_then(|bytes: bytes::Bytes| async move {
-                let r = std::str::from_utf8(bytes.as_ref())
-                    .ok()
-                    .and_then(|s| serde_json::from_str(s).ok())
-                    .ok_or_else(|| warp::reject::custom(UnparsableQuery()));
-                log::trace!("simpleapi()#parsed: {:?}", &r);
-                r
-            })
-            .boxed()
-    }
-    fn do_api<F>(hdl: &WeiYuan, opt: Value, f: F) -> reply::Json
-    where
-        F: Fn(&mut FullBench, &Value) -> Result<()>,
-    {
-        reply::json(
-            &hdl.clone()
-                .apply(|b| f(b, &opt))
-                .map(|_| json!("success"))
-                .unwrap_or_else(|e| json!({"err": e.to_string()})),
-        )
-    }
-    fn create_op<F>(runner: &WeiYuan, f: F) -> BoxedFilter<(impl reply::Reply,)>
-    where
-        F: Fn(&mut FullBench, &Value) -> Result<()>
-            + std::marker::Sync
-            + std::marker::Send
-            + Copy
-            + 'static,
-    {
-        let hdl = runner.clone();
-        simpleapi()
-            .map(move |opt: Value| do_api(&hdl, opt, f))
-            .boxed()
-    }
-
-    let op_follow = warp::path!("follow").and(create_op(&runner, |b, opt| b.follow(opt)));
-    let op_refresh = warp::path!("refresh").and(create_op(&runner, |b, opt| b.refresh(opt)));
-    let op_silence = warp::path!("silence").and(create_op(&runner, |b, opt| b.force_silence(opt)));
+fn route_op(runner: &WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
+    let op_follow = warp::path!("follow").and(create_op(runner, FullBench::follow));
+    let op_refresh = warp::path!("refresh").and(create_op(runner, FullBench::refresh));
+    let op_silence = warp::path!("silence").and(create_op(runner, FullBench::force_silence));
     let op_toggle_group =
-        warp::path!("toggle" / "group").and(create_op(&runner, |b, opt| b.toggle_group(opt)));
+        warp::path!("toggle" / "group").and(create_op(runner, FullBench::toggle_group));
     let op_new_group =
-        warp::path!("touch" / "group").and(create_op(&runner, |b, opt| b.touch_group(opt)));
+        warp::path!("touch" / "group").and(create_op(runner, FullBench::touch_group));
+    warp::path("op")
+        .and(
+            op_follow
+                .or(op_refresh)
+                .or(op_silence)
+                .or(op_toggle_group)
+                .or(op_new_group),
+        )
+        .boxed()
+}
 
+fn route_card(runner: &WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
     let card_one = {
         let hdl = runner.readonly();
         warp::path!("one" / i64).map(move |uid: i64| {
@@ -177,6 +169,30 @@ pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)
             reply::html(render("filter_options.html", r))
         })
     };
+    warp::path("card")
+        .and(card_one.or(card_ulist).or(card_filter_options))
+        .boxed()
+}
+
+/// # Panics
+/// Panic on internal fatal errors.
+pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)> {
+    let runner = weiyuanhui.new_chair();
+
+    let index = {
+        let hdl = runner.readonly();
+        path::end().map(move || {
+            reply::html(render(
+                "index.html",
+                hdl.clone().recv().map(|v| {
+                    v.runtime
+                        .get("index")
+                        .cloned()
+                        .unwrap_or_else(|| json!({"status":"booting"}))
+                }),
+            ))
+        })
+    };
 
     let ev_engine = {
         let rx = Arc::new(weiyuanhui.listen_events());
@@ -188,7 +204,7 @@ pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)
                             .json_data(ev)
                             .expect("im::Vector<Value> SHOULD never serde fail"),
                         Err(BroadcastStreamRecvError::Lagged(l)) => {
-                            Event::default().comment(format!("event rx lagged {}", l))
+                            Event::default().comment(format!("event rx lagged {l}"))
                         }
                     })
                 }),
@@ -200,14 +216,8 @@ pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)
     let favicon = warp::path!("favicon.ico").and(warp::fs::file("./static/favicon.ico"));
 
     let app = index
-        .or(warp::path("op").and(
-            op_follow
-                .or(op_refresh)
-                .or(op_silence)
-                .or(op_toggle_group)
-                .or(op_new_group),
-        ))
-        .or(warp::path("card").and(card_one.or(card_ulist).or(card_filter_options)))
+        .or(route_op(&runner))
+        .or(route_card(&runner))
         .or(warp::path("ev").and(ev_engine))
         .or(static_files)
         .or(favicon);
@@ -249,7 +259,7 @@ mod tests {
             .new_chair()
             .recv()
             .cloned()
-            .unwrap_or_else(|e| panic!("get bench err: {:?}", e))
+            .unwrap_or_else(|e| panic!("get bench err: {e:?}"))
     }
 
     #[tokio::test]
@@ -300,7 +310,7 @@ mod tests {
         warp::reply::Response,
         BoxedFilter<(impl warp::Reply,)>,
     ) {
-        do_op3(Default::default(), path, jsn).await
+        do_op3(WeiYuanHui::default(), path, jsn).await
     }
     async fn do_get(
         mut center: WeiYuanHui,
@@ -341,7 +351,7 @@ mod tests {
 
         check_n_step(&mut center).await;
         let b = bench(&mut center);
-        println!("cur bench: {:?}", b);
+        println!("cur bench: {b:?}");
         assert_eq!(b.commands.len(), 1);
         assert_eq!(
             b.commands.front(),
@@ -437,7 +447,7 @@ mod tests {
         check_n_step(&mut center).await;
         let b = bench(&mut center);
         assert_eq!(b.up_info.len(), 1);
-        assert_eq!(b.up_join_group.get("5").map(|l| l.len()), Some(1));
+        assert_eq!(b.up_join_group.get("5").map(im::OrdSet::len), Some(1));
         assert_eq!(
             b.up_join_group.get("5").unwrap().get_min(),
             Some(&"12345".into())
@@ -449,7 +459,10 @@ mod tests {
         init();
         let mut b = FullBench::default();
         assert!(b.follow(&json!({"uid": 12345})).is_ok());
-        assert_eq!(b.up_join_group.insert("5".into(), Default::default()), None);
+        assert_eq!(
+            b.up_join_group.insert("5".into(), im::OrdSet::default()),
+            None
+        );
         assert_eq!(
             b.up_join_group.get_mut("5").unwrap().insert("12345".into()),
             None
@@ -470,7 +483,7 @@ mod tests {
         check_n_step(&mut center).await;
         let b = bench(&mut center);
         assert_eq!(b.up_info.len(), 1);
-        assert_eq!(b.up_join_group.get("5").map(|l| l.len()), Some(0));
+        assert_eq!(b.up_join_group.get("5").map(im::OrdSet::len), Some(0));
     }
 
     #[tokio::test]
