@@ -28,25 +28,26 @@ struct UnparsableQuery();
 
 impl warp::reject::Reject for UnparsableQuery {}
 
+fn render_fail<E: std::fmt::Display + std::fmt::Debug>(page: &str, e: E) -> String {
+    log::debug!("render fail: {:?}", &e);
+    let mut c = Context::new();
+    c.insert("kind", "render process");
+    c.insert(
+        "reason",
+        &format!("rendering {page} get unexpected error: {e}"),
+    );
+    TERA.render("failure.html", &c)
+        .expect("render failure.html MUST be safe")
+}
+fn render(page: &str, value: Result<Value>) -> String {
+    value
+        .and_then(|v| Ok(Context::from_value(v)?))
+        .and_then(|c| Ok(TERA.render(page, &c)?))
+        .unwrap_or_else(|e| render_fail(page, e))
+}
+
 pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)> {
     let runner = weiyuanhui.new_chair();
-    fn render_fail<E: std::fmt::Display + std::fmt::Debug>(page: &str, e: E) -> String {
-        log::debug!("render fail: {:?}", &e);
-        let mut c = Context::new();
-        c.insert("kind", "render process");
-        c.insert(
-            "reason",
-            &format!("rendering {} get unexpected error: {}", page, e),
-        );
-        TERA.render("failure.html", &c)
-            .expect("render failure.html MUST be safe")
-    }
-    fn render(page: &str, value: Result<Value>) -> String {
-        value
-            .and_then(|v| Ok(Context::from_value(v)?))
-            .and_then(|c| Ok(TERA.render(page, &c)?))
-            .unwrap_or_else(|e| render_fail(page, e))
-    }
 
     let index = {
         let hdl = runner.readonly();
@@ -563,8 +564,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sse() {
+        const BOM: &[u8; 2] = b"\xFE\xFE";
         init();
-        let (mut center, resp, app) = do_get(Default::default(), "/ev/engine").await;
+        let (mut center, resp, app) = do_get(WeiYuanHui::default(), "/ev/engine").await;
         assert_eq!(resp.status(), StatusCode::OK);
         let mut body = resp.into_body();
         let mut tx = center.new_chair();
@@ -579,12 +581,9 @@ mod tests {
                 let mut it = ls_rx.iter().cloned();
                 while let Some(msg) = body.next().await {
                     log::info!("get {:?}", &msg);
-                    let buf = if let Ok(b) = msg {
-                        b
-                    } else {
+                    let Ok(buf) = msg else {
                         continue;
                     };
-                    const BOM: &[u8; 2] = b"\xFE\xFE";
                     let b: &[u8] = if buf.starts_with(BOM) {
                         buf.split_at(BOM.len()).1
                     } else {
@@ -606,7 +605,7 @@ mod tests {
             },
             async {
                 tx.log(3, "clear dump");
-                for ev in ls.iter() {
+                for ev in &ls {
                     run_ms(&mut center, 50, true).await;
                     log::info!("sending {:?}", &ev);
                     assert!(tx
