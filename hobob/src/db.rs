@@ -24,7 +24,7 @@ pub type LogRecords = im::Vector<Value>;
 pub type RuntimeCfg = im::HashMap<String, Value>;
 pub type Commands = im::Vector<Value>;
 
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 pub struct FullBench {
     pub up_info: UpInfo,
     pub up_index: UpIndex,
@@ -86,8 +86,8 @@ impl Default for WeiYuanHui {
             ev_tx,
             ev_rx,
             bench,
-            savepath: Default::default(),
-            counter: Default::default(),
+            savepath: Option::default(),
+            counter: VCounter::default(),
         }
     }
 }
@@ -124,10 +124,13 @@ impl WeiYuanHui {
         })
     }
 
+    #[must_use]
     pub fn listen_events(&self) -> broadcast::Receiver<Events> {
         self.ev_rx.resubscribe()
     }
 
+    /// # Panics
+    /// Panic on `WeiYuanHui` is closing.
     pub fn new_chair(&mut self) -> WeiYuan {
         WeiYuan {
             update: Some(
@@ -145,7 +148,8 @@ impl WeiYuanHui {
         }
     }
 
-    pub fn bench(&self) -> &FullBench {
+    #[must_use]
+    pub const fn bench(&self) -> &FullBench {
         &self.bench
     }
 
@@ -171,7 +175,7 @@ impl WeiYuanHui {
             if let Err(e) = self.save_disk() {
                 self.push(
                     self.bench
-                        .add_log(0, format!("#WeiYuanHui# save_disk error: {}", &e)),
+                        .add_log(0, &format!("#WeiYuanHui# save_disk error: {}", &e)),
                 );
                 log::error!("save_disk error: {}", e);
             }
@@ -179,6 +183,8 @@ impl WeiYuanHui {
         true
     }
 
+    /// # Errors
+    /// Throw if duration poisoned.
     pub async fn run_until(&mut self, deadline: DateTime<Utc>) -> Result<bool> {
         loop {
             let now = Utc::now();
@@ -194,6 +200,8 @@ impl WeiYuanHui {
         }
     }
 
+    /// # Errors
+    /// Throw if duration poisoned.
     pub async fn run_for(&mut self, duration: Duration) -> Result<bool> {
         self.run_until(Utc::now() + duration).await
     }
@@ -201,13 +209,10 @@ impl WeiYuanHui {
     /// @return is running
     async fn try_update(&mut self) -> bool {
         let msg = self.updates.recv().await;
-        match msg {
-            Some(msg) => {
-                self.try_push(msg);
-                true
-            }
-            None => false,
-        }
+        msg.map_or(false, |msg| {
+            self.try_push(msg);
+            true
+        })
     }
 
     fn try_push(&mut self, upd: BenchUpdate) {
@@ -218,7 +223,7 @@ impl WeiYuanHui {
             log::trace!("WeiYuanHui#try_push abort");
             self.counter.push_miss_cnt += 1;
             if let Some(msg) = self.counter.try_log(&self.bench) {
-                self.push(self.bench.add_log(3, msg));
+                self.push(self.bench.add_log(3, &msg));
             }
         }
     }
@@ -251,12 +256,11 @@ impl WeiYuanHui {
                 && self
                     .ev_tx
                     .as_ref()
-                    .map(|tx| tx.send(pass).is_err())
-                    .unwrap_or(true)
+                    .map_or(true, |tx| tx.send(pass).is_err())
             {
                 self.counter.broadcast_void_cnt += 1;
             }
-            next.events = Default::default();
+            next.events = im::Vector::default();
         }
         self.bench = next.clone();
         self.publish.send_modify(move |v| *v = next);
@@ -264,6 +268,7 @@ impl WeiYuanHui {
 }
 
 impl WeiYuan {
+    #[must_use]
     pub fn readonly(&self) -> Self {
         Self {
             update: None,
@@ -280,10 +285,14 @@ impl WeiYuan {
     }
 
     /// @return None for closing
+    /// # Errors
+    /// Throw if closing.
+    /// # Panics
+    /// Panic on `WeiYuanHui` drop too fast.
     pub fn recv(&mut self) -> Result<&FullBench> {
         match self.fetch.has_changed() {
             Ok(true) => self.bench = self.fetch.borrow_and_update().clone(),
-            Err(_) => panic!("watch chan: WeiYuanHui drop too fast"),
+            Err(e) => panic!("watch chan: WeiYuanHui drop too fast: {e:#}"),
             _ => (),
         }
         self.bench
@@ -293,6 +302,10 @@ impl WeiYuan {
             .ok_or_else(|| anyhow!("WeiYuanHui closing"))
     }
 
+    /// # Errors
+    /// Throw if closing or worker throw.
+    /// # Panics
+    /// Panic on poisoned state.
     pub fn update<F>(&mut self, f: F) -> Result<()>
     where
         F: Fn(&FullBench) -> Result<FullBench>,
@@ -312,7 +325,7 @@ impl WeiYuan {
             .expect("try update in READONLY WeiYuan")
             .try_send(msg)
         {
-            Ok(_) => {
+            Ok(()) => {
                 log::trace!("WeiYuan#update sent ok");
                 Ok(())
             }
@@ -331,6 +344,8 @@ impl WeiYuan {
         }
     }
 
+    /// # Errors
+    /// Throw if closing or worker throw.
     pub fn apply<F>(&mut self, f: F) -> Result<()>
     where
         F: Fn(&mut FullBench) -> Result<()>,
@@ -342,11 +357,11 @@ impl WeiYuan {
         })
     }
 
-    pub fn log<S: ToString>(&mut self, level: i32, msg: S) {
-        self.update(|b| Ok(b.add_log(level, msg.to_string()))).ok();
+    pub fn log<S: ToString + ?Sized>(&mut self, level: i32, msg: &S) {
+        self.update(|b| Ok(b.add_log(level, &msg.to_string()))).ok();
     }
 
-    pub fn count<S: ToString>(&mut self, msg: S) {
+    pub fn count<S: ToString + ?Sized>(&mut self, msg: &S) {
         self.apply(|b| {
             b.events.push_back(json!({COUNTER_TAG: msg.to_string()}));
             Ok(())
@@ -354,11 +369,13 @@ impl WeiYuan {
         .ok();
     }
 
+    /// # Panics
+    /// Panic on `WeiYuanHui` drop too fast.
     pub async fn until_closing(&mut self) {
         self.fetch
-            .wait_for(|b| b.runtime_is_closing())
+            .wait_for(FullBench::runtime_is_closing)
             .await
-            .map_err(|e| panic!("fetch channel unexpected closed: {}", e))
+            .map_err(|e| panic!("fetch channel unexpected closed: {e}"))
             .ok();
     }
 }
@@ -371,6 +388,7 @@ fn im_vector_p_eq<A: Clone + Eq>(lhs: &im::Vector<A>, rhs: &im::Vector<A>) -> bo
     }
 }
 
+#[must_use]
 pub fn now_timestamp() -> i64 {
     Utc::now().timestamp()
 }
@@ -412,6 +430,7 @@ fn default_bucket() -> Value {
 }
 
 impl FullBench {
+    #[must_use]
     pub fn new() -> Self {
         let mut r = Self::default();
         r.init();
@@ -430,21 +449,27 @@ impl FullBench {
             && im_vector_p_eq(&self.commands, &other.commands)
     }
 
-    fn add_log(&self, level: i32, msg: String) -> Self {
+    fn add_log(&self, level: i32, msg: &str) -> Self {
         let mut r = self.clone();
         r.log(level, msg);
         r
     }
 
-    fn log(&mut self, level: i32, msg: String) {
+    fn log(&mut self, level: i32, msg: &str) {
         let cf = self.runtime.get("log_filter").unwrap_or(&Value::Null);
-        let maxlv = cf["maxlevel"].as_i64().unwrap_or(3) as i32;
+        let maxlv = cf["maxlevel"]
+            .as_i64()
+            .and_then(|x| i32::try_from(x).ok())
+            .unwrap_or(3);
         if level > maxlv {
             return;
         }
         self.logs
             .push_back(json!({"ts": to_value(Utc::now()).unwrap(), "level": level, "msg": msg}));
-        let bufl = cf["buffer_lines"].as_u64().unwrap_or(2048) as usize;
+        let bufl = cf["buffer_lines"]
+            .as_u64()
+            .and_then(|x| usize::try_from(x).ok())
+            .unwrap_or(2048);
         if self.logs.len() > bufl {
             let fitl = cf["fit_lines"].as_u64().unwrap_or(16);
             for _ in 0..=fitl {
@@ -455,7 +480,7 @@ impl FullBench {
 
     pub fn inspect<'a, T>(&mut self, res: &'a Result<T>) -> &'a Result<T> {
         if let Err(e) = res {
-            self.log(1, format!("inspect: {:#}", e));
+            self.log(1, &format!("inspect: {e:#}"));
         }
         res
     }
@@ -466,14 +491,12 @@ impl FullBench {
             "gid": 0,
             "name": "全部",
             "pin": true,
-        }))
-        .expect("gid 0 init MUST ok");
+        }));
         self.touch_group_unchecked(&json!({
             "gid": 1,
             "name": "特殊关注",
             "pin": true,
-        }))
-        .expect("gid 0 init MUST ok");
+        }));
     }
 
     fn mut_runtime_field<F: FnOnce(&mut Value)>(&self, key: &str, f: F) -> Self {
@@ -491,32 +514,29 @@ impl FullBench {
     }
 
     fn runtime_dump_now(&self) -> bool {
-        self.runtime_dump_time()
-            .map(|t| t < Utc::now())
-            .unwrap_or(true)
+        self.runtime_dump_time().map_or(true, |t| t < Utc::now())
     }
 
     fn set_runtime_next_dump(&self) -> Self {
         self.mut_runtime_field("db", |v| {
             v["dump_time"] =
-                to_value(Utc::now() + Duration::minutes(self.runtime_dump_timeout_min() as i64))
-                    .unwrap()
+                to_value(Utc::now() + Duration::minutes(self.runtime_dump_timeout_min())).unwrap();
         })
     }
 
-    fn runtime_dump_timeout_min(&self) -> u64 {
+    fn runtime_dump_timeout_min(&self) -> i64 {
         im::get_in!(self.runtime, "db")
-            .and_then(|v| v["dump_timeout_min"].as_u64())
+            .and_then(|v| v["dump_timeout_min"].as_i64())
             .unwrap_or(720)
     }
 
     fn runtime_vlog_dump_gap(&self) -> Duration {
-        self.runtime
-            .get("db")
-            .and_then(|v| v["vlog_dump_gap_sec"].as_u64())
-            .map(|sec| sec as i64)
-            .map(Duration::seconds)
-            .unwrap_or_else(|| Duration::seconds(60))
+        Duration::seconds(
+            self.runtime
+                .get("db")
+                .and_then(|v| v["vlog_dump_gap_sec"].as_i64())
+                .unwrap_or(60),
+        )
     }
 
     fn runtime_set_closing(&self) -> Self {
@@ -544,10 +564,13 @@ impl FullBench {
             .unwrap_or_else(default_bucket)
     }
 
+    /// # Panics
+    /// Panic on storing value poisoned
+    #[must_use]
     pub fn bucket_duration_to_next(&self) -> Duration {
         let v = self.bucket_or_default();
         let deadline = from_value::<DateTime<Utc>>(v["atime"].clone())
-            .unwrap_or_else(|e| panic!("runtime.bucket.atime corrupted: {}", e))
+            .unwrap_or_else(|e| panic!("runtime.bucket.atime corrupted: {e}"))
             + Duration::seconds(v["gap"].as_i64().expect("runtime.bucket.gap SHOULD be i64"));
         std::cmp::max(deadline - Utc::now(), Duration::milliseconds(100))
     }
@@ -557,6 +580,8 @@ impl FullBench {
         v["atime"] = to_value(Utc::now()).unwrap();
     }
 
+    /// # Panics
+    /// Panic on storing value poisoned
     pub fn bucket_good(&mut self) {
         let v = self.bucket_checked();
         v["gap"] = std::cmp::max(
@@ -566,6 +591,8 @@ impl FullBench {
         .into();
     }
 
+    /// # Panics
+    /// Panic on storing value poisoned
     pub fn bucket_hang(&mut self) {
         let v = self.bucket_checked();
         let g = v["gap"].as_i64().unwrap();
@@ -573,12 +600,17 @@ impl FullBench {
         v["gap"] = (g + v["min_change_gap"].as_i64().unwrap() + t % 7).into();
     }
 
+    /// # Panics
+    /// Panic on storing value poisoned
     pub fn bucket_double_gap(&mut self) {
         let v = self.bucket_checked();
         v["gap"] = (v["gap"].as_u64().unwrap() * 2).into();
     }
 
     /// General api, for www use
+    ///
+    /// # Errors
+    /// Throw if storing value invalid.
     pub fn runtime_field(&self, key: &str, path: &str) -> Result<Value> {
         self.runtime
             .get(key)
@@ -598,15 +630,20 @@ impl FullBench {
     }
 
     /// General api, for www use
+    ///
+    /// # Errors
+    /// Throw if setting value invald.
     pub fn runtime_set_field(&mut self, key: &str, path: &str, val: Value) -> Result<()> {
         let mut o = self.runtime.get(key).cloned().unwrap_or(Value::Null);
         let ins = o.is_null();
         let mut v = &mut o;
         for p in path.split('/') {
             if v.get(p).is_none() {
-                v[p] = Value::Object(Default::default());
+                v[p] = Value::Object(serde_json::Map::default());
             }
-            v = v.get_mut(p).unwrap();
+            v = v
+                .get_mut(p)
+                .ok_or_else(|| anyhow!("internal error: cannot get inserted ref"))?;
         }
         *v = val;
         ChairData::expect(schema_uri!("runtime", key), &o)?;
@@ -616,12 +653,16 @@ impl FullBench {
         Ok(())
     }
 
+    /// # Errors
+    /// Throw if input invalid.
     pub fn follow(&mut self, opt: &Value) -> Result<()> {
         log::trace!("bench#follow opt: {:?}", opt);
         ChairData::expect(schema_uri!("follow"), opt)?;
-        let uid = opt["uid"].as_i64().unwrap();
+        let uid = opt["uid"]
+            .as_i64()
+            .ok_or_else(|| anyhow!("uid out of i64 range"))?;
         let enable = opt["enable"].as_bool().unwrap_or(true);
-        self.log(2, format!("follow uid:{} enable:{}", uid, enable));
+        self.log(2, &format!("follow uid:{uid} enable:{enable}"));
         if enable {
             self.commands.push_back(json!({
                 "cmd": "fetch",
@@ -649,13 +690,15 @@ impl FullBench {
 
     fn checked_uid(&mut self, opt: &Value, key: &str) -> Result<i64> {
         let uid = opt[key].as_i64().unwrap();
-        let suid = uid.to_string();
+        let struid = uid.to_string();
         self.up_info
-            .contains_key(&suid)
+            .contains_key(&struid)
             .then_some(uid)
             .ok_or_else(|| anyhow!("operate on not tracing uid"))
     }
 
+    /// # Errors
+    /// Throw if input or uid invalid.
     pub fn refresh(&mut self, opt: &Value) -> Result<()> {
         ChairData::expect(schema_uri!("refresh"), opt)?;
         let uid = self.checked_uid(opt, "uid")?;
@@ -668,6 +711,8 @@ impl FullBench {
         Ok(())
     }
 
+    /// # Errors
+    /// Currently no errors in impl.
     pub fn force_silence(&mut self, _opt: &Value) -> Result<()> {
         self.bucket_double_gap();
         Ok(())
@@ -685,21 +730,26 @@ impl FullBench {
             )
         });
         self.up_join_group.contains_key(&gid).not().then(|| {
-            self.up_join_group.insert(gid.clone(), Default::default());
+            self.up_join_group
+                .insert(gid.clone(), im::OrdSet::default());
         });
         gid
     }
 
+    /// # Errors
+    /// Throw if input invalid
+    ///
+    /// # Panics
+    /// Panic on not tracing uid.
     pub fn toggle_group(&mut self, opt: &Value) -> Result<()> {
         ChairData::expect(schema_uri!("toggle_group"), opt)?;
         let suid = self.checked_uid(opt, "uid")?.to_string();
         let gid = self.inited_gid(opt, "gid");
-        self.log(2, format!("toggle_group uid:{} gid:{}", &suid, &gid));
+        self.log(2, &format!("toggle_group uid:{} gid:{}", &suid, &gid));
         if self
             .up_join_group
             .get(&gid)
-            .map(|s| s.contains(&suid))
-            .unwrap_or(false)
+            .map_or(false, |s| s.contains(&suid))
         {
             self.up_join_group.get_mut(&gid).unwrap().remove(&suid);
         } else {
@@ -708,12 +758,15 @@ impl FullBench {
         Ok(())
     }
 
+    /// # Errors
+    /// Throw if input invalid
     pub fn touch_group(&mut self, opt: &Value) -> Result<()> {
         ChairData::expect(schema_uri!("touch_group"), opt)?;
-        self.touch_group_unchecked(opt)
+        self.touch_group_unchecked(opt);
+        Ok(())
     }
 
-    fn touch_group_unchecked(&mut self, opt: &Value) -> Result<()> {
+    fn touch_group_unchecked(&mut self, opt: &Value) {
         let gid = self.inited_gid(opt, "gid");
         let info = self
             .group_info
@@ -725,7 +778,6 @@ impl FullBench {
         if let Some(name) = opt["name"].as_str() {
             info["name"] = name.into();
         }
-        Ok(())
     }
 
     pub fn users_pick(&self, opt: &Value) -> Result<Value> {
@@ -864,7 +916,7 @@ mod tests {
     #[test]
     fn test_runtime_dump_timeout_min_default() {
         let bench = FullBench::default();
-        assert_eq!(bench.runtime_dump_timeout_min(), 720_u64);
+        assert_eq!(bench.runtime_dump_timeout_min(), 720_i64);
         assert!(bench.runtime_dump_now());
         let next = bench.set_runtime_next_dump();
         assert!(!next.runtime_dump_now());
@@ -984,12 +1036,12 @@ mod tests {
     fn test_circular_log() {
         let mut bench = FullBench::default();
         for i in 0..2048 {
-            bench = bench.add_log(2, format!("test log {}", i));
+            bench = bench.add_log(2, &format!("test log {i}"));
         }
         assert_eq!(bench.logs.len(), 2048);
-        bench = bench.add_log(4, "will discard log".into());
+        bench = bench.add_log(4, "will discard log");
         assert_eq!(bench.logs.len(), 2048);
-        bench = bench.add_log(-1, "this log trigger buffer shorten".into());
+        bench = bench.add_log(-1, "this log trigger buffer shorten");
         assert_eq!(bench.logs.len(), 2048 - 16);
     }
 
