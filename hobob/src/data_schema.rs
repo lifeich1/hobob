@@ -25,7 +25,7 @@ impl ChairDataBuilder {
         compiler.set_default_draft(boon::Draft::V2020_12);
         Self {
             scope: Schemas::new(),
-            uri_sid: Default::default(),
+            uri_sid: HashMap::default(),
             compiler,
         }
     }
@@ -33,11 +33,11 @@ impl ChairDataBuilder {
     fn schema(mut self, uri: &str, value: Value) -> Self {
         self.compiler
             .add_resource(uri, value)
-            .map_err(|e| panic!("ChairDataBuilder add_resource error: {}", e))
+            .map_err(|e| panic!("ChairDataBuilder add_resource error: {e}"))
             .ok();
         self.compiler
             .compile(uri, &mut self.scope)
-            .map_err(|e| panic!("ChairDataBuilder compiler error: {}", e))
+            .map_err(|e| panic!("ChairDataBuilder compiler error: {e}"))
             .ok()
             .map(|id| self.uri_sid.insert(uri.into(), id));
         self
@@ -72,7 +72,7 @@ impl ChairData {
         let id = self
             .uri_sid
             .get(id)
-            .unwrap_or_else(|| panic!("not registered schema: {}", id));
+            .unwrap_or_else(|| panic!("not registered schema: {id}"));
         self.scope
             .validate(data, *id)
             .map_err(|e| anyhow!("boon: {:?}", e))

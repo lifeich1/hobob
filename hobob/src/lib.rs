@@ -31,6 +31,8 @@ pub mod www;
 
 use db::WeiYuanHui;
 
+/// # Errors
+/// Throw log setup errors.
 pub fn prepare_log() -> Result<()> {
     std::fs::create_dir_all(vpath!())?;
 
@@ -57,6 +59,8 @@ pub fn prepare_log() -> Result<()> {
     Ok(())
 }
 
+/// # Errors
+/// Throw runtime errors.
 pub async fn main_loop() -> Result<()> {
     // FIXME: use load
     let mut center = WeiYuanHui::default();
@@ -64,9 +68,9 @@ pub async fn main_loop() -> Result<()> {
         let chair = center.new_chair();
         let app = www::build_app(&mut center);
         tokio::spawn(async move {
-            let (_, run) = warp::serve(app)
-                .bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
-                    chair.clone().until_closing().await
+            let (_, run) =
+                warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
+                    chair.clone().until_closing().await;
                 });
             log::info!("www app running");
             run.await;

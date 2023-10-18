@@ -19,7 +19,7 @@ fn take_cmds(bench: &FullBench, runner: &mut WeiYuan) -> Commands {
         })
         .map_err(|e| log::debug!("{}", e))
         .and(Ok(r))
-        .unwrap_or_else(|_| Default::default())
+        .unwrap_or_else(|()| im::Vector::default())
 }
 
 fn pick_basic(a: &Value, b: &Value) -> Value {
@@ -59,7 +59,7 @@ fn pick_video(a: &Value) -> Value {
     };
     json!({
         "title": v["title"],
-        "url": a["episodic_button"]["uri"].as_str().map(|s| format!("https:{}", s)),
+        "url": a["episodic_button"]["uri"].as_str().map(|s| format!("https:{s}")),
         "ts": v["created"],
     })
 }
@@ -70,32 +70,32 @@ async fn do_fetch(cli: &Client, runner: &mut WeiYuan, args: &Value) -> Result<()
         .ok_or_else(|| anyhow!("bad args: {:?}", args))?;
     let wbi = cli.user(uid);
     let info = wbi.info().await;
-    let vid = wbi.latest_videos().await;
+    let video = wbi.latest_videos().await;
     runner.apply(|b| {
         let info = b.inspect(&info).as_ref().ok();
-        let vid = b.inspect(&vid).as_ref().ok();
-        if info.is_none() || vid.is_none() {
+        let video = b.inspect(&video).as_ref().ok();
+        if info.is_none() || video.is_none() {
             b.bucket_double_gap();
             return Ok(());
         }
         let info = info.unwrap();
-        let vid = vid.unwrap();
+        let video = video.unwrap();
         b.modify_up_info(&uid.to_string(), |v| {
             v["raw"] = json!({
-                "videos": vid,
+                "videos": video,
                 "info": info,
             });
             v["pick"] = json!({
                 "basic": pick_basic(info, &v["pick"]["basic"]),
                 "live": pick_live(info),
-                "video": pick_video(vid),
+                "video": pick_video(video),
             });
         });
         b.bucket_good();
         Ok(())
     })?;
     info?;
-    vid?;
+    video?;
     log::info!("do fetch uid:{} ok", uid);
     Ok(())
 }
@@ -110,15 +110,16 @@ async fn exec_cmd(cmd: Value, runner: &mut WeiYuan, cli: &Client) {
                 .map_err(|e| log::error!("{:?}", e))
                 .ok();
         }
+        Some("livelist") => todo!(),
         _ => log::error!("unimplemented cmd: {:?}", &cmd),
     }
 }
 
-async fn exec_timers(bench: &FullBench, runner: &mut WeiYuan) {
+fn exec_timers(bench: &FullBench, runner: &mut WeiYuan) {
     let uid: i64 = if let Some(suid) = bench.up_index.get("ctime").and_then(|i| i.get_min()) {
         suid.1
             .parse()
-            .unwrap_or_else(|e| panic!("suid SHOULD be valid integer: {}", e))
+            .unwrap_or_else(|e| panic!("suid SHOULD be valid integer: {e}"))
     } else {
         log::error!("empty 'ctime' index");
         return;
@@ -139,29 +140,28 @@ async fn exec_timers(bench: &FullBench, runner: &mut WeiYuan) {
 
 fn next_deadline(runner: &mut WeiYuan) -> Instant {
     Instant::now()
-        + runner
-            .recv()
-            .ok()
-            .map(|b| {
+        + runner.recv().ok().map_or_else(
+            || Duration::from_secs(1),
+            |b| {
                 b.bucket_duration_to_next()
                     .to_std()
-                    .unwrap_or_else(|e| panic!("unexpected out_of_range: {}", e))
-            })
-            .unwrap_or_else(|| Duration::from_secs(1))
+                    .unwrap_or_else(|e| panic!("unexpected out_of_range: {e}"))
+            },
+        )
 }
 
-pub async fn engine_loop(mut runner: WeiYuan) {
+pub async fn main_loop(mut runner: WeiYuan) {
     let client = &Client::new();
     while let Ok(bench) = runner.recv().cloned() {
         log::trace!("engine_loop wake");
-        if !bench.commands.is_empty() {
+        if bench.commands.is_empty() {
+            exec_timers(&bench, &mut runner);
+        } else {
             let cmds = take_cmds(&bench, &mut runner);
 
             for cmd in cmds {
                 exec_cmd(cmd, &mut runner, client).await;
             }
-        } else {
-            exec_timers(&bench, &mut runner).await;
         }
 
         let deadline = next_deadline(&mut runner);
@@ -215,7 +215,7 @@ mod tests {
             async {
                 assert!(runner.recv().is_ok());
                 log::info!("start engine");
-                assert!(timeout(Duration::from_millis(400), engine_loop(runner))
+                assert!(timeout(Duration::from_millis(400), main_loop(runner))
                     .await
                     .is_ok());
             }
