@@ -780,22 +780,25 @@ impl FullBench {
         }
     }
 
+    /// # Errors
+    /// Throw if input invalid
     pub fn users_pick(&self, opt: &Value) -> Result<Value> {
         ChairData::expect(schema_uri!("users_pick"), opt)?;
-        let st = opt["range_start"].as_u64().unwrap_or(0) as usize;
-        let len = opt["range_len"].as_u64().unwrap_or(10) as usize;
+        let st = opt["range_start"]
+            .as_u64()
+            .and_then(|x| usize::try_from(x).ok())
+            .unwrap_or(0);
+        let len = opt["range_len"]
+            .as_u64()
+            .and_then(|x| usize::try_from(x).ok())
+            .unwrap_or(10);
         let gid = opt["gid"].as_i64().unwrap_or(0);
-        let group = if let Some(g) = self.up_join_group.get(&gid.to_string()) {
-            g
-        } else {
+        let Some(group) = self.up_join_group.get(&gid.to_string()) else {
             bail!("group {:?} not found", opt["gid"]);
         };
         let ids: Vec<&str> = match (
             gid,
-            opt["order_desc"]
-                .as_str()
-                .map(|s| s == "default")
-                .unwrap_or(false),
+            opt["order_desc"].as_str().is_some_and(|s| s == "default"),
         ) {
             (0, true) => self
                 .up_by_fid
@@ -814,8 +817,8 @@ impl FullBench {
                 .collect(),
             (0, false) => self
                 .up_index
-                .get(opt["order_desc"].as_str().unwrap())
-                .unwrap()
+                .get(opt["order_desc"].as_str().unwrap_or("default"))
+                .ok_or_else(|| anyhow!("index not found"))?
                 .iter()
                 .skip(st)
                 .take(len)
@@ -823,8 +826,8 @@ impl FullBench {
                 .collect(),
             (_, false) => self
                 .up_index
-                .get(opt["order_desc"].as_str().unwrap())
-                .unwrap()
+                .get(opt["order_desc"].as_str().unwrap_or("default"))
+                .ok_or_else(|| anyhow!("index not found"))?
                 .iter()
                 .filter(|t| group.contains(&t.1))
                 .skip(st)
@@ -834,12 +837,7 @@ impl FullBench {
         };
         let a: Vec<_> = ids
             .into_iter()
-            .map(|id| {
-                self.up_info
-                    .get(id)
-                    .expect("id in up_index MUST have up_info")["pick"]
-                    .clone()
-            })
+            .filter_map(|id| self.up_info.get(id).map(|v| v["pick"].clone()))
             .collect();
         Ok(json!(a))
     }
@@ -860,6 +858,8 @@ impl FullBench {
         }
     }
 
+    /// # Panics
+    /// Panic on data poisoned
     pub fn modify_up_info<F>(&mut self, uid: &str, mut f: F)
     where
         F: FnMut(&mut Value),
@@ -882,8 +882,8 @@ impl FullBench {
 
 impl VCounter {
     pub fn try_log(&mut self, bench: &FullBench) -> Option<String> {
-        if self.last_dump_ts.map(|t| Utc::now() > t).unwrap_or(true) {
-            let r = format!("VCounter: {:?}", self);
+        if self.last_dump_ts.map_or(true, |t| Utc::now() > t) {
+            let r = format!("VCounter: {self:?}");
             self.last_dump_ts = Some(Utc::now() + bench.runtime_vlog_dump_gap());
             Some(r)
         } else {
@@ -975,11 +975,11 @@ mod tests {
                 chair
                     .apply(|b| {
                         let r = b.runtime_set_field("bucket", "min_gap", json!(23));
-                        println!("new bench: {:?}", b);
+                        println!("new bench: {b:?}");
                         r
                     })
                     .err()
-                    .map(|e| format!("{:?}", e)),
+                    .map(|e| format!("{e:?}")),
                 None
             );
             assert!(run_1s(&mut center).await);
