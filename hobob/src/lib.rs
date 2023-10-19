@@ -1,8 +1,9 @@
 use anyhow::Result;
-use log::LevelFilter;
-use log4rs::append::file::FileAppender;
-use log4rs::config::{Appender, Config, Root};
-use log4rs::encode::pattern::PatternEncoder;
+use log4rs::config::Deserializers;
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Write;
+use std::path::Path;
 
 macro_rules! vpath {
     () => {
@@ -36,19 +37,14 @@ use db::WeiYuanHui;
 pub fn prepare_log() -> Result<()> {
     std::fs::create_dir_all(vpath!())?;
 
-    // TODO use log_cf
-
-    let logfile = FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new(
-            "{d(%Y-%m-%d %H:%M:%S)} # {M}/{l} - {P}:{I} # {m}{n}",
-        )))
-        .build(".cache/hobob_cache.log")?;
-
-    let config = Config::builder()
-        .appender(Appender::builder().build("logfile", Box::new(logfile)))
-        .build(Root::builder().appender("logfile").build(LevelFilter::Info))?;
-
-    log4rs::init_config(config)?;
+    let log_cf = Path::new(vpath!(@log_cf));
+    if !log_cf.exists() {
+        let f = File::create(log_cf)?;
+        let mut w = BufWriter::new(f);
+        let cf = include_str!("../assets/log4rs.yml");
+        w.write_all(cf.as_bytes())?;
+    }
+    log4rs::init_file(log_cf, Deserializers::default())?;
 
     log::info!(
         "{} version {}; logger prepared",
@@ -62,8 +58,7 @@ pub fn prepare_log() -> Result<()> {
 /// # Errors
 /// Throw runtime errors.
 pub async fn main_loop() -> Result<()> {
-    // FIXME: use load
-    let mut center = WeiYuanHui::default();
+    let mut center = WeiYuanHui::load(vpath!(@bench));
     {
         let chair = center.new_chair();
         let app = www::build_app(&mut center);
@@ -77,7 +72,15 @@ pub async fn main_loop() -> Result<()> {
             log::info!("www app stopped");
         });
     }
-    // TODO emit engine thread
+
+    {
+        let chair = center.new_chair();
+        tokio::spawn(async move {
+            log::info!("engine starting");
+            engine::main_loop(chair).await;
+            log::info!("engine stopped");
+        });
+    }
 
     tokio::signal::ctrl_c().await?;
     log::error!("Caught ^C, quiting");

@@ -104,11 +104,14 @@ impl From<FullBench> for WeiYuanHui {
 impl WeiYuanHui {
     pub fn load<P: AsRef<Path>>(path: P) -> Self {
         log::info!("loading full bench from {}", path.as_ref().display());
-        let loaded = Self::load_check(path);
+        let loaded = Self::load_check(&path);
         if let Err(e) = loaded.as_ref() {
             log::error!("load full bench from file failed: {}", e);
         }
-        loaded.ok().unwrap_or_default()
+        loaded.ok().unwrap_or_else(|| Self {
+            savepath: Some(path.as_ref().into()),
+            ..Default::default()
+        })
     }
 
     fn load_check<P: AsRef<Path>>(path: P) -> Result<Self> {
