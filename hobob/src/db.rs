@@ -1159,6 +1159,7 @@ mod tests {
     #[test]
     fn test_bench_update_index() {
         let mut bench = FullBench::default();
+        assert!(bench.follow(&json!({"uid":12345})).is_ok());
         bench.update_index("live", 9, 8, "12345");
         assert!(bench.up_index.get("live").is_some());
         assert_eq!(
