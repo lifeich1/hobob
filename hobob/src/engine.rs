@@ -222,8 +222,45 @@ mod tests {
         );
     }
 
-    // TODO test next_deadline
-    // TODO test take_cmds
+    #[test]
+    fn test_next_deadline() {
+        init();
+        let mut center = WeiYuanHui::default();
+        let mut runner = center.new_chair();
+        assert!(Instant::now() < next_deadline(&mut runner));
+    }
+
+    #[test]
+    fn test_take_cmds() {
+        init();
+        let mut bench = FullBench::default();
+        bench.commands.push_back(json!({
+            "cmd": "cmd:for_test",
+            "args": {"c":1},
+        }));
+        bench.commands.push_back(json!({
+            "cmd": "cmd:for_test",
+            "args": {"c":2},
+        }));
+        let mut center = WeiYuanHui::from(bench.clone());
+        let mut runner = center.new_chair();
+        let out = take_cmds(&bench, &mut runner);
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out[0],
+            json!({
+                "cmd": "cmd:for_test",
+                "args": {"c":1},
+            })
+        );
+        assert_eq!(
+            out[1],
+            json!({
+                "cmd": "cmd:for_test",
+                "args": {"c":2},
+            })
+        );
+    }
     // TODO test pick_basic
     // TODO test pick_live
     // TODO test pick_video

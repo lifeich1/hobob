@@ -10,11 +10,28 @@ use tera::{Context, Tera};
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 use warp::{filters::BoxedFilter, path, reply, sse::Event, Filter};
 
-// TODO: use rocket_include_tera
+// TODO: manual loads to pack on release
 lazy_static::lazy_static! {
-    pub static ref TERA: Tera = {
+    pub static ref TERA: Tera = if cfg!(debug_assertions) {
         match Tera::new("templates/**/*.html") {
             Ok(t) => t,
+            Err(e) => {
+                log::error!("Parsing error(s): {}", e);
+                ::std::process::exit(1);
+            }
+        }
+    } else {
+        let mut tera = Tera::default();
+        let status = tera.add_raw_templates(
+            vec![
+            ("failure.html", include_str!("../templates/failure.html")),
+            ("filter_options.html", include_str!("../templates/filter_options.html")),
+            ("index.html", include_str!("../templates/index.html")),
+            ("user_cards.html", include_str!("../templates/user_cards.html")),
+            ]
+        );
+        match status {
+            Ok(()) => tera,
             Err(e) => {
                 log::error!("Parsing error(s): {}", e);
                 ::std::process::exit(1);
