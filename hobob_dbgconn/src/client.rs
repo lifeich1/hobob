@@ -23,10 +23,16 @@ pub async fn main(flags: Flags) -> Result<()> {
                 println!("alive hobob, pid = {pid}");
             }
         }
-        Some(Command::Restart { args }) => {
+        Some(Command::Restart {
+            force,
+            binary,
+            args,
+        }) => {
             println!(
-                "restart ok, pid = {}",
-                client.restart(context::current(), args).await?
+                "restart finished, pid = {}",
+                client
+                    .restart(context::current(), force, binary, args)
+                    .await?
             );
         }
         None => anyhow::bail!("client without valid command !!"),

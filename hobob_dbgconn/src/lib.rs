@@ -28,6 +28,12 @@ enum Command {
     Alive,
     /// restart hobob, return pid
     Restart {
+        /// force kill option
+        #[arg(short, long)]
+        force: bool,
+        /// binary path
+        #[arg(short, long, default_value = "hobob")]
+        binary: String,
         /// passthrough hobob options
         args: Vec<String>,
     },
@@ -38,7 +44,7 @@ pub trait Dbgconn {
     /// check hobob is alive, return alive pid or -1
     async fn alive() -> i32;
     /// restart hobob, return pid
-    async fn restart(args: Vec<String>) -> i32;
+    async fn restart(force_kill: bool, binary: String, args: Vec<String>) -> i32;
 }
 
 mod client;
