@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "hobob",
+  "hobob_dbgconn",
   "xtask",
 ]
 resolver = "2"
