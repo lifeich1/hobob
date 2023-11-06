@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clap::Parser;
 use log4rs::config::Deserializers;
 use std::fs::File;
 use std::io::BufWriter;
@@ -55,16 +56,27 @@ pub fn prepare_log() -> Result<()> {
     Ok(())
 }
 
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Flags {
+    /// Http server port
+    #[arg(long, default_value_t = 3731)]
+    port: u16,
+}
+
 /// # Errors
 /// Throw runtime errors.
 pub async fn main_loop() -> Result<()> {
+    let flags = Flags::parse();
     let mut center = WeiYuanHui::load(vpath!(@bench));
     {
         let chair = center.new_chair();
         let app = www::build_app(&mut center);
+        let port = flags.port;
+        log::error!("listening on port {port}");
         tokio::spawn(async move {
             let (_, run) =
-                warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
+                warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], port), async move {
                     chair.clone().until_closing().await;
                 });
             log::info!("www app running");

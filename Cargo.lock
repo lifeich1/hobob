@@ -958,6 +958,7 @@ dependencies = [
  "boon",
  "bytes",
  "chrono",
+ "clap 4.4.7",
  "env_logger",
  "futures",
  "hyper",
