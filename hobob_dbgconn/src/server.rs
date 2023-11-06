@@ -34,7 +34,7 @@ fn kill_hobob(force: bool) -> Result<()> {
     if pids.is_empty() {
         Ok(())
     } else {
-        let mut args = vec!["-s", if force { "SIGKILL" } else { "SIGINT" }];
+        let mut args = vec!["--signal", if force { "SIGKILL" } else { "SIGINT" }];
         args.extend(pids);
         cmd("kill", args).run()?;
         bail!("shutting down")
@@ -64,8 +64,7 @@ impl Dbgconn for RpcServer {
             log::error!("kill: {e:#}");
             tokio::time::sleep(Duration::from_millis(800)).await;
         }
-        // TODO child process
-        let status = cmd(binary, args).run();
+        let status = cmd(binary, args).start();
         if let Err(e) = status {
             log::error!("run: {e:#}");
             return -1;
