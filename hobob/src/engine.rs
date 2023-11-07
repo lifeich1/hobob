@@ -23,6 +23,7 @@ fn take_cmds(bench: &FullBench, runner: &mut WeiYuan) -> Commands {
 }
 
 fn pick_basic(a: &Value, b: &Value) -> Value {
+    // TODO pick pendant
     let mut r = b.clone();
     let mut ap = json!({
         "id": a["mid"],
@@ -258,6 +259,43 @@ mod tests {
             json!({
                 "cmd": "cmd:for_test",
                 "args": {"c":2},
+            })
+        );
+    }
+
+    #[test]
+    fn test_pick_basic() {
+        let a = json!({
+            "mid": 210_628,
+            "name": "MKiiiiii",
+            "sex": "保密",
+            "face": "https://i1.hdslb.com/bfs/face/83343d35792eeb0924ae27bf882a72fe38b2e335.jpg",
+            "pendant": {
+                "image": "https://i1.hdslb.com/bfs/garb/item/63db246f6a657190d79415af47fa0478013f9c05.png",
+                "image_enhance": "https://i1.hdslb.com/bfs/garb/item/76b0cb6c1a7cdaaa64a9626a31796025c8aae89b.webp",
+            },
+            "live_room": {
+                "roomStatus": 1,
+                "liveStatus": 0,
+                "url": "https://live.bilibili.com/5229?broadcast_type=0\u{0026}is_room_feed=1",
+                "title": "【鑒賞會】就打一关",
+                "watched_show": {
+                    "num": 14,
+                    "text_large": "14人看过",
+                }
+            },
+        });
+        let b = json!({});
+        let mut b = pick_basic(&a, &b);
+        assert!(b["ctime"].is_i64());
+        b["ctime"] = Value::Null;
+        assert_eq!(
+            b,
+            json!({
+                "id": 210_628,
+                "name": "MKiiiiii",
+                "face_url":  "https://i1.hdslb.com/bfs/face/83343d35792eeb0924ae27bf882a72fe38b2e335.jpg",
+                "ctime": null,
             })
         );
     }
