@@ -263,9 +263,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_pick_basic() {
-        let a = json!({
+    fn mkiiiiii_info() -> Value {
+        json!({
             "mid": 210_628,
             "name": "MKiiiiii",
             "sex": "保密",
@@ -284,7 +283,12 @@ mod tests {
                     "text_large": "14人看过",
                 }
             },
-        });
+        })
+    }
+
+    #[test]
+    fn test_pick_basic() {
+        let a = mkiiiiii_info();
         let b = json!({});
         let mut b = pick_basic(&a, &b);
         assert!(b["ctime"].is_i64());
@@ -299,8 +303,21 @@ mod tests {
             })
         );
     }
-    // TODO test pick_basic
-    // TODO test pick_live
+
+    #[test]
+    fn test_pick_live() {
+        let a = mkiiiiii_info();
+        assert_eq!(
+            pick_live(&a),
+            json!({
+                "title": "【鑒賞會】就打一关",
+                "url": "https://live.bilibili.com/5229?broadcast_type=0\u{0026}is_room_feed=1",
+                "entropy": 14,
+                "entropy_txt": "14人看过",
+                "isopen": false,
+            })
+        );
+    }
     // TODO test pick_video
     // TODO test do_fetch
     // TODO test exec_cmd
