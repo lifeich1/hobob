@@ -53,7 +53,7 @@ fn pick_live(a: &Value) -> Value {
 }
 
 fn pick_video(a: &Value) -> Value {
-    let v = if let Some(v) = a["vlist"].as_array().filter(|v| !v.is_empty()) {
+    let v = if let Some(v) = a["list"]["vlist"].as_array().filter(|v| !v.is_empty()) {
         &v[0]
     } else {
         return Value::Null;
@@ -318,7 +318,45 @@ mod tests {
             })
         );
     }
-    // TODO test pick_video
+
+    fn mkiiiiii_videos() -> Value {
+        json!({
+            "list": {
+                "tlist": {},
+                "vlist": [
+                {
+                    "play": 13010,
+                    "pic": "http://i2.hdslb.com/bfs/archive/8075cc1b875a27de57b499cf231e3d131b8192ba.jpg",
+                    "title": "四分鐘畫個機 室友版",
+                    "author": "MKiiiiii",
+                    "created": 1_695_871_800,
+                    "bvid": "BV15N4y1f7cN",
+                },
+                {
+                    "description": "慶祝戰艦少女R的賀圖，角色為風大師負責的不惧，一個加速繪畫過程，沒什麼營養，他也懶得加bgm，乾巴巴的，我也懶得幫他加。就這。",
+                    "title": "一分鐘畫個煙花發射圖 室友版",
+                },
+                ]
+            },
+            "episodic_button": {
+                "text": "播放全部",
+                "uri": "//www.bilibili.com/medialist/play/210628?from=space"
+            },
+        })
+    }
+
+    #[test]
+    fn test_pick_video() {
+        let a = mkiiiiii_videos();
+        assert_eq!(
+            pick_video(&a),
+            json!({
+                "title": "四分鐘畫個機 室友版",
+                "url": "https://www.bilibili.com/medialist/play/210628?from=space",
+                "ts": 1_695_871_800,
+            })
+        );
+    }
     // TODO test do_fetch
     // TODO test exec_cmd
     // TODO test exec_timers
