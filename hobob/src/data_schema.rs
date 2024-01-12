@@ -260,7 +260,7 @@ fn user_cards_schema() -> Value {
                     "ts": { "type": "integer" },
                     "url": {
                         "type": "string",
-                        "pattern": r#"^https://www.bilibili.com/(?:medialist|video)/"#
+                        "pattern": r"^https://www.bilibili.com/(?:medialist|video)/"
                     },
                 }
             },

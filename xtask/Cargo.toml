@@ -7,4 +7,5 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
+duct = "0.13.7"
 lintd-taskops = "0.1"
