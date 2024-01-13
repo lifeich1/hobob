@@ -176,10 +176,10 @@ impl TryFrom<serde_json::Value> for VideoVector {
     type Error = anyhow::Error;
     fn try_from(v: serde_json::Value) -> Result<Self, Self::Error> {
         let mut r = Vec::new();
-        if let Some(a) = v["list"]["vlist"].as_array() {
+        if let Some(a) = v["media_list"].as_array() {
             for (i, v) in a.iter().enumerate() {
                 r.push(VideoInfo {
-                    vid: v["bvid"]
+                    vid: v["bv_id"]
                         .as_str()
                         .map(ToString::to_string)
                         .ok_or_else(|| anyhow!("list.vlist.{}.bvid not found", i))?,
@@ -187,11 +187,11 @@ impl TryFrom<serde_json::Value> for VideoVector {
                         .as_str()
                         .map(ToString::to_string)
                         .ok_or_else(|| anyhow!("list.vlist.{}.title not found", i))?,
-                    pic_url: v["pic"]
+                    pic_url: v["cover"]
                         .as_str()
                         .map(ToString::to_string)
                         .ok_or_else(|| anyhow!("list.vlist.{}.pic not found", i))?,
-                    utime: v["created"]
+                    utime: v["pubtime"]
                         .as_i64()
                         .map(|x| Utc.timestamp_opt(x, 0))
                         .ok_or_else(|| anyhow!("list.vlist.{}.created not found", i))?

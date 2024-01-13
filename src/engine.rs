@@ -372,7 +372,7 @@ impl RefreshRunner {
         Ok(())
     }
 
-    async fn refresh_live_list(&self, live_pn: i32) -> Result<()> {
+    async fn refresh_live_list(&mut self, live_pn: i32) -> Result<()> {
         if live_pn <= 0 {
             return Ok(());
         }
