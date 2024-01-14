@@ -26,9 +26,11 @@ macro_rules! schema_uri {
     };
 }
 
+pub mod bench;
 mod data_schema;
 pub mod db;
 pub mod engine;
+pub mod vm;
 pub mod www;
 
 use db::WeiYuanHui;
