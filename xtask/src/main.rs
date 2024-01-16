@@ -9,8 +9,8 @@ impl Addon for Maker {
         cmd!("cross", "-v", "build", "--bin", "hobob", "-r").go()?;
         cmd!(
             "scp",
-            "./target/armv7-unknown-linux-gnueabihf/release/hobob",
-            "lclpi:/lintd/"
+            "./target/aarch64-unknown-linux-gnu/release/hobob",
+            "opi:/lintd/"
         )
         .go()?;
         Ok(())

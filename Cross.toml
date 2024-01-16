@@ -1,5 +1,8 @@
 [build]
-default-target = "armv7-unknown-linux-gnueabihf"
+default-target = "aarch64-unknown-linux-gnu"
 
 [target.armv7-unknown-linux-gnueabihf]
-dockerfile = "./armv7-unknown-linux-gnueabihf/Dockerfile"
+dockerfile = "./etc/armv7-unknown-linux-gnueabihf/Dockerfile"
+
+[target.aarch64-unknown-linux-gnu]
+dockerfile = "./etc/aarch64-unknown-linux-gnu/Dockerfile"
