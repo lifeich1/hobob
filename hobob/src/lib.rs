@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use log4rs::config::Deserializers;
 use std::fs::File;
@@ -8,14 +8,35 @@ use std::path::Path;
 
 macro_rules! vpath {
     () => {
-        concat!(env!("HOME"), "/.cache/hobob")
+        vpath(&VP::Rt)
     };
     (@log_cf) => {
-        concat!(vpath!(), "/log4rs.yml")
+        vpath(&VP::LogCf)
     };
     (@bench) => {
-        concat!(vpath!(), "/bench.json")
+        vpath(&VP::Bench)
     };
+}
+
+enum VP {
+    Rt,
+    LogCf,
+    Bench,
+}
+
+#[allow(deprecated)]
+fn vpath(vp: &VP) -> String {
+    let h = std::env::home_dir();
+    let hp = h.expect("not found home dir");
+    let hs = hp.to_str().expect("home dir path not utf8");
+    format!(
+        "{hs}{}",
+        match vp {
+            VP::Rt => "",
+            VP::LogCf => "/log4rs.yml",
+            VP::Bench => "/bench.json",
+        }
+    )
 }
 macro_rules! schema_uri {
     ($id:literal) => {
@@ -38,16 +59,19 @@ use db::WeiYuanHui;
 /// # Errors
 /// Throw log setup errors.
 pub fn prepare_log() -> Result<()> {
-    std::fs::create_dir_all(vpath!())?;
+    std::fs::create_dir_all(vpath!())
+        .with_context(|| format!("faild create_dir_all {}", vpath!()))?;
 
-    let log_cf = Path::new(vpath!(@log_cf));
+    let lcf = vpath!(@log_cf);
+    let log_cf = Path::new(&lcf);
     if !log_cf.exists() {
-        let f = File::create(log_cf)?;
+        let f = File::create(log_cf).with_context(|| format!("failed create file {log_cf:?}"))?;
         let mut w = BufWriter::new(f);
         let cf = include_str!("../assets/log4rs.yml");
-        w.write_all(cf.as_bytes())?;
+        w.write_all(cf.as_bytes())
+            .with_context(|| format!("failed write file {log_cf:?}"))?;
     }
-    log4rs::init_file(log_cf, Deserializers::default())?;
+    log4rs::init_file(log_cf, Deserializers::default()).context("failed init log config file")?;
 
     log::info!(
         "{} version {}; logger prepared",
