@@ -65,13 +65,12 @@ fn pick_video(a: &Value) -> Value {
     })
 }
 
-async fn do_fetch(cli: &Client, runner: &mut WeiYuan, args: &Value) -> Result<()> {
+async fn do_fetch(cli: &mut Client, runner: &mut WeiYuan, args: &Value) -> Result<()> {
     let uid = args["uid"]
         .as_i64()
         .ok_or_else(|| anyhow!("bad args: {:?}", args))?;
-    let wbi = cli.user(uid);
-    let info = wbi.info().await;
-    let video = wbi.latest_videos().await;
+    let info = cli.user(uid).info().await;
+    let video = cli.user(uid).latest_videos().await;
     runner.apply(|b| {
         let info = b.inspect(&info).as_ref().ok();
         let video = b.inspect(&video).as_ref().ok();
@@ -101,7 +100,7 @@ async fn do_fetch(cli: &Client, runner: &mut WeiYuan, args: &Value) -> Result<()
     Ok(())
 }
 
-async fn exec_cmd(cmd: Value, runner: &mut WeiYuan, cli: &Client) {
+async fn exec_cmd(cmd: Value, runner: &mut WeiYuan, cli: &mut Client) {
     log::debug!("exec_cmd: {:?}", &cmd);
     match cmd["cmd"].as_str() {
         Some("fetch") => {
@@ -152,7 +151,7 @@ fn next_deadline(runner: &mut WeiYuan) -> Instant {
 }
 
 pub async fn main_loop(mut runner: WeiYuan) {
-    let client = &Client::new();
+    let mut client = Client::new();
     while let Ok(bench) = runner.recv().cloned() {
         log::trace!("engine_loop wake");
         if bench.commands.is_empty() {
@@ -161,7 +160,7 @@ pub async fn main_loop(mut runner: WeiYuan) {
             let cmds = take_cmds(&bench, &mut runner);
 
             for cmd in cmds {
-                exec_cmd(cmd, &mut runner, client).await;
+                exec_cmd(cmd, &mut runner, &mut client).await;
             }
         }
 
