@@ -1,6 +1,6 @@
 use anyhow::Result;
 use im::{HashMap, OrdSet};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Clone)]
 pub enum DNode {
@@ -17,7 +17,10 @@ impl Default for Bench {
     fn default() -> Self {
         let mut fs = HashMap::<u64, DNode>::default();
         fs.insert(0, DNode::Dir(HashMap::default()));
-        Self { fs }
+        let mut obj = Self { fs };
+        obj.set(&json!(["log", 0]), json!("genesis moment"))
+            .expect("Bench init log file crash");
+        obj
     }
 }
 
@@ -26,13 +29,13 @@ impl Bench {
     pub fn get(&self, path: &Value) -> Option<&DNode> {
         Self::as_slice_path(path)
             .ok()
-            .and_then(|p| self.slice_path_get(p))
+            .and_then(|p| self.slice_path_get(&p))
     }
 
     /// # Errors
     /// TODO
     pub fn set(&mut self, path: &Value, content: Value) -> Result<()> {
-        Self::as_slice_path(path).and_then(|p| self.slice_path_set(p, content))
+        Self::as_slice_path(path).and_then(|p| self.slice_path_set(&p, content))
     }
 
     #[must_use]
@@ -40,15 +43,52 @@ impl Bench {
         todo!()
     }
 
-    fn slice_path_get(&self, path: &[Value]) -> Option<&DNode> {
+    fn slice_path_get(&self, path: &[&Value]) -> Option<&DNode> {
+        if path.is_empty() {
+            return None;
+        }
+        let mut id: u64 = 0;
+        for p in path.iter().take(path.len() - 1) {
+            let Some(node) = self.fs.get(&id) else {
+                return None;
+            };
+            match (node, p) {
+                (DNode::Dir(d), Value::String(s)) => match d.get(s) {
+                    Some(v) => id = *v,
+                    None => return None,
+                },
+                (DNode::Index(ls), Value::Number(n)) => {
+                    id = match n
+                        .as_u64()
+                        .or_else(|| {
+                            n.as_i64()
+                                .and_then(|x| usize::try_from(-x).ok())
+                                .map(|x| ls.len().wrapping_sub(x))
+                                .map(u64::try_from)
+                                .and_then(Result::ok)
+                        })
+                        .and_then(|x| ls.get_next(&(x, 0)))
+                        .map(|t| t.1)
+                    {
+                        Some(v) => v,
+                        None => return None,
+                    }
+                }
+                _ => return None,
+            }
+        }
         todo!()
     }
 
-    fn slice_path_set(&mut self, path: &[Value], content: Value) -> Result<()> {
+    fn slice_path_set(&mut self, path: &[&Value], content: Value) -> Result<()> {
         todo!()
     }
 
-    fn as_slice_path(path: &Value) -> Result<&[Value]> {
-        todo!()
+    fn as_slice_path(path: &Value) -> Result<Vec<&Value>> {
+        match path {
+            &Value::String(_) => Ok(vec![path]),
+            Value::Array(a) => Ok(a.iter().by_ref().collect()),
+            _ => anyhow::bail!("path type neither string nor array, parse error: {path:?}"),
+        }
     }
 }
