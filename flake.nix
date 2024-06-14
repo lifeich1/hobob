@@ -31,6 +31,9 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             buildInputs = deps;
+            nativeBuildInputs = with pkgs; [
+              pkg-config
+            ];
 
             # For other makeRustPlatform features see:
             # https://github.com/NixOS/nixpkgs/blob/master/doc/languages-frameworks/rust.section.md#cargo-features-cargo-features
