@@ -99,7 +99,9 @@ checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
 name = "bilibili-api-rs"
-version = "0.3.7"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "607b1d047d2226a57f9cb73595c4742c73a55186b79fb7996b1e4748e3cb2d65"
 dependencies = [
  "anyhow",
  "chrono",
