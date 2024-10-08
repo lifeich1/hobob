@@ -6,45 +6,46 @@
   };
 
   outputs =
-    { self
-    , nixpkgs
-    , utils
-    , ...
+    {
+      self,
+      nixpkgs,
+      utils,
+      ...
     }:
-    utils.lib.eachDefaultSystem
-      (
-        system:
-        let
-          pkgs = import nixpkgs { inherit system; };
-          toolchain = pkgs.rustPlatform;
-          deps = with pkgs; [
-            openssl
-            sqlite
+    utils.lib.eachDefaultSystem (
+      system:
+      let
+        pkgs = import nixpkgs { inherit system; };
+        toolchain = pkgs.rustPlatform;
+        deps = with pkgs; [
+          openssl
+          sqlite
+        ];
+      in
+      rec {
+        # Executed by `nix build`
+        packages.default = toolchain.buildRustPackage {
+          pname = "hobob";
+          version = "0.1.0";
+          src = ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+          buildInputs = deps;
+          nativeBuildInputs = with pkgs; [
+            pkg-config
           ];
-        in
-        rec
-        {
-          # Executed by `nix build`
-          packages.default = toolchain.buildRustPackage {
-            pname = "hobob";
-            version = "0.1.0";
-            src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
-            buildInputs = deps;
-            nativeBuildInputs = with pkgs; [
-              pkg-config
-            ];
 
-            # For other makeRustPlatform features see:
-            # https://github.com/NixOS/nixpkgs/blob/master/doc/languages-frameworks/rust.section.md#cargo-features-cargo-features
-          };
+          # For other makeRustPlatform features see:
+          # https://github.com/NixOS/nixpkgs/blob/master/doc/languages-frameworks/rust.section.md#cargo-features-cargo-features
+        };
 
-          # Executed by `nix run`
-          apps.default = utils.lib.mkApp { drv = packages.default; };
+        # Executed by `nix run`
+        apps.default = utils.lib.mkApp { drv = packages.default; };
 
-          # Used by `nix develop`
-          devShells.default = pkgs.mkShell {
-            buildInputs = with pkgs; [
+        # Used by `nix develop`
+        devShells.default = pkgs.mkShell {
+          buildInputs =
+            with pkgs;
+            [
               (with toolchain; [
                 cargo
                 rustc
@@ -53,15 +54,22 @@
               clippy
               rustfmt
               pkg-config
-            ] ++ deps;
+              cargo-watch
+              cargo-edit
+            ]
+            ++ deps;
 
-            # Specify the rust-src path (many editors rely on this)
-            RUST_SRC_PATH = "${toolchain.rustLibSrc}";
+          # Specify the rust-src path (many editors rely on this)
+          RUST_SRC_PATH = "${toolchain.rustLibSrc}";
 
-            shellHook = ''
-              exec $SHELL
-            '';
-          };
-        }
-      );
+          shellHook = ''
+            if [ -f Session.vim ]; then
+              exec nvim -S Session.vim
+            fi
+            cargo --version
+            exec $SHELL
+          '';
+        };
+      }
+    );
 }
