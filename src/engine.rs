@@ -344,7 +344,67 @@ impl RefreshRunner {
         let last_info = user.info();
 
         let api = self.api.user(user.id());
-        let info: db::UserInfo = api.info().await?.try_into()?;
+        let wbi_info = match api.info().await {
+            Ok(v) => v,
+            Err(e) => {
+                log::info!("fallback to compose apis at api.info error: {e}");
+                let card = api.card().await?;
+                let mut url = "https://live.bilibili.com/".to_owned();
+                let mut title = "searching".to_owned();
+                let mut status = 0;
+                let mut num = 0;
+                if let Ok(db::UserInfo {
+                    live_room_url: Some(ref old_url),
+                    ..
+                }) = last_info
+                {
+                    url.clone_from(old_url);
+                    if let Some(rid) = old_url.split(&['/', '?'][..]).nth(3).map(str::to_owned) {
+                        match rid.parse::<i64>() {
+                            Ok(id) => {
+                                log::debug!("get room id {}", id);
+                                api.room_id(id);
+                            }
+                            Err(e) => {
+                                log::info!("parse {rid} of live room url {old_url} error: {e}");
+                            }
+                        }
+                    }
+                }
+                match self.api.user(user.id()).live_info().await {
+                    Err(e) => log::info!("api.live_info err: {e}"),
+                    Ok(live) => {
+                        if let Some(rid) = live["room_info"]["room_id"].as_str() {
+                            url = format!("https://live.bilibili.com/{rid}");
+                        }
+                        if let Some(v) = live["room_info"]["title"].as_str() {
+                            v.clone_into(&mut title);
+                        }
+                        if let Some(v) = live["room_info"]["live_status"].as_i64() {
+                            status = v;
+                        }
+                        if let Some(v) = live["watched_show"]["num"].as_i64() {
+                            num = v;
+                        }
+                    }
+                }
+                serde_json::json!({
+                    "mid": card["card"]["mid"].as_str().and_then(|s| s.parse::<i64>().ok()),
+                    "name": card["card"]["name"],
+                    "face": card["card"]["face"],
+                    "live_room": {
+                        "url": url,
+                        "title": title,
+                        "liveStatus": status,
+                        "watched_show": {
+                            "num": num,
+                        },
+                    },
+                })
+            }
+        };
+        log::debug!("wbi_info: {}", &wbi_info);
+        let info: db::UserInfo = wbi_info.try_into()?;
         user.set_info(&info);
         let videos: db::VideoVector = api.latest_videos().await?.try_into()?;
         user.update_videos(videos.iter());
