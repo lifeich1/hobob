@@ -381,7 +381,7 @@ impl RefreshRunner {
                             v.clone_into(&mut title);
                         }
                         if let Some(v) = live["room_info"]["live_status"].as_i64() {
-                            status = v;
+                            status = v & 1;
                         }
                         if let Some(v) = live["watched_show"]["num"].as_i64() {
                             num = v;
