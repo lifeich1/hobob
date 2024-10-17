@@ -63,6 +63,9 @@
           RUST_SRC_PATH = "${toolchain.rustLibSrc}";
 
           shellHook = ''
+            if [ -f /run/current-system/sw/bin/zsh ]; then
+              export SHELL=/run/current-system/sw/bin/zsh
+            fi
             if [ -f Session.vim ]; then
               exec nvim -S Session.vim
             fi
