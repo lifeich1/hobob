@@ -1,7 +1,7 @@
-/*.profraw
 /target
 /.cache
-*/assets/fonts/*
+/assets/fonts/*
+/result
 
 # Created by https://www.toptal.com/developers/gitignore/api/vim,macos
 # Edit at https://www.toptal.com/developers/gitignore?templates=vim,macos

@@ -34,11 +34,13 @@ impl Bench {
     }
 
     /// # Errors
-    /// TODO
+    /// Path invalid or replace node failed.
     pub fn set(&mut self, path: &Value, content: DNode) -> Result<()> {
         Self::as_slice_path(path).and_then(|p| self.slice_path_set(&p, content))
     }
 
+    /// # Errors
+    /// Path invalid or replace node failed.
     pub fn set_value(&mut self, path: &Value, content: Value) -> Result<()> {
         self.set(path, DNode::Plain(content))
     }

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use lalrpop_util::lalrpop_mod;
 use log4rs::config::Deserializers;
 use std::fs::File;
 use std::io::BufWriter;
@@ -55,6 +56,13 @@ pub mod vm;
 pub mod www;
 
 use db::WeiYuanHui;
+
+mod chunk;
+lalrpop_mod!(
+    #[allow(clippy::ptr_arg)]
+    #[rustfmt::skip]
+    chunkir
+);
 
 /// # Errors
 /// Throw log setup errors.

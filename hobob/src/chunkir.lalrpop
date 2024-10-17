@@ -1,0 +1,21 @@
+use crate::chunk::*;
+use serde_json::Value;
+
+grammar;
+
+pub Chunk: Chunk = {
+    Expr => Chunk(vec![<>]),
+    <mut c:Chunk> <e:Expr> => {
+        c.0.push(e);
+        c
+    },
+};
+
+Expr: Expr =  {
+    ";" => Expr::Nop,
+    "return" <v:Value> ";" => Expr::Ret(v),
+}
+
+Value: Value = {
+    r"-?[0-9]+" => Value::Number(todo!())
+}
