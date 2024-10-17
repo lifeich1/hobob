@@ -27,4 +27,12 @@ pub enum CondExpr {
     NumGreater(Reg),
 }
 
-pub struct Reg(String);
+pub struct Reg(pub String);
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_parse() {
+        todo!()
+    }
+}
