@@ -1,5 +1,6 @@
 use crate::chunk::*;
 use serde_json::Value;
+use lalrpop_util::ParseError;
 
 grammar;
 
@@ -17,5 +18,7 @@ Expr: Expr =  {
 }
 
 Value: Value = {
-    r"-?[0-9]+" => Value::Number(todo!())
+    r"-?[0-9]+" =>? <>.parse::<i32>().map(Value::from).map_err(|_| ParseError::User {
+      error: "parse i32"
+    })
 }

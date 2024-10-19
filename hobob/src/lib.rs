@@ -57,7 +57,7 @@ pub mod www;
 
 use db::WeiYuanHui;
 
-mod chunk;
+pub mod chunk;
 lalrpop_mod!(
     #[allow(clippy::ptr_arg)]
     #[rustfmt::skip]

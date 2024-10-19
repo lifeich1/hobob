@@ -1,7 +1,10 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub struct Chunk(pub Vec<Expr>);
 
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub enum Expr {
     Nop,
     Ret(Value),
@@ -16,10 +19,11 @@ pub enum Expr {
     Print(Vec<Value>),
     PrintIndex(String, i64),
     Extract(Reg, Vec<Value>, Reg),
-    CondExpr(CondExpr),
+    //CondExpr(CondExpr),
     Reg(Reg, Value),
 }
 
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub enum CondExpr {
     Eq(Reg, Reg),
     IsNum(Reg),
@@ -27,12 +31,31 @@ pub enum CondExpr {
     NumGreater(Reg),
 }
 
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub struct Reg(pub String);
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use crate::chunkir;
+
+    macro_rules! ast_case {
+        ($token:literal) => {{
+            let ans = serde_json::from_str::<Chunk>(include_str!(concat!(
+                "./test_data/",
+                $token,
+                ".expect.json"
+            )))
+            .unwrap_or_else(|e| panic!("read expect.json of {} error: {}", $token, e));
+            let out = chunkir::ChunkParser::new()
+                .parse(include_str!(concat!("./test_data/", $token, ".in.txt")))
+                .unwrap_or_else(|e| panic!("parse error on {}.in.txt: {}", $token, e));
+            assert_eq!(out, ans);
+        }};
+    }
+
     #[test]
     fn test_parse() {
-        todo!()
+        ast_case!("chunk_001");
     }
 }
