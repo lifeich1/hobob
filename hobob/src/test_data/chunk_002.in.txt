@@ -1,0 +1,3 @@
+# set&get option
+$bee.fph = 1000
+print $planned_trigger

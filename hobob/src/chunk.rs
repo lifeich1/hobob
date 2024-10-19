@@ -19,7 +19,6 @@ pub enum Expr {
     Print(Vec<Value>),
     PrintIndex(String, i64),
     Extract(Reg, Vec<Value>, Reg),
-    //CondExpr(CondExpr),
     Reg(Reg, Value),
 }
 
@@ -32,7 +31,10 @@ pub enum CondExpr {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
-pub struct Reg(pub String);
+pub enum Reg {
+    Named(String),
+    Buff(u32),
+}
 
 #[cfg(test)]
 mod test {

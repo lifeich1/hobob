@@ -13,7 +13,9 @@ fn output(c: Chunk, ind: &mut i32) {
 }
 
 fn main() {
-    let c = Chunk(vec![Expr::Ret(json!(0))]);
     let mut i = 0;
+    let c = Chunk(vec![Expr::Ret(json!(0))]);
+    output(c, &mut i);
+    let c = Chunk(vec![Expr::Nop]);
     output(c, &mut i);
 }
