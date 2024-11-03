@@ -1,0 +1,19 @@
+# arg uid
+# plain fetch vid/card
+unless num %uid {
+  print "uid not num"
+  return;
+}
+
+if @card_cday[%uid] != %CURDAY {
+  @card_cday[%uid] = req.card %uid
+  notify.card %uid
+}
+
+%vidls = req.latest_videos %uid
+%vid = %vidls.media_list.0
+if @latest_video[%uid].bv_id != %vid.bv_id {
+  @latest_video[%uid] = %vid
+  notify.video %uid
+}
+

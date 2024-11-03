@@ -1,0 +1,9 @@
+%uid = 1472906636
+@roomid[%uid] = 6655
+%info = req.live_info %uid
+%old = @live_info[%uid]
+if @live_info[%uid].room_info.live_status != %old.room_info.live_status {
+  @live_info[%uid] = %info
+  print %old.room_info.title
+  notify.live %uid
+}
