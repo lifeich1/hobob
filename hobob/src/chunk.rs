@@ -59,5 +59,6 @@ mod test {
     #[test]
     fn test_parse() {
         ast_case!("chunk_001");
+        ast_case!("chunk_002");
     }
 }
