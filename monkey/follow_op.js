@@ -42,7 +42,21 @@
         });
       },
     });
+
+    function regPlaylist() {
+      // https://www.bilibili.com/list/30748886?sort_field=pubdate&spm_id_from=333.1387.0.0&oid=113611783543621&bvid=BV15AqjYiEij
+      console.log('regPlaylist', $('div.header-login-entry'));
+      $('div.header-login-entry')[0].onclick = (() => {
+        const bvid = window.location.pathname.split('/')[2];
+        console.log('jump list action for', id, bvid);
+        window.location.href = "https://www.bilibili.com/list/" + id + "?sort_field=pubdate&spm_id_from=333.1387.0.0&oid=113611783543621&bvid=" + bvid;
+      });
+    }
+    setTimeout(regPlaylist, 2000);
+    console.log("monkey follow_op v0.2");
   } else {
     console.error("Not found .up-name html piece");
   }
+
+
 })();
