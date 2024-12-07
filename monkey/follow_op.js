@@ -6,9 +6,20 @@
 (function() {
   'use strict';
 
-  if ($('.up-name') != null) {
-    console.log('q:',$('.up-name')[0]);
-    const id = $('.up-name')[0].attributes.href.value.substr(21);
+  function searchid() {
+    if ($('.up-name') != null && $('.up-name').length > 0) {
+      console.log('q:',$('.up-name')[0]);
+      return $('.up-name')[0].attributes.href.value.substr(21);
+    }
+    if ($('.staff-name') != null && $('.staff-name').length > 0) {
+      console.log('q:',$('.staff-name')[0]);
+      return $('.staff-name')[0].attributes.href.value.substr(27);
+    }
+    return 0;
+  }
+  const id = searchid();
+
+  if (id != 0) {
     GM.xmlHttpRequest({
       url: "http://my-pi:3731/get/user/" + id,
       responseType: "json",
@@ -55,7 +66,7 @@
     setTimeout(regPlaylist, 2000);
     console.log("monkey follow_op v0.2");
   } else {
-    console.error("Not found .up-name html piece");
+    console.error("search uid failed!");
   }
 
 
