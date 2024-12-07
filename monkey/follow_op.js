@@ -13,7 +13,7 @@
     }
     if ($('.staff-name') != null && $('.staff-name').length > 0) {
       console.log('q:',$('.staff-name')[0]);
-      return $('.staff-name')[0].attributes.href.value.substr(27);
+      return $('.staff-name')[0].attributes.href.value.substr(21);
     }
     return 0;
   }
