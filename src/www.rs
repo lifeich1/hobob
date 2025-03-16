@@ -369,9 +369,12 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
         .or(ev.and(ev_engine))
         .or(favicon);
     log::info!("www running");
-    let (_, run) = warp::serve(app).bind_with_graceful_shutdown(([0, 0, 0, 0], 3731), async move {
-        shutdown.await.ok();
-    });
+    let (_, run) = warp::serve(app).bind_with_graceful_shutdown(
+        ([0, 0, 0, 0, 0, 0, 0, 0], 3731),
+        async move {
+            shutdown.await.ok();
+        },
+    );
     run.await;
     log::info!("www stopped");
 }
