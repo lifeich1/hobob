@@ -237,12 +237,13 @@ impl RefreshRunner {
             (0..100).map(|_| rng.gen_range(1.0..2.0)).collect()
         };
         let mut factor_i: usize = 0;
-        let live_pagens: Vec<i32> = {
-            let mut rng = rand::thread_rng();
-            let mut v: Vec<i32> = (1..21).collect();
-            v.shuffle(&mut rng);
-            v.into_iter().flat_map(|x| [0, x]).collect()
-        };
+        //let live_pagens: Vec<i32> = {
+        //    let mut rng = rand::thread_rng();
+        //    let mut v: Vec<i32> = (1..21).collect();
+        //    v.shuffle(&mut rng);
+        //    v.into_iter().flat_map(|x| [0, x]).collect()
+        //};
+        let live_pagens: Vec<i32> = vec![0, 0, 0, 0]; // NOTE: live page api blocked
         log::info!("init pseudo random live_pagens: {:?}", live_pagens);
         let mut live_pagens_i: usize = 0;
 
