@@ -270,15 +270,8 @@ impl RefreshRunner {
                         },
                         Command::SetLiveUrl(uid, url) => {
                             let u = db::User::new(uid);
-                            match u.info() {
-                                Ok(_) => {
-                                    log::info!("set user {uid} live room url: {}", &url);
-                                    u.set_live_url(&url);
-                                }
-                                Err(e) => {
-                                    log::info!("skip set live url for user {uid}, cause not following: {e}");
-                                }
-                            }
+                            log::info!("set user {uid} live room url: {}", &url);
+                            u.set_live_url(&url);
                         },
                         Command::Activate => log::info!("Command Activate force token bucket high speed"),
                         Command::ForceSilence(flag) => {
