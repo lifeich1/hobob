@@ -8,8 +8,9 @@
   'use strict';
 
   function dosetliveurl() {
-    let url = $('a.living-section__link').href;
+    let url = $('a.living-section__link')[0].attributes.href.value;
     let id = parseInt(window.location.pathname.substr(1)) ;
+    console.log('get url ', url, ' id ', id);
 
     GM.xmlHttpRequest({
       method: 'POST',
