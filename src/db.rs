@@ -324,6 +324,20 @@ impl User {
         self.db_upd_ctime(db, info.id);
     }
 
+    pub fn set_live_url(&self, url: &str) {
+        conn_db!(db);
+        self.db_set_live_url(db, url);
+    }
+
+    fn db_set_live_url(&self, db: DbType, url: &str) {
+        db.execute(
+            "UPDATE userinfo SET live_room_url = ?2 WHERE id = ?1",
+            params![self.uid, url],
+        )
+        .map_err(|e| log::warn!("update live url error(s): {}", e))
+        .ok();
+    }
+
     pub fn force_upd_ctime(&self) {
         conn_db!(db);
         self.db_upd_ctime(db, self.id());

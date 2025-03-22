@@ -124,6 +124,12 @@ struct FollowOptions {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+struct SetLiveUrlOptions {
+    uid: i64,
+    live: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct RefreshOptions {
     uid: i64,
 }
@@ -288,6 +294,13 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
             log::debug!("op_follow arg: {:?}", opt);
             jsnapi!(@cmd Command::Follow(opt.enable, opt.uid))
         });
+    let op_set_live_url =
+        warp::path!("setliveurl")
+            .and(req_type!(@post))
+            .map(|opt: SetLiveUrlOptions| {
+                log::debug!("op_follow arg: {:?}", opt);
+                jsnapi!(@cmd Command::SetLiveUrl(opt.uid, opt.live))
+            });
     let op_refresh = warp::path!("refresh")
         .and(req_type!(@post))
         .map(|opt: RefreshOptions| jsnapi!(@cmd Command::Refresh(opt.uid)));
@@ -354,6 +367,7 @@ pub async fn run(shutdown: oneshot::Receiver<i32>) {
 
     let app = index
         .or(op.and(op_follow))
+        .or(op.and(op_set_live_url))
         .or(op.and(op_refresh))
         .or(op.and(op_silence))
         .or(op.and(op_mod_filter))

@@ -80,6 +80,7 @@ struct Engine {
 pub enum Command {
     Refresh(i64),
     Follow(bool, i64),
+    SetLiveUrl(i64, String),
     Activate,
     ForceSilence(bool),
     Shutdown,
@@ -266,6 +267,11 @@ impl RefreshRunner {
                             if enable {
                                 self.try_refresh(u, 0).await;
                             }
+                        },
+                        Command::SetLiveUrl(uid, url) => {
+                            let u = db::User::new(uid);
+                            log::info!("set user {uid} live room url: {}", &url);
+                            u.set_live_url(&url);
                         },
                         Command::Activate => log::info!("Command Activate force token bucket high speed"),
                         Command::ForceSilence(flag) => {
