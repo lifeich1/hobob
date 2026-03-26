@@ -29,9 +29,6 @@
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          postInstall = ''
-            rm -f $out/bin/xtask # devops, strip from release
-          '';
           buildInputs = deps;
           nativeBuildInputs = with pkgs; [
             pkg-config
