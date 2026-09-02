@@ -1,0 +1,3 @@
+[submodule "vendor/bilibili-api-rs"]
+	path = vendor/bilibili-api-rs
+	url = git@github.com:lifeich1/bilibili-api-rs.git

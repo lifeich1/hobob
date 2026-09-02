@@ -2,4 +2,5 @@
 members = [
   "hobob",
 ]
+exclude = ["vendor", "hobob_dbgconn", "xtask"]
 resolver = "2"
