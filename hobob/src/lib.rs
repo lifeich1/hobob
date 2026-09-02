@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 
 macro_rules! vpath {
     () => {
@@ -52,6 +53,7 @@ pub mod bench;
 mod data_schema;
 pub mod db;
 pub mod engine;
+pub mod store;
 pub mod vm;
 pub mod www;
 
@@ -96,12 +98,21 @@ struct Flags {
     /// Http server port
     #[arg(long, default_value_t = 3731)]
     port: u16,
+    /// redb 状态文件路径；未指定时依次取 $HOBOB_STATE、$HOME/.hobob/state.redb
+    #[arg(long, env = "HOBOB_STATE")]
+    state: Option<PathBuf>,
 }
 
 /// # Errors
 /// Throw runtime errors.
 pub async fn main_loop() -> Result<()> {
     let flags = Flags::parse();
+    #[allow(deprecated)]
+    let home = std::env::home_dir();
+    let state_cfg = store::StoreConfig::new(store::StoreConfig::resolve(flags.state, home));
+    if let Err(e) = store::probe(&state_cfg) {
+        log::error!("state store probe failed (M0: non-fatal): {e:#}");
+    }
     let mut center = WeiYuanHui::load(vpath!(@bench));
     {
         let chair = center.new_chair();
