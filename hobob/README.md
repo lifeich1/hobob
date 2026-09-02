@@ -10,8 +10,9 @@ B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程�
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/lib.rs` | crate 入口：日志初始化 `prepare_log`、启动主循环 `main_loop`、`vpath!`/`schema_uri!` 宏、CLI `Flags`（默认端口 3731） |
-| `src/db.rs` | 数据层（详见 `src/README.md`）：`WeiYuanHui`/`WeiYuan`/`FullBench`，通道 + 持久化 |
+| `src/lib.rs` | crate 入口：日志初始化 `prepare_log`、启动主循环 `main_loop`、`vpath!`/`schema_uri!` 宏、CLI `Flags`（`--port` 默认 3731、`--state`/`HOBOB_STATE` 指定 v2 状态文件）、store 启动探针 |
+| `src/db.rs` | 数据层（详见 `src/README.md`）：`WeiYuanHui`/`WeiYuan`/`FullBench`，通道 + 持久化（**v1 实际使用的数据层**） |
+| `src/store.rs` | v2 持久化地基（redb + bincode）：7 张表、typed CRUD、版本信封 + 迁移钩子、`VolatileBuffer` 批量 flush；M0 仅测试 + 启动探针使用，**未接管 v1 数据路径** |
 | `src/www.rs` | warp 路由、tera 渲染、SSE、boon schema 校验 |
 | `src/engine.rs` | 后台引擎循环、`fetch` 命令执行、bucket 速率控制 |
 | `src/data_schema.rs` | JSON schema 编译（boon），schema 从 `https://lintd.xyz/hobob/` 远程加载 |
@@ -77,10 +78,12 @@ cargo test -p hobob
 - `www.rs` tests：warp::test 对每个路由做端到端断言（follow 后 bench 状态、SSE 推送等）
 - `db.rs` tests：通道/持久化/排序逻辑
 - `chunk.rs` tests：解析器对 `test_data/chunk_*.in.txt` 的 AST 与 `*.expect.json` 比对
+- `store.rs` tests：空库初始化/样例数据 roundtrip/错文件守卫/codec/迁移链/版本过高拒绝/entity id/直写/批量 flush 四路径/systems 一致性/配置解析（T1–T12）
 
 ## 已知坑
 
 - **远程 schema**：`data_schema.rs` 启动即从 `https://lintd.xyz/hobob/*.json` 拉取 schema（`schema_uri!` 宏），离线环境 `ChairData` 构建会 panic。
 - **模板加载差异**：debug 从 `templates/` 磁盘目录读（工作目录必须是 crate 根），release 内嵌编译期模板。
-- **外部依赖**：`bilibili-api-rs` 是 path 依赖，位于 `../../bilibili-api-rs`，缺失则无法构建。
+- **vendor 子模块**：`bilibili-api-rs` 是 path 依赖，位于 `vendor/bilibili-api-rs`（git 子模块，锁 commit）；新 clone 后需 `git submodule update --init`，升级 SOP 见 `vendor/UPGRADE.md`。
+- **state.redb（v2）**：启动时 store 探针会在 `--state`/`HOBOB_STATE`/`$HOME/.hobob/state.redb` 建空库；M0 探针失败仅记日志不阻断。`serde_json::Value` 不能参与 bincode 反序列化，v2 类型中「未类型化 JSON」字段一律存 JSON 字符串（M1 校准语义）。
 - `vm.rs`、`bench.rs` 是未完成的替代设计（`todo!()`），`db.rs` 才是实际使用的数据层。
