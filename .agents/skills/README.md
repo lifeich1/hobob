@@ -13,6 +13,7 @@ Reasonix（及 Codex/Claude Code 等工具）的项目级技能发现目录之�
 | 技能 | 内容 | 何时调用 |
 | --- | --- | --- |
 | `hobob-lib` | `hobob/src/lib.rs` 入口/启动/宏的深度文档 | 改启动逻辑、日志、CLI、`vpath!`/`schema_uri!` 宏，或梳理 main_loop 时序时 |
+| `hobob-nix` | nix devShell 使用经验与构建环境约束（shellHook 坑、工具链/依赖版本锁定、vendor 子模块与 nix build 限制、常见故障速查） | 跑 cargo 找不到工具链、nix develop 行为异常、依赖版本兼容问题、改 flake.nix、评估 nix build 链路时 |
 
 ## 维护约定
 

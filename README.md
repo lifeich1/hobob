@@ -44,7 +44,7 @@ cargo test -p hobob
 cross build --bin hobob -r --target aarch64-unknown-linux-gnu
 ```
 
-> 本机直接 shell 无 cargo：请先 `nix develop`（flake.nix 的 devShell 自带 cargo/rustc/clippy/rustfmt）。注意 devShell 的 `shellHook` 在存在 `Session.vim` 时会启动 nvim，且 `nix develop -c` 可能被 hook 劫持；批量命令可用 `nix print-dev-env <repo> > env`，删除末尾 `eval "${shellHook:-}"` 一行后 source 该文件再执行 cargo。
+> 本机直接 shell 无 cargo：请先 `nix develop`（flake.nix 的 devShell 自带 cargo/rustc/clippy/rustfmt），随后直接在仓库根目录 `nix develop -c cargo ...`（shellHook 已去 exec、不会劫持 `-c`；交互进入 devShell 自动开 `Session.vim`，可用 `HOBOB_NO_SESSION=1` 关闭）。工具链/依赖版本约束与更多坑见 skill `hobob-nix`。
 
 部署到设备：交叉编译产物 scp 到 `opi:/lintd/`，然后用 `hobob_dbgconn` 远程重启（见其 README）。
 
