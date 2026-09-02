@@ -14,7 +14,8 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 - 测试：`cargo test -p hobob`（www.rs 路由端到端测试、db.rs 逻辑测试、chunk 解析器测试）
 - 交叉编译（部署 ARM 设备）：`cross build --bin hobob -r --target aarch64-unknown-linux-gnu`（容器配置见 `etc/`，需 podman/docker + cross）
 - 部署：scp 产物到 `opi:/lintd/`，用 `hobob_dbgconn restart` 重启
-- ⚠️ 本机当前无 `cargo`，且外部 path 依赖 `../../bilibili-api-rs` 缺失——无法在本机构建/测试
+- ⚠️ 以上 cargo/cross 命令须在 `nix develop` 的 devShell 内执行：本机直接 shell 无 `cargo`，`flake.nix` 自带 cargo/rustc/clippy/rustfmt
+- ⚠️ 外部 path 依赖 `../../bilibili-api-rs` 缺失——构建/测试前需先按 `.plans/m0-redb-bincode-storage.md` §5 完成 vendor 子模块化
 
 ## Architecture
 
