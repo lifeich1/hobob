@@ -52,6 +52,7 @@ macro_rules! schema_uri {
 pub mod bench;
 mod data_schema;
 pub mod db;
+pub mod ecs;
 pub mod engine;
 pub mod store;
 pub mod vm;
