@@ -70,8 +70,12 @@
           # 经验约定（见 .agents/skills/hobob-nix/SKILL.md）：
           # - 禁止在 shellHook 里 exec（nvim/$SHELL 会吞掉 `nix develop -c <cmd>`）
           # - 自动开 Session.vim 仅限交互 tty，可用 HOBOB_NO_SESSION=1 关闭
+          # - 交互开 nvim 前若系统有 zsh，把 SHELL 指向 zsh（nvim 内 :terminal/:sh 默认 shell）
           shellHook = ''
             if [ -t 0 ] && [ -z "$HOBOB_NO_SESSION" ] && [ -f Session.vim ] && command -v nvim >/dev/null 2>&1; then
+              if command -v zsh >/dev/null 2>&1; then
+                export SHELL="$(command -v zsh)"
+              fi
               echo "[hobob devShell] opening Session.vim (set HOBOB_NO_SESSION=1 to disable)"
               nvim -S Session.vim
             fi

@@ -21,7 +21,7 @@ description: hobob 的 nix devShell 使用经验与构建环境约束。当需�
 
 - **历史坑（2026-09 之前）**：旧 shellHook 会 `exec nvim -S Session.vim`（仓库里有 `Session.vim` 时劫持一切）并 `exec $SHELL`（吞掉 `nix develop -c <cmd>`）；`nix print-dev-env` 的输出末尾还有 `eval "${shellHook:-}"`，直接 source 也会触发 hook。
 - **当时的绕行法（现在不再需要，但方法仍有效）**：`nix print-dev-env <repo> > env`，删除末尾 `eval "${shellHook:-}"` 一行后 `source env` 再跑 cargo。
-- **现状**：shellHook 已去 exec——自动开 `Session.vim` 仅当 stdin 是 tty（`[ -t 0 ]`）且未设 `HOBOB_NO_SESSION=1`，且用普通调用（非 exec）执行 nvim，退出后回到 shell。因此：
+- **现状**：shellHook 已去 exec——自动开 `Session.vim` 仅当 stdin 是 tty（`[ -t 0 ]`）且未设 `HOBOB_NO_SESSION=1`，且用普通调用（非 exec）执行 nvim，退出后回到 shell。交互自动开 nvim 前若系统有 zsh（`command -v zsh` 探测，无则跳过），会把 `SHELL` 指向系统 zsh，使 nvim 内 `:terminal`/`:sh` 默认 shell 为 zsh。因此：
   - `nix develop -c <cmd>` 在仓库根目录**直接可用**；
   - 自动化/agent 环境（非 tty）不会触发 nvim；
   - 交互用户不想自动开 session 时 `HOBOB_NO_SESSION=1 nix develop`。
