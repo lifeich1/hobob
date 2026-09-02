@@ -1,6 +1,6 @@
 use crate::data_schema::ChairData;
-use crate::db::{FullBench, WeiYuan, WeiYuanHui};
-use anyhow::{anyhow, Result};
+use crate::db::{Snapshot, WeiYuan, WeiYuanHui};
+use anyhow::Result;
 use futures::StreamExt;
 use serde_derive::Deserialize;
 use serde_json::{json, Value};
@@ -78,7 +78,7 @@ fn simpleapi() -> BoxedFilter<(Value,)> {
 }
 fn do_api<F>(hdl: &WeiYuan, opt: &Value, f: F) -> reply::Json
 where
-    F: Fn(&mut FullBench, &Value) -> Result<()>,
+    F: Fn(&mut Snapshot, &Value) -> Result<()>,
 {
     let r = hdl
         .clone()
@@ -88,7 +88,7 @@ where
 }
 fn create_op<F>(runner: &WeiYuan, f: F) -> BoxedFilter<(impl reply::Reply,)>
 where
-    F: Fn(&mut FullBench, &Value) -> Result<()>
+    F: Fn(&mut Snapshot, &Value) -> Result<()>
         + std::marker::Sync
         + std::marker::Send
         + Copy
@@ -101,13 +101,12 @@ where
 }
 
 fn route_op(runner: &WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
-    let op_follow = warp::path!("follow").and(create_op(runner, FullBench::follow));
-    let op_refresh = warp::path!("refresh").and(create_op(runner, FullBench::refresh));
-    let op_silence = warp::path!("silence").and(create_op(runner, FullBench::force_silence));
+    let op_follow = warp::path!("follow").and(create_op(runner, Snapshot::follow));
+    let op_refresh = warp::path!("refresh").and(create_op(runner, Snapshot::refresh));
+    let op_silence = warp::path!("silence").and(create_op(runner, Snapshot::force_silence));
     let op_toggle_group =
-        warp::path!("toggle" / "group").and(create_op(runner, FullBench::toggle_group));
-    let op_new_group =
-        warp::path!("touch" / "group").and(create_op(runner, FullBench::touch_group));
+        warp::path!("toggle" / "group").and(create_op(runner, Snapshot::toggle_group));
+    let op_new_group = warp::path!("touch" / "group").and(create_op(runner, Snapshot::touch_group));
     warp::path("op")
         .and(
             op_follow
@@ -126,12 +125,7 @@ fn route_card(runner: &WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
             let r = hdl
                 .clone()
                 .recv()
-                .and_then(|b| {
-                    b.up_info
-                        .get(&uid.to_string())
-                        .ok_or_else(|| anyhow!("uid {} not found", uid))
-                })
-                .map(|v| json!({"users": [v["pick"]]}))
+                .and_then(|b| b.pick_of(uid).map(|pick| json!({"users": [pick]})))
                 .and_then(ChairData::checker(schema_uri!("user_cards")));
             reply::html(render("user_cards.html", r))
         })
@@ -168,20 +162,7 @@ fn route_card(runner: &WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
             let r = hdl
                 .clone()
                 .recv()
-                .map(|b| {
-                    let a = b
-                        .group_info
-                        .iter()
-                        .map(|(k, v)| {
-                            json!({
-                                "fid": k,
-                                "name": v["name"],
-                                "removable": v["removable"],
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    json!({"filters": a})
-                })
+                .map(|b| b.filter_options())
                 .and_then(ChairData::checker(schema_uri!("filter_options")));
             reply::html(render("filter_options.html", r))
         })
@@ -202,8 +183,7 @@ pub fn build_app(weiyuanhui: &mut WeiYuanHui) -> BoxedFilter<(impl warp::Reply,)
             reply::html(render(
                 "index.html",
                 hdl.clone().recv().map(|v| {
-                    v.runtime
-                        .get("index")
+                    v.runtime_get("index")
                         .cloned()
                         .unwrap_or_else(|| json!({"status":"booting"}))
                 }),
@@ -271,7 +251,7 @@ mod tests {
         ));
     }
 
-    fn bench(center: &mut WeiYuanHui) -> FullBench {
+    fn bench(center: &mut WeiYuanHui) -> Snapshot {
         center
             .new_chair()
             .recv()
@@ -289,10 +269,10 @@ mod tests {
             .await
             .unwrap()
             .into_response();
-        println!("index: {:?}", &index);
+        println!("index: {:?}", index);
         assert_eq!(index.status(), StatusCode::OK);
         let s = resp_to_st(index).await;
-        println!("body: {:?}", &s);
+        println!("body: {:?}", s);
         assert!(!s.contains("render process failure"));
     }
 
@@ -306,7 +286,7 @@ mod tests {
         BoxedFilter<(impl warp::Reply,)>,
     ) {
         let mut init = center.new_chair();
-        init.log(0, "trigger first save disk");
+        init.log(0, "warm up");
         assert!(center.run().await);
         let app = build_app(&mut center);
         let resp = warp::test::request()
@@ -338,7 +318,7 @@ mod tests {
         BoxedFilter<(impl warp::Reply,)>,
     ) {
         let mut init = center.new_chair();
-        init.log(0, "trigger first save disk");
+        init.log(0, "warm up");
         assert!(center.run().await);
         let app = build_app(&mut center);
         let resp = warp::test::request()
@@ -368,33 +348,37 @@ mod tests {
 
         check_n_step(&mut center).await;
         let b = bench(&mut center);
-        println!("cur bench: {b:?}");
-        assert_eq!(b.commands.len(), 1);
+        println!("cur bench: {:?}", b.res);
+        assert_eq!(b.res.commands.len(), 1);
         assert_eq!(
-            b.commands.front(),
+            b.res.commands.front(),
             Some(&json!({
                 "cmd": "fetch",
                 "args": { "uid": 12345, },
             }))
         );
-        assert_eq!(b.up_info.len(), 1);
-        assert_eq!(
-            b.up_info
-                .get("12345")
-                .map(|v| v["pick"]["basic"]["ban"].clone()),
-            Some(json!(false))
-        );
-        assert_eq!(b.up_by_fid.len(), 1);
-        assert_eq!(b.up_by_fid.front(), Some(&"12345".into()));
+        assert_eq!(b.res.uid_index.len(), 1);
+        assert_eq!(b.pick_of(12345).unwrap()["basic"]["ban"], json!(false));
+        assert_eq!(b.res.up_by_fid.len(), 1);
+        let list = b
+            .users_pick(&json!({
+                "gid": 0,
+                "order_desc": "default",
+                "range_start": 0,
+                "range_len": 10,
+            }))
+            .unwrap();
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["basic"]["id"], json!(12345));
     }
 
     #[tokio::test]
     async fn test_op_refresh() {
         init();
-        let mut b = FullBench::default();
-        assert!(b.follow(&json!({"uid": 12345})).is_ok());
+        let mut snap = Snapshot::default();
+        assert!(snap.follow(&json!({"uid": 12345})).is_ok());
         let (mut center, resp, _app) = do_op3(
-            b.into(),
+            snap.into(),
             "/op/refresh",
             json!({
                 "uid": 12345,
@@ -407,32 +391,36 @@ mod tests {
 
         check_n_step(&mut center).await;
         let b = bench(&mut center);
-        assert_eq!(b.commands.len(), 2);
+        assert_eq!(b.res.commands.len(), 2);
         assert_eq!(
-            b.commands.back(),
+            b.res.commands.back(),
             Some(&json!({
                 "cmd": "fetch",
                 "args": { "uid": 12345, },
             }))
         );
-        assert_eq!(b.up_info.len(), 1);
+        assert_eq!(b.res.uid_index.len(), 1);
     }
 
     #[tokio::test]
     async fn test_op_silence() {
         init();
-        let mut b = FullBench::default();
-        assert_eq!(b.runtime.insert("bucket".into(), json!({"gap": 21})), None);
-        let (mut center, resp, _app) = do_op3(b.into(), "/op/silence", json!({})).await;
+        let mut snap = Snapshot::default();
+        snap.world
+            .get_mut::<crate::db::RuntimeCfg>(crate::ecs::Entity(crate::db::ENTITY_RUNTIME))
+            .unwrap()
+            .0
+            .insert("bucket".into(), json!({"gap": 21}));
+        let (mut center, resp, _app) = do_op3(snap.into(), "/op/silence", json!({})).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let s = resp_to_st(resp).await;
         assert_eq!(serde_json::from_str(&s).ok(), Some(json!("success")));
 
         check_n_step(&mut center).await;
         let b = bench(&mut center);
-        assert_eq!(b.commands.len(), 0);
+        assert_eq!(b.res.commands.len(), 0);
         assert_eq!(
-            b.runtime.get("bucket"),
+            b.runtime_get("bucket"),
             Some(&json!({
                 "gap": 42,
             }))
@@ -442,14 +430,10 @@ mod tests {
     #[tokio::test]
     async fn test_op_toggle_group_is_insert() {
         init();
-        let mut b = FullBench::default();
-        assert!(b.follow(&json!({"uid": 12345})).is_ok());
-        assert_eq!(
-            b.group_info.insert("5".into(), json!({ "name": "test" })),
-            None
-        );
+        let mut snap = Snapshot::default();
+        assert!(snap.follow(&json!({"uid": 12345})).is_ok());
         let (mut center, resp, _app) = do_op3(
-            b.into(),
+            snap.into(),
             "/op/toggle/group",
             json!({
                 "uid": 12345,
@@ -463,29 +447,27 @@ mod tests {
 
         check_n_step(&mut center).await;
         let b = bench(&mut center);
-        assert_eq!(b.up_info.len(), 1);
-        assert_eq!(b.up_join_group.get("5").map(im::OrdSet::len), Some(1));
-        assert_eq!(
-            b.up_join_group.get("5").unwrap().get_min(),
-            Some(&"12345".into())
-        );
+        assert_eq!(b.res.uid_index.len(), 1);
+        let list = b
+            .users_pick(&json!({
+                "gid": 5,
+                "order_desc": "default",
+                "range_start": 0,
+                "range_len": 10,
+            }))
+            .unwrap();
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["basic"]["id"], json!(12345));
     }
 
     #[tokio::test]
     async fn test_op_toggle_group_is_remove() {
         init();
-        let mut b = FullBench::default();
-        assert!(b.follow(&json!({"uid": 12345})).is_ok());
-        assert_eq!(
-            b.up_join_group.insert("5".into(), im::OrdSet::default()),
-            None
-        );
-        assert_eq!(
-            b.up_join_group.get_mut("5").unwrap().insert("12345".into()),
-            None
-        );
+        let mut snap = Snapshot::default();
+        assert!(snap.follow(&json!({"uid": 12345})).is_ok());
+        assert!(snap.toggle_group(&json!({"uid": 12345, "gid": 5})).is_ok());
         let (mut center, resp, _app) = do_op3(
-            b.into(),
+            snap.into(),
             "/op/toggle/group",
             json!({
                 "uid": 12345,
@@ -499,8 +481,16 @@ mod tests {
 
         check_n_step(&mut center).await;
         let b = bench(&mut center);
-        assert_eq!(b.up_info.len(), 1);
-        assert_eq!(b.up_join_group.get("5").map(im::OrdSet::len), Some(0));
+        assert_eq!(b.res.uid_index.len(), 1);
+        let list = b
+            .users_pick(&json!({
+                "gid": 5,
+                "order_desc": "default",
+                "range_start": 0,
+                "range_len": 10,
+            }))
+            .unwrap();
+        assert_eq!(list.as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -521,24 +511,32 @@ mod tests {
 
         check_n_step(&mut center).await;
         let b = bench(&mut center);
+        let fo = b.filter_options();
+        let f5 = fo["filters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["fid"] == json!("5"))
+            .expect("gid 5 in filter options");
         assert_eq!(
-            b.group_info.get("5"),
-            Some(&json!({
+            f5,
+            &json!({
+                "fid": "5",
                 "name": "test2",
                 "removable": false,
-            }))
+            })
         );
     }
 
     #[tokio::test]
     async fn test_card_one() {
         init();
-        let mut b = FullBench::default();
-        assert!(b.follow(&json!({"uid": 12345})).is_ok());
-        let (_center, resp, _app) = do_get(b.into(), "/card/one/12345").await;
+        let mut snap = Snapshot::default();
+        assert!(snap.follow(&json!({"uid": 12345})).is_ok());
+        let (_center, resp, _app) = do_get(snap.into(), "/card/one/12345").await;
         assert_eq!(resp.status(), StatusCode::OK);
         let s = resp_to_st(resp).await;
-        println!("{}", &s);
+        println!("{}", s);
         assert!(s.contains(r#"<a href="https://space.bilibili.com/12345" target="_blank">"#));
         assert!(!s.contains(r#"failure</title>"#));
         assert!(!s.contains(r#"<div class="card m-2 p-1 shadow" id="#));
@@ -547,13 +545,13 @@ mod tests {
     #[tokio::test]
     async fn test_card_ulist() {
         init();
-        let mut b = FullBench::new();
-        assert!(b.follow(&json!({"uid": 12345})).is_ok());
-        assert!(b.follow(&json!({"uid": 2233})).is_ok());
-        let (_center, resp, _app) = do_get(b.into(), "/card/ulist/0/default/0/10").await;
+        let mut snap = Snapshot::new();
+        assert!(snap.follow(&json!({"uid": 12345})).is_ok());
+        assert!(snap.follow(&json!({"uid": 2233})).is_ok());
+        let (_center, resp, _app) = do_get(snap.into(), "/card/ulist/0/default/0/10").await;
         assert_eq!(resp.status(), StatusCode::OK);
         let s = resp_to_st(resp).await;
-        println!("{}", &s);
+        println!("{}", s);
         assert!(s.contains(r#"<a href="https://space.bilibili.com/12345" target="_blank">"#));
         assert!(s.contains(r#"<a href="https://space.bilibili.com/2233" target="_blank">"#));
         assert!(s.contains(r#"<div class="card m-2 p-1 shadow" id=user-card-12345>"#));
@@ -570,12 +568,12 @@ mod tests {
     #[tokio::test]
     async fn test_card_filter_options() {
         init();
-        let mut b = FullBench::new();
-        assert!(b.touch_group(&json!({"gid": 7, "name": "g7"})).is_ok());
-        let (_center, resp, _app) = do_get(b.into(), "/card/filter/options").await;
+        let mut snap = Snapshot::new();
+        assert!(snap.touch_group(&json!({"gid": 7, "name": "g7"})).is_ok());
+        let (_center, resp, _app) = do_get(snap.into(), "/card/filter/options").await;
         assert_eq!(resp.status(), StatusCode::OK);
         let s = resp_to_st(resp).await;
-        println!("{}", &s);
+        println!("{}", s);
         assert!(s.contains(r#"<option value="0">"#));
         assert!(s.contains(r#"<option value="1">"#));
         assert!(s.contains(r#"<option value="7">g7<"#));
@@ -640,7 +638,7 @@ mod tests {
                     log::info!("sending {:?}", &ev);
                     assert!(tx
                         .apply(|b| {
-                            b.events.push_back(ev.clone());
+                            b.res.events.push_back(ev.clone());
                             Ok(())
                         })
                         .is_ok());

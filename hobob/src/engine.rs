@@ -1,4 +1,5 @@
-use crate::db::{now_timestamp, Commands, FullBench, WeiYuan};
+//! engine 后台循环（M1 T2 适配版：读 `Snapshot`，fetch 写组件；T6 整体迁入 systems.rs）。
+use crate::db::{Commands, Snapshot, WeiYuan};
 use anyhow::Context;
 use anyhow::{anyhow, Result};
 use bilibili_api_rs::Client;
@@ -6,63 +7,27 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::time::Instant;
 
-fn take_cmds(bench: &FullBench, runner: &mut WeiYuan) -> Commands {
-    let r = bench.commands.clone();
+fn take_cmds(bench: &Snapshot, runner: &mut WeiYuan) -> Commands {
+    let r = bench.res.commands.clone();
     let l = r.len();
     runner
         .apply(|b| {
-            b.commands
+            b.res
+                .commands
                 .len()
                 .eq(&l)
-                .then(|| b.commands.clear())
-                .ok_or_else(|| anyhow!("mutate commands encounter: {} != {}", b.commands.len(), l))
+                .then(|| b.res.commands.clear())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "mutate commands encounter: {} != {}",
+                        b.res.commands.len(),
+                        l
+                    )
+                })
         })
         .map_err(|e| log::debug!("{}", e))
         .and(Ok(r))
         .unwrap_or_else(|()| im::Vector::default())
-}
-
-fn pick_basic(a: &Value, b: &Value) -> Value {
-    // TODO pick pendant
-    let mut r = b.clone();
-    let mut ap = json!({
-        "id": a["mid"],
-        "name": a["name"],
-        "face_url": a["face"],
-        "ctime": now_timestamp(),
-    });
-    r.as_object_mut()
-        .expect("up_info SHOULD inited basic")
-        .append(ap.as_object_mut().unwrap());
-    r
-}
-
-fn pick_live(a: &Value) -> Value {
-    let l = &a["live_room"];
-    let w = &l["watched_show"];
-    json!({
-        "title": l["title"],
-        "url": l["url"],
-        "entropy": w["num"],
-        "entropy_txt": w["text_large"],
-        "isopen": w["roomStatus"].as_i64().filter(|i| *i > 0)
-            .and(w["liveStatus"].as_i64())
-            .filter(|i| *i > 0)
-            .is_some(),
-    })
-}
-
-fn pick_video(a: &Value) -> Value {
-    let v = if let Some(v) = a["list"]["vlist"].as_array().filter(|v| !v.is_empty()) {
-        &v[0]
-    } else {
-        return Value::Null;
-    };
-    json!({
-        "title": v["title"],
-        "url": a["episodic_button"]["uri"].as_str().map(|s| format!("https:{s}")),
-        "ts": v["created"],
-    })
 }
 
 async fn do_fetch(cli: &mut Client, runner: &mut WeiYuan, args: &Value) -> Result<()> {
@@ -80,17 +45,7 @@ async fn do_fetch(cli: &mut Client, runner: &mut WeiYuan, args: &Value) -> Resul
         }
         let info = info.unwrap();
         let video = video.unwrap();
-        b.modify_up_info(&uid.to_string(), |v| {
-            v["raw"] = json!({
-                "videos": video,
-                "info": info,
-            });
-            v["pick"] = json!({
-                "basic": pick_basic(info, &v["pick"]["basic"]),
-                "live": pick_live(info),
-                "video": pick_video(video),
-            });
-        });
+        b.apply_fetch(uid, info, video)?;
         b.bucket_good();
         Ok(())
     })?;
@@ -115,8 +70,8 @@ async fn exec_cmd(cmd: Value, runner: &mut WeiYuan, cli: &mut Client) {
     }
 }
 
-fn exec_timers(bench: &FullBench, runner: &mut WeiYuan) {
-    let uid: i64 = if let Some(suid) = bench.up_index.get("ctime").and_then(|i| i.get_min()) {
+fn exec_timers(bench: &Snapshot, runner: &mut WeiYuan) {
+    let uid: i64 = if let Some(suid) = bench.res.up_index.get("ctime").and_then(|i| i.get_min()) {
         suid.1
             .parse()
             .unwrap_or_else(|e| panic!("suid SHOULD be valid integer: {e}"))
@@ -127,7 +82,7 @@ fn exec_timers(bench: &FullBench, runner: &mut WeiYuan) {
     runner
         .apply(|b| {
             // TODO query xlive timer
-            b.commands.push_back(json!({
+            b.res.commands.push_back(json!({
                 "cmd": "fetch",
                 "args": { "uid": uid, },
             }));
@@ -154,7 +109,7 @@ pub async fn main_loop(mut runner: WeiYuan) {
     let mut client = Client::new();
     while let Ok(bench) = runner.recv().cloned() {
         log::trace!("engine_loop wake");
-        if bench.commands.is_empty() {
+        if bench.res.commands.is_empty() {
             exec_timers(&bench, &mut runner);
         } else {
             let cmds = take_cmds(&bench, &mut runner);
@@ -206,7 +161,7 @@ mod tests {
             async {
                 run_ms(&mut center, 100, true).await;
                 center.close();
-                log::info!("emit closing: {:?}", center.bench());
+                log::info!("emit closing");
                 run_ms(&mut center, 100, false).await;
                 assert!(timeout(Duration::from_millis(200), center.closed())
                     .await
@@ -233,18 +188,18 @@ mod tests {
     #[test]
     fn test_take_cmds() {
         init();
-        let mut bench = FullBench::default();
-        bench.commands.push_back(json!({
+        let mut snap = Snapshot::default();
+        snap.res.commands.push_back(json!({
             "cmd": "cmd:for_test",
             "args": {"c":1},
         }));
-        bench.commands.push_back(json!({
+        snap.res.commands.push_back(json!({
             "cmd": "cmd:for_test",
             "args": {"c":2},
         }));
-        let mut center = WeiYuanHui::from(bench.clone());
+        let mut center = WeiYuanHui::from(snap.clone());
         let mut runner = center.new_chair();
-        let out = take_cmds(&bench, &mut runner);
+        let out = take_cmds(&snap, &mut runner);
         assert_eq!(out.len(), 2);
         assert_eq!(
             out[0],
@@ -289,7 +244,7 @@ mod tests {
     fn test_pick_basic() {
         let a = mkiiiiii_info();
         let b = json!({});
-        let mut b = pick_basic(&a, &b);
+        let mut b = crate::db::pick_basic(&a, &b);
         assert!(b["ctime"].is_i64());
         b["ctime"] = Value::Null;
         assert_eq!(
@@ -307,7 +262,7 @@ mod tests {
     fn test_pick_live() {
         let a = mkiiiiii_info();
         assert_eq!(
-            pick_live(&a),
+            crate::db::pick_live(&a),
             json!({
                 "title": "【鑒賞會】就打一关",
                 "url": "https://live.bilibili.com/5229?broadcast_type=0\u{0026}is_room_feed=1",
@@ -348,7 +303,7 @@ mod tests {
     fn test_pick_video() {
         let a = mkiiiiii_videos();
         assert_eq!(
-            pick_video(&a),
+            crate::db::pick_video(&a),
             json!({
                 "title": "四分鐘畫個機 室友版",
                 "url": "https://www.bilibili.com/medialist/play/210628?from=space",
