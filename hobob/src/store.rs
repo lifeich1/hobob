@@ -5,7 +5,7 @@
 //! - 全库统一 bincode 根函数（fixint + 小端）编解码，见 `encode_bincode`。
 //! - 业务表 value 为 `VersionedRecord` 信封；每表独立版本链 + 迁移钩子；
 //!   旧版本结构体永久保留在 `legacy` 子模块。
-//! - `ec:brick` 直写；易变表（video/live/comment/runtime）走 `VolatileBuffer` 批量 flush。
+//! - `ec:brick`/`ec:group` 直写；易变表（video/live/comment/runtime）走 `VolatileBuffer` 批量 flush。
 //! - entity id：`0` 非法、`1` 预留给全局 runtime 实体（M1 确认），分配从 `2` 开始。
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -106,11 +106,13 @@ const EC_VIDEO_POST: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:vide
 const EC_LIVE_POST: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:live_post");
 const EC_COMMENT_POST: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:comment_post");
 const EC_RUNTIME: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:runtime");
+const EC_GROUP: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:group");
 
 /// 文件格式魔数：ASCII `"HOBB"`。
 pub const FORMAT_MAGIC: u64 = 0x484F4242;
-/// 布局级版本：表集合/键编码变化才 bump（与每表记录版本是两个维度）。M0 = 1。
-pub const SCHEMA_VERSION: u64 = 1;
+/// 布局级版本：表集合/键编码变化才 bump（与每表记录版本是两个维度）。
+/// M0 = 1；M1 = 2（新增 `ec:group` 表，升级钩子见 `upgrade_layout_1_to_2`）。
+pub const SCHEMA_VERSION: u64 = 2;
 const META_FORMAT_MAGIC: &str = "format_magic";
 const META_SCHEMA_VERSION: &str = "schema_version";
 const META_NEXT_ENTITY_ID: &str = "next_entity_id";
@@ -126,12 +128,20 @@ pub enum TableId {
     LivePost,
     CommentPost,
     Runtime,
+    /// M1 新增（布局 2）：分组资料表（直写）。
+    Group,
 }
 
 impl TableId {
-    /// 每表独立版本链；M0 全部 v1。
+    /// 每表独立版本链。Brick M1 升 V2（含 V1→V2 迁移钩子）；其余仍 v1。
     pub const fn schema(self) -> TableSchema {
-        TableSchema::v1()
+        match self {
+            TableId::Brick => TableSchema {
+                current_version: 2,
+                migrations: &[(1, legacy::brick_v1_to_v2 as MigrationFn)],
+            },
+            _ => TableSchema::v1(),
+        }
     }
 
     const fn ec_def(self) -> Option<TableDefinition<'static, u64, &'static [u8]>> {
@@ -141,27 +151,35 @@ impl TableId {
             TableId::LivePost => Some(EC_LIVE_POST),
             TableId::CommentPost => Some(EC_COMMENT_POST),
             TableId::Runtime => Some(EC_RUNTIME),
+            TableId::Group => Some(EC_GROUP),
             TableId::Systems => None,
         }
     }
 }
 
-// ============================== 组件类型（v1） ==============================
+// ============================== 组件类型（磁盘信封） ==============================
 
+/// up 基础资料 + 管理状态（M1 起；与 `db::Brick` 组件同构，T4 `open` 桥接逐字段搬运）。
+/// V2 相对 V1：`groups: Vec<String>` → `Vec<u64>`（group entity id，D7）、新增 `ban`/`fid`、
+/// 删除 `sign`（db 组件无此字段，v1 JSON 亦不输出）。
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct BrickV1 {
+pub struct BrickV2 {
     /// bilibili uid（up 实体必填）
     pub uid: String,
     pub uname: String,
     pub face: String,
-    pub sign: String,
-    /// 分组名；M1 若引入 group entity 再议是否改 `Vec<u64>`
-    pub groups: Vec<String>,
-    /// 静默（与 v1 silence 语义对齐，M1 校准）
+    /// v1 `pick.basic.ban`：取关保留实体（enable=false → ban=true）。
+    pub ban: bool,
+    /// v1 `up_by_fid` 序号（关注顺序，重启后按它重建 `up_by_fid`）。
+    pub fid: u64,
+    /// 所属分组（group **entity id**；成员关系权威，落盘）。
+    pub groups: Vec<u64>,
+    /// 静默（M1 恒 false，语义留给 M3 动态 system）。
     pub silent: bool,
     /// unix 秒
     pub followed_at: i64,
+    /// 最近 fetch 成功时间（v1 `pick.basic.ctime`，重建 ctime 索引用）。
     pub updated_at: i64,
 }
 
@@ -225,6 +243,18 @@ pub struct RuntimeV1 {
     pub fields: String,
 }
 
+/// 分组资料（M1 新增 `ec:group` 表；与 `db::GroupInfo` 组件同构）。
+/// key = group **entity id**（D6：≠ API gid，映射走 `gid_index` 资源）。
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GroupV1 {
+    /// API 可见 gid（v1 `group_info` key：0=全部、1=特殊关注、其余客户端指定）。
+    pub gid: u64,
+    pub name: String,
+    /// v1 `removable = !pin`；内置组（gid 0/1）pin=true。
+    pub pin: bool,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemSpecV1 {
@@ -236,8 +266,45 @@ pub struct SystemSpecV1 {
 }
 
 /// 旧版结构体保留区：schema 变更后旧类型移入这里，禁止直接删字段后不迁移。
-/// M0 全部为 v1，暂无存量。
-pub mod legacy {}
+/// M1 起收留 v1 的 brick 信封（V2 引入，含 V1→V2 迁移钩子）；旧类型定义不可改动，
+/// 磁盘上的旧字节要靠它反序列化。
+pub mod legacy {
+    use super::{decode_bincode, encode_bincode, BrickV2, Deserialize, Result, Serialize};
+
+    /// v1 的 brick 信封（M0 布局）：分组是 `Vec<String>`、无 `ban`/`fid`、含 `sign`。
+    #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(default)]
+    pub struct BrickV1 {
+        pub uid: String,
+        pub uname: String,
+        pub face: String,
+        pub sign: String,
+        /// 分组**名**（v1）；M1 组实体化后废弃。
+        pub groups: Vec<String>,
+        pub silent: bool,
+        /// unix 秒
+        pub followed_at: i64,
+        pub updated_at: i64,
+    }
+
+    /// V1 → V2：`groups` 置空（v1 分组名无法映射到 group entity id，M1 起组关系从空重建）、
+    /// `ban=false`、`fid=0`（取关/关注序语义重来）、`sign` 丢弃（`db::Brick` 无此字段）。
+    pub fn brick_v1_to_v2(old: &[u8]) -> Result<Vec<u8>> {
+        let v1: BrickV1 = decode_bincode(old)?;
+        let v2 = BrickV2 {
+            uid: v1.uid,
+            uname: v1.uname,
+            face: v1.face,
+            ban: false,
+            fid: 0,
+            groups: Vec::new(),
+            silent: v1.silent,
+            followed_at: v1.followed_at,
+            updated_at: v1.updated_at,
+        };
+        encode_bincode(&v2)
+    }
+}
 
 // ============================== meta ==============================
 
@@ -259,7 +326,7 @@ fn init_meta(db: &Database) -> Result<()> {
     Ok(())
 }
 
-/// 已存在的库：只读校验魔数/版本，通过后再补缺的 meta key。
+/// 已存在的库：只读校验魔数/版本，通过后执行布局升级（如有）并补缺的 meta key。
 /// 校验失败不产生任何写入，保证「错文件不被写坏」。
 fn validate_and_repair_meta(db: &Database, path: &std::path::Path) -> Result<()> {
     let read = db.begin_read().context("begin read for meta validation")?;
@@ -279,36 +346,56 @@ fn validate_and_repair_meta(db: &Database, path: &std::path::Path) -> Result<()>
         ),
         Some(_) => {}
     }
-    if let Some(g) = meta
+    // 布局版本：高于当前拒绝；低于当前由下方升级链逐级补齐。
+    // magic 已校验通过，schema_version 理论上与 magic 同事务写入、必然存在；
+    // 缺失视作 1（M0 最早布局，只差 1→2 一步）而非 0（0 无历史钩子）。
+    let cur = match meta
         .get(META_SCHEMA_VERSION)
         .map_err(|e| anyhow!("read schema_version: {e}"))?
     {
-        if g.value() > SCHEMA_VERSION {
+        None => 1,
+        Some(g) if g.value() > SCHEMA_VERSION => {
             bail!(
                 "{path:?} layout version {} > binary {} (数据文件比二进制新，拒绝打开)",
                 g.value(),
                 SCHEMA_VERSION
             );
         }
-    }
+        Some(g) => g.value(),
+    };
     drop(meta);
     drop(read);
 
     let txn = db.begin_write().context("begin write for meta repair")?;
     {
+        let mut cur = cur;
+        while cur < SCHEMA_VERSION {
+            match cur {
+                1 => upgrade_layout_1_to_2(&txn)?,
+                _ => bail!("missing layout upgrade hook from {cur}"),
+            }
+            cur += 1;
+        }
         let mut meta = txn
             .open_table(META)
             .map_err(|e| anyhow!("open meta table: {e}"))?;
-        if meta.get(META_SCHEMA_VERSION).map_err(|e| anyhow!("read schema_version: {e}"))?.is_none() {
-            meta.insert(META_SCHEMA_VERSION, SCHEMA_VERSION)
-                .map_err(|e| anyhow!("insert schema_version: {e}"))?;
-        }
+        meta.insert(META_SCHEMA_VERSION, SCHEMA_VERSION)
+            .map_err(|e| anyhow!("insert schema_version: {e}"))?;
         if meta.get(META_NEXT_ENTITY_ID).map_err(|e| anyhow!("read next_entity_id: {e}"))?.is_none() {
             meta.insert(META_NEXT_ENTITY_ID, INITIAL_ENTITY_ID)
                 .map_err(|e| anyhow!("insert next_entity_id: {e}"))?;
         }
     }
     txn.commit().context("commit meta repair")?;
+    Ok(())
+}
+
+/// 布局 1 → 2：新增 `ec:group` 表。redb 写事务 `open_table` 即建表（空表随 commit 落盘）。
+/// 幂等：已升到 2 的库不会走到这里；旧 v1 库无业务数据（M0 仅探针建库），无数据搬迁。
+/// 未来布局变化沿用该模式：while 链内按 from 版本注册钩子。
+fn upgrade_layout_1_to_2(txn: &WriteTransaction) -> Result<()> {
+    txn.open_table(EC_GROUP)
+        .map_err(|e| anyhow!("upgrade layout 1 -> 2: open ec:group table: {e}"))?;
     Ok(())
 }
 
@@ -663,13 +750,13 @@ impl Store {
 
     // ---- ec 表 typed CRUD ----
 
-    pub fn put_brick(&self, entity: u64, brick: &BrickV1) -> Result<()> {
+    pub fn put_brick(&self, entity: u64, brick: &BrickV2) -> Result<()> {
         ensure_entity_id(entity)?;
         let payload = encode_bincode(brick)?;
         self.put_ec(TableId::Brick, entity, payload)
     }
 
-    pub fn get_brick(&self, entity: u64) -> Result<Option<BrickV1>> {
+    pub fn get_brick(&self, entity: u64) -> Result<Option<BrickV2>> {
         match self.get_ec(TableId::Brick, entity)? {
             None => Ok(None),
             Some(payload) => Ok(Some(decode_bincode(&payload).with_context(|| {
@@ -680,6 +767,31 @@ impl Store {
 
     pub fn delete_brick(&self, entity: u64) -> Result<()> {
         self.remove_ec(TableId::Brick, entity)
+    }
+
+    // ---- group（M1 新增 `ec:group` 表；直写，低频） ----
+
+    pub fn put_group(&self, entity: u64, group: &GroupV1) -> Result<()> {
+        ensure_entity_id(entity)?;
+        let payload = encode_bincode(group)?;
+        self.put_ec(TableId::Group, entity, payload)
+    }
+
+    pub fn get_group(&self, entity: u64) -> Result<Option<GroupV1>> {
+        match self.get_ec(TableId::Group, entity)? {
+            None => Ok(None),
+            Some(payload) => Ok(Some(decode_bincode(&payload).with_context(|| {
+                format!("decode group payload of entity {entity}")
+            })?)),
+        }
+    }
+
+    pub fn delete_group(&self, entity: u64) -> Result<()> {
+        self.remove_ec(TableId::Group, entity)
+    }
+
+    pub fn list_groups(&self) -> Result<Vec<(u64, GroupV1)>> {
+        self.list_ec(TableId::Group)
     }
 
     pub fn stage_video_post(&mut self, entity: u64, v: &VideoPostV1) -> Result<()> {
@@ -787,6 +899,57 @@ impl Store {
             }
         }
     }
+
+    // ---- ec 表全量迭代（M1 启动加载用；只读事务内 migrate-on-read，不写回） ----
+
+    pub fn list_bricks(&self) -> Result<Vec<(u64, BrickV2)>> {
+        self.list_ec(TableId::Brick)
+    }
+
+    pub fn list_video_posts(&self) -> Result<Vec<(u64, VideoPostV1)>> {
+        self.list_ec(TableId::VideoPost)
+    }
+
+    pub fn list_live_posts(&self) -> Result<Vec<(u64, LivePostV1)>> {
+        self.list_ec(TableId::LivePost)
+    }
+
+    pub fn list_comment_posts(&self) -> Result<Vec<(u64, CommentPostV1)>> {
+        self.list_ec(TableId::CommentPost)
+    }
+
+    pub fn list_runtimes(&self) -> Result<Vec<(u64, RuntimeV1)>> {
+        self.list_ec(TableId::Runtime)
+    }
+
+    /// key 升序遍历（redb u64 key 有序）；值经信封解码并迁移到 current_version
+    /// （`decode_envelope_to_current`，纯内存迁移；启动加载后由 hub 直写/重开兜底写回）。
+    fn list_ec<T: serde::de::DeserializeOwned>(&self, tid: TableId) -> Result<Vec<(u64, T)>> {
+        let def = ec_table_def(tid)?;
+        let schema = tid.schema();
+        let read = self.db.begin_read().context("begin read for list_ec")?;
+        let table = match read.open_table(def) {
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(anyhow!("open {}: {e}", def.name())),
+            Ok(t) => t,
+        };
+        let mut out = Vec::new();
+        for entry in table
+            .iter()
+            .map_err(|e| anyhow!("iterate {}: {e}", def.name()))?
+        {
+            let (key, value) = entry.map_err(|e| anyhow!("iterate {} entry: {e}", def.name()))?;
+            let payload = decode_envelope_to_current(
+                schema,
+                value.value(),
+                &format!("{} key {}", def.name(), key.value()),
+            )?;
+            let v: T = decode_bincode(&payload)
+                .with_context(|| format!("decode {} payload of key {}", def.name(), key.value()))?;
+            out.push((key.value(), v));
+        }
+        Ok(out)
+    }
 }
 
 fn ec_table_def(tid: TableId) -> Result<TableDefinition<'static, u64, &'static [u8]>> {
@@ -880,16 +1043,25 @@ mod tests {
         StoreConfig::new(dir.join("state.redb"))
     }
 
-    fn sample_brick(uid: &str) -> BrickV1 {
-        BrickV1 {
+    fn sample_brick(uid: &str) -> BrickV2 {
+        BrickV2 {
             uid: uid.to_string(),
             uname: format!("up-{uid}"),
             face: format!("https://face/{uid}"),
-            sign: "sign".to_string(),
-            groups: vec!["g1".to_string(), "g2".to_string()],
+            ban: false,
+            fid: 0,
+            groups: vec![],
             silent: false,
             followed_at: 1700000000,
             updated_at: 1700000001,
+        }
+    }
+
+    fn sample_group(gid: u64) -> GroupV1 {
+        GroupV1 {
+            gid,
+            name: format!("组{gid}"),
+            pin: false,
         }
     }
 
@@ -908,7 +1080,7 @@ mod tests {
         assert_eq!(meta.get(META_FORMAT_MAGIC).unwrap().unwrap().value(), FORMAT_MAGIC);
         assert_eq!(meta.get(META_SCHEMA_VERSION).unwrap().unwrap().value(), SCHEMA_VERSION);
         assert_eq!(meta.get(META_NEXT_ENTITY_ID).unwrap().unwrap().value(), INITIAL_ENTITY_ID);
-        for def in [EC_BRICK, EC_VIDEO_POST, EC_LIVE_POST, EC_COMMENT_POST, EC_RUNTIME] {
+        for def in [EC_BRICK, EC_VIDEO_POST, EC_LIVE_POST, EC_COMMENT_POST, EC_RUNTIME, EC_GROUP] {
             match read.open_table(def) {
                 Ok(t) => assert_eq!(t.len().unwrap(), 0, "table {} should be empty", def.name()),
                 Err(redb::TableError::TableDoesNotExist(_)) => {}
@@ -973,7 +1145,7 @@ mod tests {
         assert_eq!(sys.name, "sys1");
         assert_eq!(sys.lua, "print('hi')");
         assert_eq!(sys.condition, "always");
-        let bricks: Vec<BrickV1> = (2..4)
+        let bricks: Vec<BrickV2> = (2..4)
             .map(|e| store.get_brick(e).unwrap().unwrap())
             .collect();
         assert_eq!(bricks[0].uid, "10001");
@@ -1039,7 +1211,7 @@ mod tests {
     #[test]
     fn t4_codec_roundtrip_all_types() {
         let brick = sample_brick("1");
-        assert_eq!(decode_bincode::<BrickV1>(&encode_bincode(&brick).unwrap()).unwrap(), brick);
+        assert_eq!(decode_bincode::<BrickV2>(&encode_bincode(&brick).unwrap()).unwrap(), brick);
 
         let video = VideoPostV1 {
             updated_at: 1,
@@ -1089,6 +1261,16 @@ mod tests {
         assert_eq!(
             decode_bincode::<RuntimeV1>(&encode_bincode(&runtime).unwrap()).unwrap(),
             runtime
+        );
+
+        let group = GroupV1 {
+            gid: 42,
+            name: "默认分组".to_string(),
+            pin: true,
+        };
+        assert_eq!(
+            decode_bincode::<GroupV1>(&encode_bincode(&group).unwrap()).unwrap(),
+            group
         );
 
         let system = SystemSpecV1 {
@@ -1413,5 +1595,212 @@ mod tests {
         assert_eq!(probe(&cfg).unwrap(), cfg.path);
         assert!(cfg.path.exists());
         assert_eq!(probe(&cfg).unwrap(), cfg.path, "二次 probe 应幂等");
+    }
+
+    // ---------- T13 group 表（M1 `ec:group`；重启可见） ----------
+
+    #[test]
+    fn t13_group_crud_roundtrip_and_reopen() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        {
+            let store = Store::open_or_create(&cfg).unwrap();
+            store
+                .put_group(2, &GroupV1 { gid: 0, name: "全部".into(), pin: true })
+                .unwrap();
+            store.put_group(4, &sample_group(9)).unwrap();
+            assert_eq!(store.get_group(4).unwrap().unwrap().gid, 9);
+            assert!(store.get_group(2).unwrap().unwrap().pin);
+            assert_eq!(store.list_groups().unwrap().len(), 2);
+            // entity 0 非法
+            assert!(store.put_group(0, &sample_group(1)).is_err());
+            store.delete_group(4).unwrap();
+            assert!(store.get_group(4).unwrap().is_none());
+            store.close().unwrap();
+        }
+        let store = Store::open_or_create(&cfg).unwrap();
+        // 重启可见；已删组不复活
+        assert_eq!(store.get_group(2).unwrap().unwrap().gid, 0);
+        assert!(store.get_group(4).unwrap().is_none());
+        assert_eq!(
+            store.list_groups().unwrap(),
+            vec![(2, GroupV1 { gid: 0, name: "全部".into(), pin: true })]
+        );
+    }
+
+    // ---------- T14 全量 list_*（M1 启动加载） ----------
+
+    #[test]
+    fn t14_list_all_ec_tables_full_iteration() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        let mut store = Store::open_or_create(&cfg).unwrap();
+        let e2 = store.alloc_entity_id().unwrap();
+        let e3 = store.alloc_entity_id().unwrap();
+        store.put_brick(e2, &sample_brick("10001")).unwrap();
+        store.put_brick(e3, &sample_brick("10002")).unwrap();
+        store.put_group(e2, &sample_group(7)).unwrap();
+        store
+            .stage_video_post(
+                e2,
+                &VideoPostV1 {
+                    updated_at: 1,
+                    latest_ts: 2,
+                    items: vec![VideoItemV1 {
+                        bvid: "BV1".into(),
+                        title: "t".into(),
+                        pubdate: 3,
+                        extra: "{}".into(),
+                    }],
+                    extra: "{}".into(),
+                },
+            )
+            .unwrap();
+        store
+            .stage_live_post(
+                e3,
+                &LivePostV1 {
+                    updated_at: 1,
+                    is_open: true,
+                    title: "live".into(),
+                    url: "https://live".into(),
+                    ts: 0,
+                    extra: "{}".into(),
+                },
+            )
+            .unwrap();
+        store
+            .stage_comment_post(
+                e3,
+                &CommentPostV1 {
+                    updated_at: 1,
+                    items: vec![CommentItemV1 {
+                        rpid: 42,
+                        msg: "hi".into(),
+                        ts: 5,
+                        extra: "{}".into(),
+                    }],
+                    extra: "{}".into(),
+                },
+            )
+            .unwrap();
+        store
+            .stage_runtime(
+                e3,
+                &RuntimeV1 {
+                    updated_at: 4,
+                    fields: "{}".into(),
+                },
+            )
+            .unwrap();
+        store.flush().unwrap();
+
+        // key 升序（redb u64 有序），全量不遗漏
+        let bricks = store.list_bricks().unwrap();
+        assert_eq!(bricks.len(), 2);
+        assert_eq!((bricks[0].0, bricks[0].1.uid.as_str()), (e2, "10001"));
+        assert_eq!((bricks[1].0, bricks[1].1.uid.as_str()), (e3, "10002"));
+        let groups = store.list_groups().unwrap();
+        assert_eq!(groups, vec![(e2, sample_group(7))]);
+        let videos = store.list_video_posts().unwrap();
+        assert_eq!(videos.len(), 1);
+        assert_eq!((videos[0].0, videos[0].1.items[0].bvid.as_str()), (e2, "BV1"));
+        let lives = store.list_live_posts().unwrap();
+        assert_eq!((lives[0].0, lives[0].1.title.as_str()), (e3, "live"));
+        let comments = store.list_comment_posts().unwrap();
+        assert_eq!((comments[0].0, comments[0].1.items[0].rpid), (e3, 42));
+        let runtimes = store.list_runtimes().unwrap();
+        assert_eq!((runtimes[0].0, runtimes[0].1.updated_at), (e3, 4));
+    }
+
+    // ---------- T15 布局 1→2 升级（N11） ----------
+
+    #[test]
+    fn t15_layout_v1_db_auto_upgrade_idempotent() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        // 手工构造 v1 布局库（M0：magic + schema_version=1 + next_entity_id，无 ec:group 表）
+        {
+            let db = Database::create(&cfg.path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                meta.insert(META_FORMAT_MAGIC, FORMAT_MAGIC).unwrap();
+                meta.insert(META_SCHEMA_VERSION, 1).unwrap();
+                meta.insert(META_NEXT_ENTITY_ID, 2).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        // 首次 open：自动升到 SCHEMA_VERSION=2 且 ec:group 表可开（空表）
+        let store = Store::open_or_create(&cfg).unwrap();
+        store.close().unwrap();
+        {
+            let db = Database::open(&cfg.path).unwrap();
+            let read = db.begin_read().unwrap();
+            let meta = read.open_table(META).unwrap();
+            assert_eq!(
+                meta.get(META_SCHEMA_VERSION).unwrap().unwrap().value(),
+                SCHEMA_VERSION
+            );
+            let group_table = read.open_table(EC_GROUP).unwrap();
+            assert_eq!(group_table.len().unwrap(), 0);
+        }
+        // 幂等：二次 open 不再升级/报错，且 ec:group 可写
+        let store = Store::open_or_create(&cfg).unwrap();
+        store.put_group(2, &sample_group(1)).unwrap();
+        assert_eq!(store.get_group(2).unwrap().unwrap().gid, 1);
+        store.close().unwrap();
+    }
+
+    // ---------- T16 brick V1→V2 迁移链（N4；legacy 字节样例可迁 + 写回） ----------
+
+    #[test]
+    fn t16_brick_v1_bytes_migrate_to_v2_and_writeback() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        let store = Store::open_or_create(&cfg).unwrap();
+        // 手工落 v1 信封字节（legacy::BrickV1 序列化，模拟 M0 磁盘数据）
+        let v1 = legacy::BrickV1 {
+            uid: "42".into(),
+            uname: "旧 up".into(),
+            face: "https://face/42".into(),
+            sign: "签名".into(),
+            groups: vec!["g1".into(), "g2".into()],
+            silent: true,
+            followed_at: 1700000000,
+            updated_at: 1700000001,
+        };
+        let raw = encode_record(1, encode_bincode(&v1).unwrap()).unwrap();
+        {
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(EC_BRICK).unwrap();
+                table.insert(2_u64, raw.as_slice()).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        // 读：migrate-on-read 返回 V2（groups 空、ban=false、fid=0；其余字段保留）
+        let brick = store.get_brick(2).unwrap().unwrap();
+        assert_eq!(brick.uid, "42");
+        assert_eq!(brick.uname, "旧 up");
+        assert_eq!(brick.face, "https://face/42");
+        assert!(!brick.ban);
+        assert_eq!(brick.fid, 0);
+        assert!(brick.groups.is_empty());
+        assert!(brick.silent);
+        assert_eq!(brick.followed_at, 1700000000);
+        assert_eq!(brick.updated_at, 1700000001);
+        // 已写回：磁盘信封 version == 2
+        {
+            let read = store.db.begin_read().unwrap();
+            let table = read.open_table(EC_BRICK).unwrap();
+            let raw = table.get(2_u64).unwrap().unwrap().value().to_vec();
+            let rec: VersionedRecord = decode_bincode(&raw).unwrap();
+            assert_eq!(rec.version, 2);
+        }
+        // 二次读不再迁移；list_* 亦按 V2 全量返回
+        assert_eq!(store.get_brick(2).unwrap().unwrap().uid, "42");
+        assert_eq!(store.list_bricks().unwrap().len(), 1);
+        store.close().unwrap();
     }
 }
