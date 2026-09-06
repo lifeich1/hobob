@@ -24,7 +24,7 @@ use std::any::{Any, TypeId};
 /// 实体 id。
 ///
 /// - `0` 非法；
-/// - `1` 全局 runtime 实体（由上层 db.rs 固定，ecs 本身不预设）；
+/// - `1` 全局 runtime 实体（由上层 `db` 模块固定，ecs 本身不预设）；
 /// - `≥2` 普通实体。
 ///
 /// 实际分配权威在 `store::Store::alloc_entity_id`（单调、持久化）；

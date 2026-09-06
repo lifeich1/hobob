@@ -20,7 +20,7 @@
 ## 关键事实（跨目录）
 
 - **vendor 子模块**：`hobob/Cargo.toml` 以 path 依赖 `../vendor/bilibili-api-rs/bilibili-api-rs`（git 子模块 `vendor/bilibili-api-rs`，上游 `git@github.com:lifeich1/bilibili-api-rs.git`，锁 `7df423a`）。新 clone 后需 `git submodule update --init`，升级流程见 `vendor/UPGRADE.md`。
-- **数据文件**：v1 运行时状态持久化为 `~/bench.json`（`hobob/src/db.rs`）；v2 持久化地基为 `~/.hobob/state.redb`（redb，M0 阶段仅启动探针建空库，尚未接管 v1 数据路径）。state 路径优先级：CLI `--state <PATH>` > 环境变量 `HOBOB_STATE` > `$HOME/.hobob/state.redb`。日志配置模板复制到 `~/log4rs.yml`（`hobob/assets/log4rs.yml`）。
+- **数据文件**：v1 运行时状态持久化为 `~/bench.json`（`hobob/src/db/`）；v2 持久化地基为 `~/.hobob/state.redb`（redb，M0 阶段仅启动探针建空库，尚未接管 v1 数据路径）。state 路径优先级：CLI `--state <PATH>` > 环境变量 `HOBOB_STATE` > `$HOME/.hobob/state.redb`。日志配置模板复制到 `~/log4rs.yml`（`hobob/assets/log4rs.yml`）。
 - **端口**：hobob web 默认 `3731`；hobob_dbgconn RPC 默认 `21321`。
 - **目标设备**：部署目标为树莓派/香橙派（脚本里称 `my-pi`、`opi`），交叉编译产物 scp 到 `opi:/lintd/`。
 - **远程 schema**：`hobob/src/data_schema.rs` 从 `https://lintd.xyz/hobob/*.json` 加载 JSON schema 校验数据，离线/无外网环境会失败。

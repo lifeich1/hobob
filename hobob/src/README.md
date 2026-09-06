@@ -13,36 +13,16 @@
 - 模块声明：`bench`、`data_schema`、`db`、`engine`、`vm`、`www`、`chunk` + lalrpop 生成的 `chunkir`。
 - 二进制入口是 `src/main.rs`（仅调用 `prepare_log` + `main_loop`）。
 
-## `db.rs` — 数据中枢（1180 行，核心）
+## `db/` — 数据中枢（`db/mod.rs` 1794 行，核心）
 
-**结构**：
-- `FullBench`：全量状态（`up_info`、`up_index`、`up_by_fid`、`up_join_group`、`events`、`group_info`、`logs`、`runtime`、`commands`），全部用 `im` 不可变容器（`HashMap`/`OrdMap`/`OrdSet`/`Vector`），支持 COW 快照与 serde 持久化。
-- `WeiYuanHui`：数据所有者（单例）。内部三套通道：
-  - `updates: mpsc`（64 容量）收 `BenchUpdate`（旧+新快照 diff），`run/run_for/run_until` 泵消息并触发落盘
-  - `publish: watch` 广播当前 `FullBench`（读快照）
-  - `ev_tx/ev_rx: broadcast`（64 容量）广播 `events`
-  - `counter: VCounter`：`last_dump_ts`（节流落盘）、`push_miss_cnt`、`broadcast_void_cnt` 等统计
-- `WeiYuan`：chair（句柄，可 Clone），`apply/update` 提交修改、`recv` 读快照、`log/count` 写日志/计数、`changed/until_closing` 等待通知。
-
-**关键方法**（`WeiYuanHui`）：
-- `load(path)`：从 `~/bench.json` 反序列化；失败则新建空 `FullBench` 并保留 savepath。
-- `new_chair()/listen_events()/readonly()`：分发句柄。
-- `run/run_for/run_until`：处理更新队列；**内部保存判定**——按 `runtime.db` 的 `dump_timeout_min`/`vlog_dump_gap_sec` 节流，用 `FLAG_CLOSING`/`COUNTER_TAG` 标记避免重复保存（save 用 `AtomicRename` 语义写 `bench.json`）。
-
-**`FullBench` 方法**：
-- `follow/refresh`：写 `up_info`（含 `pick.basic.ban`）并 push `commands` 的 `fetch` 命令。
-- `force_silence`：`runtime.bucket.gap` 翻倍。
-- `toggle_group/touch_group`：分组增删（`group_info` + `up_join_group`）。
-- `users_pick`：按 gid/order/分页取卡片数据（排序走 `up_index`，权重 `__by_weight__`）。
-- `modify_up_info`：给指定 uid 的 up_info 应用闭包（engine 写回抓取结果用）。
-- bucket 系列：`bucket_duration_to_next/bucket_good/bucket_hang/bucket_double_gap`——抓取频率控制（成功 `good` 恢复、失败 `hang`、连续失败 `double_gap`）。
+数据中枢 `WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world` 组件 + `res` 内存索引），mpsc 提交（`ptr_eq` 冲突校验）/ watch 发布 / broadcast 事件。**db 已目录化，精炼导读见 `db/README.md`（架构要点、符号表、谁在用、坑、测试）；处理数据层问题先读它定位到符号，按需深挖，勿通读源码。**
 
 ## `www.rs` — HTTP 层（661 行）
 
 - `TERA`（lazy_static）：debug 从 `templates/**/*.html` 磁盘加载；release 用 `include_str!` 内嵌 4 个模板。
 - 渲染管线：`render(page, Result<Value>)` → tera 渲染，失败统一进 `failure.html`。
 - 校验：所有出站数据过 `ChairData::checker(schema_uri!(...))`（boon，见 `data_schema.rs`）。
-- 路由见 `hobob/README.md` 路由表；实现要点：`simpleapi()`（POST JSON 解析，16KB 上限，非法即 `UnparsableQuery` reject）、`create_op/do_api`（把 `FullBench` 方法包装成 API）、`route_card`（三组卡片渲染）。
+- 路由见 `hobob/README.md` 路由表；实现要点：`simpleapi()`（POST JSON 解析，16KB 上限，非法即 `UnparsableQuery` reject）、`create_op/do_api`（把 db 层方法包装成 API）、`route_card`（三组卡片渲染）。
 - SSE：`/ev/engine` 用 `BroadcastStream` 转发 events，`Lagged` 时发 comment 提示。
 - tests：warp::test 全路由端到端测试（`test_op_*`、`test_card_*`、`test_sse`）。
 
@@ -70,7 +50,7 @@
 
 - `vm.rs`：`Machine`（bench + watch + trunk 通道 + 定时器），`infer/step` 均为 `todo!()`。
 - `bench.rs`：另一套 `Bench` 实现——文件系统式 `DNode`（`Plain`/`Dir`/`Index`），`pull_log` 等为 `todo!()`。
-- 两者未被 `db.rs` 使用，历史遗留设计。
+- 两者未被 `db` 模块使用，历史遗留设计。
 
 ## `bin/show_expect_value.rs`
 
