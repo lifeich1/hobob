@@ -37,10 +37,18 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 - 状态修改必须走 `WeiYuan::apply/update` 通道，勿直接改 bench。
 - debug 构建模板从磁盘 `templates/` 加载（工作目录须为 `hobob/`），release 编译期内嵌。
 
-## Docs（按需深挖，勿重读源码）
+## Context/Token 规范（文档分层导航）
 
-- 各业务目录均有 `README.md`（导航/模块详述/坑）；深度专项见 `.agents/skills/hobob-lib/SKILL.md`（`run_skill` 调用）。
-- 跨目录事实、部署链路见根 `README.md`。
+读（先索引、后深挖，按需加载）：
+- 4 层导航：本文件（常驻索引）→ 根 `README.md`（目录导航表 + 跨目录关键事实 + 构建运行）→ 各目录 `README.md`（模块导航：符号表/谁在用/坑/测试）→ `.agents/skills/hobob-*.md`（lib.rs 启动、nix 工具链专项，`run_skill` 按需加载，勿预读）。
+- 源码最后读、只读片段：按 README 符号表行号（如 `Snapshot` ~172）用 read_file offset/limit 定位；禁止通读大文件（`db/mod.rs` ~1.8k 行、`www.rs` ~660 行——先读对应 README 小节）。
+- `target/` 勿读；标「已弃用/遗留」的（`xtask/`、`monkey/`、`assets/db_init.sql`）勿据此推断现状；坑与测试入口 README 已集中列，勿重读测试源码及 `vm.rs`/`bench.rs`。
+
+写（事实按层归属，不跨层复制）：
+- 跨目录 → 根 README「关键事实」；单模块 → 目录 README；深度背景 → skill；高频常驻 → 本文件。
+- 目录 README 固定骨架：一句话职责 → 表格（路径/符号/路由，带行号）→ 坑 → 测试入口；用表格不用散文。
+- 新符号/新坑/新路由同步写入 README 表格（行号漂移时更新）；过期条目标「已弃用/遗留」。
+- 本文件只写「做什么 + 去哪看」，不搬 README 正文。
 
 ## Notes
 
