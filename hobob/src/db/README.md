@@ -27,11 +27,12 @@ v1 **实际使用的数据层**（v2 `../store.rs` 尚未接管）。本页是�
 - `../lib.rs`：`WeiYuanHui::load` → `new_chair` 分发 www/engine，Ctrl+C 后 `close`/`closed` 优雅退出。
 - `../www.rs`：经 chair 提交操作 / 读快照渲染 / 订阅事件推 SSE。
 - `../engine.rs`：chair `recv` 取 `commands` → 抓取 → `update` 闭包内 `apply_fetch` 写回，bucket 控制节奏。
-- `../store.rs`（v2 地基）：尚未桥接；组件定义与其 V1 信封 T3 同构，T4 在 `WeiYuanHui::open(&store)` 桥接。
+- `../store.rs`（v2 持久化）：T4 已桥接——`WeiYuanHui::open(&store)` 启动全量加载（`load_snapshot`），
+  运行期 patch 经 `persist_diff` 落盘（brick/group 直写 + 易变 stage），`close()` 停机强刷；稳态零 redb 读。
 
 ## 坑
 
-- **`WeiYuanHui::load` 是壳**：M1 起不再读 `~/bench.json`（D12），空世界启动，v1 状态不会自动恢复；T4 换 `open(&store)` 后删除。
+- **持久化入口是 `WeiYuanHui::open(&store)`**（T4 起）：从 state.redb 全量加载重建 world/索引（`load_snapshot`），失败返回 Err（lib.rs 失败即退出）；v1 `load(bench.json)` 已删除（D12），旧 bench.json 不迁移。
 - 通道容量 mpsc/broadcast 均为 64；`events` 由 hub drain 后广播，订阅落后会 `Lagged`（www SSE 有提示）。
 - `VCounter`（统计/落盘节流）留在 hub 私有、不进快照：push_miss/broadcast_void 等不随 `publish` 发布。
 - 索引/排序维护封装在 `Snapshot` 方法内，勿绕过方法直接动 world/res。

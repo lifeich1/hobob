@@ -13,20 +13,20 @@
 //! - `VCounter`（push_miss/broadcast_void 统计）保留为 hub 私有字段而非挪进
 //!   `Resources`：它一旦进快照，push_miss 这类 hub 内部自更新就必须随 publish
 //!   发布或与权威快照分叉；v1 语义（统计不外发、节流记日志）要求它留在 hub。
-//! - 组件类型定义在本模块（内存模型），store 持久化信封（store.rs V1 类型）在
-//!   T3 升级后与之同构、T4 在 `WeiYuanHui::open` 桥接。
-//! - `WeiYuanHui::load(path)` 仅保留签名壳：M1 起不再读 `~/bench.json`（D12），
-//!   调用方（lib.rs）在 T4 换成 `open(&store)` 前先得到空世界。
+//! - 组件类型定义在本模块（内存模型），store 持久化信封（store.rs）与之同构，
+//!   桥接在 `WeiYuanHui::open`（启动加载）/`push` 持久化 diff（运行期直写 + stage）完成。
+//! - `WeiYuanHui::open(store)` 是唯一持久化入口（取代 v1 `load(bench.json)`，D12）；
+//!   `close()` 停机强刷易变缓冲后释放 store（D8）。
 
 use crate::data_schema::ChairData;
 use crate::ecs::{Entity, World};
+use crate::store::{self, Store};
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use serde_json::{from_value, to_value, Value};
 use std::collections::BTreeMap;
 use std::ops::Not;
-use std::path::Path;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -1012,6 +1012,374 @@ impl VCounter {
     }
 }
 
+// ============================== store 桥接（T4 持久化接轨） ==============================
+//
+// 内存组件 ↔ store 信封逐字段搬运 + 启动全量加载 + patch 落盘 diff。
+// 稳态零 redb 读：读路径只在 `load_snapshot`（启动）；运行期写路径仅两条——
+// brick/group 直写（`persist_diff`，逐 op 一次写事务）、易变组件 stage（VolatileBuffer 批量 flush）。
+// 组件字段与 store 信封的映射（M1 校准）：
+// - Brick ↔ BrickV2 完全同构；GroupInfo ↔ GroupV1 同构（key = group entity id）。
+// - LivePost ↔ LivePostV1：store 侧 `extra`（旧收容字段）写空、`entropy`/`entropy_txt`/`ts` 类型化。
+// - VideoPost ↔ VideoPostV1：store 侧 `extra`（条目与顶层）写空、`episodic` 类型化（D7）。
+// - CommentPost ↔ CommentPostV1：同上（M1 恒空）。
+// - RuntimeCfg ↔ RuntimeV1.fields：v1 runtime JSON 对象文本 ↔ `im::HashMap<String, Value>`。
+
+fn runtime_cfg_to_fields(cfg: &im::HashMap<String, Value>) -> String {
+    let m: serde_json::Map<String, Value> = cfg
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    serde_json::to_string(&m).unwrap_or_else(|_| "{}".into())
+}
+
+fn runtime_cfg_from_fields(fields: &str) -> im::HashMap<String, Value> {
+    serde_json::from_str::<serde_json::Map<String, Value>>(fields)
+        .map(|m| m.into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn brick_to_store(b: &Brick) -> store::BrickV2 {
+    store::BrickV2 {
+        uid: b.uid.clone(),
+        uname: b.uname.clone(),
+        face: b.face.clone(),
+        ban: b.ban,
+        fid: b.fid,
+        groups: b.groups.clone(),
+        silent: b.silent,
+        followed_at: b.followed_at,
+        updated_at: b.updated_at,
+    }
+}
+
+fn brick_from_store(b: store::BrickV2) -> Brick {
+    Brick {
+        uid: b.uid,
+        uname: b.uname,
+        face: b.face,
+        ban: b.ban,
+        fid: b.fid,
+        groups: b.groups,
+        silent: b.silent,
+        followed_at: b.followed_at,
+        updated_at: b.updated_at,
+    }
+}
+
+fn live_to_store(l: &LivePost) -> store::LivePostV1 {
+    store::LivePostV1 {
+        updated_at: l.updated_at,
+        is_open: l.is_open,
+        title: l.title.clone(),
+        url: l.url.clone(),
+        ts: l.ts,
+        extra: String::new(),
+        entropy: l.entropy,
+        entropy_txt: l.entropy_txt.clone(),
+    }
+}
+
+fn live_from_store(l: store::LivePostV1) -> LivePost {
+    LivePost {
+        updated_at: l.updated_at,
+        is_open: l.is_open,
+        title: l.title,
+        url: l.url,
+        ts: l.ts,
+        entropy: l.entropy,
+        entropy_txt: l.entropy_txt,
+    }
+}
+
+fn video_to_store(v: &VideoPost) -> store::VideoPostV1 {
+    store::VideoPostV1 {
+        updated_at: v.updated_at,
+        latest_ts: v.latest_ts,
+        items: v
+            .items
+            .iter()
+            .map(|i| store::VideoItemV1 {
+                bvid: i.bvid.clone(),
+                title: i.title.clone(),
+                pubdate: i.pubdate,
+                extra: String::new(),
+            })
+            .collect(),
+        extra: String::new(),
+        episodic: v.episodic.clone(),
+    }
+}
+
+fn video_from_store(v: store::VideoPostV1) -> VideoPost {
+    VideoPost {
+        updated_at: v.updated_at,
+        latest_ts: v.latest_ts,
+        items: v
+            .items
+            .into_iter()
+            .map(|i| VideoItem {
+                bvid: i.bvid,
+                title: i.title,
+                pubdate: i.pubdate,
+            })
+            .collect(),
+        episodic: v.episodic,
+    }
+}
+
+fn comment_to_store(c: &CommentPost) -> store::CommentPostV1 {
+    store::CommentPostV1 {
+        updated_at: c.updated_at,
+        items: c
+            .items
+            .iter()
+            .map(|i| store::CommentItemV1 {
+                rpid: i.rpid,
+                msg: i.msg.clone(),
+                ts: i.ts,
+                extra: String::new(),
+            })
+            .collect(),
+        extra: String::new(),
+    }
+}
+
+fn comment_from_store(c: store::CommentPostV1) -> CommentPost {
+    CommentPost {
+        updated_at: c.updated_at,
+        items: c
+            .items
+            .into_iter()
+            .map(|i| CommentItem {
+                rpid: i.rpid,
+                msg: i.msg,
+                ts: i.ts,
+            })
+            .collect(),
+    }
+}
+
+fn group_to_store(g: &GroupInfo) -> store::GroupV1 {
+    store::GroupV1 {
+        gid: g.gid,
+        name: g.name.clone(),
+        pin: g.pin,
+    }
+}
+
+fn group_from_store(g: store::GroupV1) -> GroupInfo {
+    GroupInfo {
+        gid: g.gid,
+        name: g.name,
+        pin: g.pin,
+    }
+}
+
+/// 启动全量加载：读 ec 各表 → 重建 world + 全部内存索引（uid/gid/up_by_fid/up_index/Members），
+/// 并把 entity id 分配器推进到 max+1（只增不减）。失败以 Err 返回（调用方失败即退出）。
+fn load_snapshot(store: &Store) -> Result<Snapshot> {
+    let mut snap = Snapshot::new(); // entity 1 runtime + 内置组 2/3（init 固定重建）
+    let mut max_id: u64 = ENTITY_GROUP_SPECIAL;
+
+    // runtime（entity 1；缺行则保持空 RuntimeCfg，v1 booting 语义）
+    for (e, rt) in store.list_runtimes()? {
+        if e == ENTITY_RUNTIME {
+            snap.world.insert(
+                Entity(ENTITY_RUNTIME),
+                RuntimeCfg(runtime_cfg_from_fields(&rt.fields)),
+            );
+        } else {
+            log::warn!("ignore orphan runtime row for entity {e}");
+        }
+    }
+
+    // 用户组（entity ≥4；内置 2/3 不落盘，防御性跳过异常落盘行）
+    let mut group_cnt = 0usize;
+    for (e, g) in store.list_groups()? {
+        if e < 4 {
+            log::warn!("ignore stored group row for builtin entity {e}");
+            continue;
+        }
+        ensure_spawn(&mut snap.world, e)?;
+        snap.res.gid_index.insert(g.gid, e);
+        snap.world.insert(Entity(e), group_from_store(g));
+        snap.world.insert(Entity(e), Members(im::OrdSet::default()));
+        max_id = max_id.max(e);
+        group_cnt += 1;
+    }
+
+    // up 实体 + brick 组件；易变组件/成员索引在其后补
+    let mut uid_of: BTreeMap<u64, String> = BTreeMap::new(); // entity → uid
+    let mut fid_order: Vec<(u64, u64)> = Vec::new(); // (fid, entity)
+    let mut up_cnt = 0usize;
+    for (e, b) in store.list_bricks()? {
+        ensure_spawn(&mut snap.world, e)?;
+        let brick = brick_from_store(b);
+        fid_order.push((brick.fid, e));
+        uid_of.insert(e, brick.uid.clone());
+        max_id = max_id.max(e);
+        up_cnt += 1;
+        snap.res.uid_index.insert(brick.uid.clone(), e);
+        // ctime 索引恒在（follow 即插 0，fetch 后 = updated_at；见 update_index 语义）
+        snap.res
+            .up_index
+            .entry("ctime".into())
+            .or_default()
+            .insert((brick.updated_at, brick.uid.clone()));
+        // 成员反索引：Brick.groups（group entity id）→ group 实体 Members
+        for ge in &brick.groups {
+            match snap.world.get_mut::<Members>(Entity(*ge)) {
+                Some(m) => {
+                    m.0.insert(e);
+                }
+                None => log::warn!("brick {e} groups points to unknown group entity {ge}"),
+            }
+        }
+        snap.world.insert(Entity(e), brick);
+    }
+    // up_by_fid = 按 fid（关注顺序）升序；fid 相同时保持 key 升序（稳定排序）
+    fid_order.sort_by_key(|&(fid, _)| fid);
+    snap.res.up_by_fid = fid_order.into_iter().map(|(_, e)| e).collect();
+
+    // 易变组件 + 排序索引重建（仅当值处于有效域才入索引，见 update_index 语义：
+    // video latest_ts > 0、live entropy >= 0；空/无效 up 不出现在该排序维）
+    for (e, v) in store.list_video_posts()? {
+        let Some(uid) = uid_of.get(&e) else {
+            log::warn!("ignore orphan video_post row for entity {e}");
+            continue;
+        };
+        let vp = video_from_store(v);
+        if vp.latest_ts > 0 {
+            snap.res
+                .up_index
+                .entry("video".into())
+                .or_default()
+                .insert((vp.latest_ts, uid.clone()));
+        }
+        snap.world.insert(Entity(e), vp);
+    }
+    for (e, l) in store.list_live_posts()? {
+        let Some(uid) = uid_of.get(&e) else {
+            log::warn!("ignore orphan live_post row for entity {e}");
+            continue;
+        };
+        let lp = live_from_store(l);
+        if lp.entropy >= 0 {
+            snap.res
+                .up_index
+                .entry("live".into())
+                .or_default()
+                .insert((lp.entropy, uid.clone()));
+        }
+        snap.world.insert(Entity(e), lp);
+    }
+    for (e, c) in store.list_comment_posts()? {
+        if !uid_of.contains_key(&e) {
+            log::warn!("ignore orphan comment_post row for entity {e}");
+            continue;
+        }
+        snap.world.insert(Entity(e), comment_from_store(c));
+    }
+
+    store.ensure_next_entity_id(max_id + 1)?;
+    log::info!(
+        "state.redb loaded: {up_cnt} up, {group_cnt} user group(s), next entity id >= {}",
+        max_id + 1
+    );
+    Ok(snap)
+}
+
+fn ensure_spawn(world: &mut World, e: u64) -> Result<()> {
+    if !world.is_alive(Entity(e)) {
+        world.spawn_at(e).ok_or_else(|| {
+            anyhow!("store key {e} conflicts with alive entity (corrupt state db?)")
+        })?;
+    }
+    Ok(())
+}
+
+/// hub patch 落盘 diff（`try_push` 校验通过后执行；hub 主循环同步写、单写者，D9）。
+/// 直写（逐 op 一个写事务）：brick/group 变化；stage 批量 flush：video/live/comment/runtime。
+/// 纯 res 变更（logs/events/commands/索引增量）不落盘（D4）；world 组件未变直接短路。
+/// 失败以 Err 返回，由调用方记日志继续（宽松语义，等价 v1 save_disk().ok()）。
+fn persist_diff(store: &mut Store, base: &Snapshot, next: &Snapshot) -> Result<()> {
+    if base.world.ptr_eq(&next.world) {
+        return Ok(());
+    }
+
+    // brick：逐实体比较，新增/修改 put、删除 remove
+    let base_bricks: BTreeMap<u64, &Brick> = base
+        .world
+        .iter::<Brick>()
+        .map(|(e, b)| (e.0, b))
+        .collect();
+    for (e, b) in next.world.iter::<Brick>() {
+        match base_bricks.get(&e.0) {
+            Some(bb) if *bb == b => continue,
+            _ => store.put_brick(e.0, &brick_to_store(b))?,
+        }
+    }
+    for e in base_bricks.keys() {
+        if !next.world.contains::<Brick>(Entity(*e)) {
+            store.delete_brick(*e)?;
+        }
+    }
+
+    // group：仅用户组（≥4）直写；内置组由 init 固定重建，永不落盘
+    let base_groups: BTreeMap<u64, &GroupInfo> = base
+        .world
+        .iter::<GroupInfo>()
+        .filter(|(e, _)| e.0 >= 4)
+        .map(|(e, g)| (e.0, g))
+        .collect();
+    for (e, g) in next.world.iter::<GroupInfo>() {
+        if e.0 < 4 {
+            continue;
+        }
+        match base_groups.get(&e.0) {
+            Some(gg) if *gg == g => continue,
+            _ => store.put_group(e.0, &group_to_store(g))?,
+        }
+    }
+    for e in base_groups.keys() {
+        if !next.world.contains::<GroupInfo>(Entity(*e)) {
+            store.delete_group(*e)?;
+        }
+    }
+
+    // 易变组件：组件变化才 stage（值比较；extra 收容字段由 *_to_store 写空）
+    for (e, v) in next.world.iter::<VideoPost>() {
+        if base.world.get::<VideoPost>(e) != Some(v) {
+            store.stage_video_post(e.0, &video_to_store(v))?;
+        }
+    }
+    for (e, l) in next.world.iter::<LivePost>() {
+        if base.world.get::<LivePost>(e) != Some(l) {
+            store.stage_live_post(e.0, &live_to_store(l))?;
+        }
+    }
+    for (e, c) in next.world.iter::<CommentPost>() {
+        if base.world.get::<CommentPost>(e) != Some(c) {
+            store.stage_comment_post(e.0, &comment_to_store(c))?;
+        }
+    }
+    // runtime（entity 1）：bucket/字段 JSON 变化 stage（bucket_access 每 fetch 一次）
+    let base_rt = base.world.get::<RuntimeCfg>(Entity(ENTITY_RUNTIME));
+    let next_rt = next.world.get::<RuntimeCfg>(Entity(ENTITY_RUNTIME));
+    if base_rt != next_rt {
+        if let Some(rt) = next_rt {
+            store.stage_runtime(
+                ENTITY_RUNTIME,
+                &store::RuntimeV1 {
+                    updated_at: now_timestamp(),
+                    fields: runtime_cfg_to_fields(&rt.0),
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
 // ============================== hub / chair ==============================
 
 /// 数据中枢：权威 `Snapshot` + 三通道（mpsc 提交 / watch 发布 / broadcast 事件）。
@@ -1024,6 +1392,9 @@ pub struct WeiYuanHui {
     ev_rx: broadcast::Receiver<Events>,
     bench: Snapshot,
     counter: VCounter,
+    /// 持久化（T4 接轨）：`open(&store)` 时 Some；`close()` 强刷后 take 置 None。
+    /// 默认/`From<Snapshot>` 构造为 None（纯内存 hub，测试/无盘场景）。
+    store: Option<Store>,
 }
 
 impl Default for WeiYuanHui {
@@ -1040,6 +1411,7 @@ impl Default for WeiYuanHui {
             ev_rx,
             bench: Snapshot::new(),
             counter: VCounter::default(),
+            store: None,
         }
     }
 }
@@ -1054,14 +1426,13 @@ impl From<Snapshot> for WeiYuanHui {
 }
 
 impl WeiYuanHui {
-    /// v1 遗留的 bench.json 加载入口。M1 起 bench.json 不再读取（D12）：
-    /// 空世界启动，T4 换 `WeiYuanHui::open(&store)` 后删除本方法。
-    pub fn load<P: AsRef<Path>>(path: P) -> Self {
-        log::warn!(
-            "v1 bench.json load is DISABLED (M1+): {} not read; state.redb is the single source",
-            path.as_ref().display()
-        );
-        Self::default()
+    /// 从 state.redb 全量加载重建权威快照（T4 持久化接轨，取代 v1 bench.json load）。
+    /// 加载失败返回 Err——调用方（lib.rs `main_loop`）失败即退出（M1 探针升级语义，D12）。
+    pub fn open(store: Store) -> Result<Self> {
+        let snap = load_snapshot(&store)?;
+        let mut h: Self = snap.into();
+        h.store = Some(store);
+        Ok(h)
     }
 
     #[must_use]
@@ -1094,6 +1465,17 @@ impl WeiYuanHui {
     }
 
     pub fn close(&mut self) {
+        // T4（D8）停机强刷：易变缓冲 flush + store close，顺序在发布 closing 标志之前
+        // （等价 v1 `save_disk` 位置）；失败记日志并继续退出（v1 save_disk().ok() 同款宽松度）。
+        if let Some(store) = self.store.take() {
+            let mut store = store;
+            if let Err(e) = store.flush() {
+                log::error!("close: store final flush failed: {e:#}");
+            }
+            if let Err(e) = store.close() {
+                log::error!("close: store close failed: {e:#}");
+            }
+        }
         self.updates_src = None;
         self.publish_dst = None;
         self.ev_tx = None;
@@ -1112,7 +1494,12 @@ impl WeiYuanHui {
         if !self.try_update().await {
             return false;
         }
-        // v1 这里做 save_disk（dump_now 节流）；M1 持久化由 store 直写 + maybe_flush 接管（T4）。
+        // T4：易变缓冲每轮兜底 flush（≥MAX_RECORDS 或距上次 ≥MAX_AGE 才真写，VolatileBuffer 内节流）。
+        if let Some(store) = &mut self.store {
+            if let Err(e) = store.maybe_flush() {
+                log::error!("run: store maybe_flush failed: {e:#}");
+            }
+        }
         true
     }
 
@@ -1175,6 +1562,13 @@ impl WeiYuanHui {
                 .collect();
             if !pass.is_empty() && self.ev_tx.as_ref().is_none_or(|tx| tx.send(pass).is_err()) {
                 self.counter.broadcast_void_cnt += 1;
+            }
+        }
+        // T4 持久化钩子：patch 落盘在 bench 替换前执行（hub 主循环同步写，D9）。
+        // 失败记日志继续（宽松，v1 save_disk().ok() 语义）；store=None（内存 hub）跳过。
+        if let Some(store) = &mut self.store {
+            if let Err(e) = persist_diff(store, &self.bench, &next) {
+                log::error!("persist patch failed (will retry on next diff): {e:#}");
             }
         }
         self.bench = next.clone();
@@ -1311,8 +1705,10 @@ impl WeiYuan {
 mod tests {
     use super::*;
     use crate::ecs::World;
+    use crate::store::StoreConfig;
     use std::mem;
     use std::time::Duration as Dur;
+    use tempfile::tempdir;
     use tokio::time::timeout;
 
     fn init() {
@@ -1791,4 +2187,158 @@ mod tests {
     // TODO test modify_up_info
     // 1. expect events
     // 2. index
+
+    // ---------- T4 持久化接轨 ----------
+
+    /// reopen 前后快照等价断言：实体/组件/索引/组成员/顺序逐项一致；
+    /// `RawInfo` 内存 only，reopen 后必须不存在（D13：raw 不再落盘）。
+    fn assert_reloaded_eq(orig: &Snapshot, rel: &Snapshot) {
+        assert_eq!(orig.res.uid_index.len(), rel.res.uid_index.len());
+        for (uid, e) in &orig.res.uid_index {
+            assert_eq!(rel.res.uid_index.get(uid), Some(e), "uid_index {uid}");
+            let e = Entity(*e);
+            assert_eq!(
+                rel.world.get::<Brick>(e),
+                orig.world.get::<Brick>(e),
+                "Brick {uid}"
+            );
+            assert_eq!(
+                rel.world.get::<LivePost>(e),
+                orig.world.get::<LivePost>(e),
+                "LivePost {uid}"
+            );
+            assert_eq!(
+                rel.world.get::<VideoPost>(e),
+                orig.world.get::<VideoPost>(e),
+                "VideoPost {uid}"
+            );
+            assert!(rel.world.get::<RawInfo>(e).is_none(), "raw 不落盘");
+        }
+        assert_eq!(rel.res.up_by_fid, orig.res.up_by_fid, "up_by_fid 关注顺序");
+        for typ in ["ctime", "video", "live"] {
+            let collect = |s: &Snapshot| {
+                s.res
+                    .up_index
+                    .get(typ)
+                    .map(|os| os.iter().cloned().collect::<Vec<_>>())
+            };
+            assert_eq!(collect(rel), collect(orig), "up_index[{typ}]");
+        }
+        assert_eq!(orig.res.gid_index.len(), rel.res.gid_index.len());
+        for (gid, ge) in &orig.res.gid_index {
+            assert_eq!(rel.res.gid_index.get(gid), Some(ge), "gid_index {gid}");
+            let ge = Entity(*ge);
+            assert_eq!(
+                rel.world.get::<GroupInfo>(ge),
+                orig.world.get::<GroupInfo>(ge),
+                "GroupInfo {gid}"
+            );
+            assert_eq!(
+                rel.world.get::<Members>(ge),
+                orig.world.get::<Members>(ge),
+                "Members {gid}"
+            );
+        }
+        assert_eq!(
+            rel.world.get::<RuntimeCfg>(Entity(ENTITY_RUNTIME)),
+            orig.world.get::<RuntimeCfg>(Entity(ENTITY_RUNTIME)),
+            "RuntimeCfg"
+        );
+    }
+
+    async fn apply_then_run(
+        center: &mut WeiYuanHui,
+        chair: &mut WeiYuan,
+        f: impl Fn(&mut Snapshot) -> Result<()>,
+    ) {
+        chair.apply(f).unwrap();
+        assert!(center.run().await, "hub run SHOULD process one patch");
+    }
+
+    #[tokio::test]
+    async fn test_store_roundtrip_persist_reopen() {
+        init();
+        let dir = tempdir().unwrap();
+        let cfg = StoreConfig::new(dir.path().join("state.redb"));
+        let info = json!({
+            "mid": 12345,
+            "name": "MKiiiiii",
+            "face": "https://i1.hdslb.com/bfs/face/x.jpg",
+            "live_room": {
+                "roomStatus": 1,
+                "liveStatus": 1,
+                "url": "https://live.bilibili.com/5229",
+                "title": "【鑒賞會】就打一关",
+                "watched_show": { "num": 14, "text_large": "14人看过" },
+            },
+        });
+        let videos = json!({
+            "list": { "vlist": [
+                { "play": 1, "title": "四分鐘畫個機", "created": 1_695_871_800, "bvid": "BV1" },
+            ]},
+            "episodic_button": { "uri": "//www.bilibili.com/medialist/play/12345" },
+        });
+        // ---- 第一代：hub 经 chair ops 驱动 store 写入 ----
+        let mut center =
+            WeiYuanHui::open(Store::open_or_create(&cfg).unwrap()).unwrap();
+        let mut chair = center.new_chair();
+        apply_then_run(&mut center, &mut chair, |b| {
+            b.follow(&json!({"uid": 12345, "enable": true}))
+        })
+        .await;
+        apply_then_run(&mut center, &mut chair, |b| {
+            b.follow(&json!({"uid": 2233, "enable": true}))
+        })
+        .await;
+        // toggle 自动建 placeholder 组 → touch 改名（组直写）
+        apply_then_run(&mut center, &mut chair, |b| {
+            b.toggle_group(&json!({"uid": 12345, "gid": 5}))
+        })
+        .await;
+        apply_then_run(&mut center, &mut chair, |b| {
+            b.touch_group(&json!({"gid": 5, "name": "组5", "pin": false}))
+        })
+        .await;
+        // fetch：brick/live/video 组件 + bucket（易变 stage）
+        apply_then_run(&mut center, &mut chair, |b| {
+            b.apply_fetch(12345, &info, &videos)
+        })
+        .await;
+        // 取关 2233（enable=false → ban=true，实体/索引保留）
+        apply_then_run(&mut center, &mut chair, |b| {
+            b.follow(&json!({"uid": 2233, "enable": false}))
+        })
+        .await;
+        let orig = center.bench().clone();
+        assert_eq!(orig.res.uid_index.len(), 2);
+        center.close();
+
+        // ---- 第二代：reopen 全量加载，世界/索引/顺序完全一致 ----
+        let mut center2 =
+            WeiYuanHui::open(Store::open_or_create(&cfg).unwrap()).unwrap();
+        assert_reloaded_eq(&orig, center2.bench());
+        // 行为级抽查：pending/fetch/ban 均正确恢复
+        let s = center2.bench();
+        assert_eq!(s.pick_of(12345).unwrap()["basic"]["name"], json!("MKiiiiii"));
+        assert_eq!(
+            s.pick_of(12345).unwrap()["video"]["url"],
+            json!("https://www.bilibili.com/medialist/play/12345")
+        );
+        assert!(s.pick_of(12345).unwrap().get("raw").is_none(), "raw 重启丢失（D13）");
+        assert_eq!(s.pick_of(2233).unwrap()["basic"]["ban"], json!(true));
+        assert_eq!(
+            s.filter_options()["filters"].as_array().unwrap().len(),
+            3,
+            "内置 0/1 + 用户组 5"
+        );
+        // 实体号推进：新 follow 分配原 max+1（store ensure_next_entity_id 已回填；
+        // up 实体 4/5 + 组实体 6 → 777 取 7）
+        let mut chair2 = center2.new_chair();
+        apply_then_run(&mut center2, &mut chair2, |b| {
+            b.follow(&json!({"uid": 777}))
+        })
+        .await;
+        assert_eq!(up_ids(center2.bench()), vec![4, 5, 7]);
+        center2.close();
+    }
 }

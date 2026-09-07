@@ -15,15 +15,11 @@ macro_rules! vpath {
     (@log_cf) => {
         vpath(&VP::LogCf)
     };
-    (@bench) => {
-        vpath(&VP::Bench)
-    };
 }
 
 enum VP {
     Rt,
     LogCf,
-    Bench,
 }
 
 #[allow(deprecated)]
@@ -36,7 +32,6 @@ fn vpath(vp: &VP) -> String {
         match vp {
             VP::Rt => "",
             VP::LogCf => "/log4rs.yml",
-            VP::Bench => "/bench.json",
         }
     )
 }
@@ -111,10 +106,10 @@ pub async fn main_loop() -> Result<()> {
     #[allow(deprecated)]
     let home = std::env::home_dir();
     let state_cfg = store::StoreConfig::new(store::StoreConfig::resolve(flags.state, home));
-    if let Err(e) = store::probe(&state_cfg) {
-        log::error!("state store probe failed (M0: non-fatal): {e:#}");
-    }
-    let mut center = WeiYuanHui::load(vpath!(@bench));
+    // T4（D12 / M1 探针升级）：store 打开失败即退出（取代 M0 non-fatal probe 日志）；
+    // WeiYuanHui::open 全量加载失败同样即退出。
+    let store = store::Store::open_or_create(&state_cfg)?;
+    let mut center = WeiYuanHui::open(store)?;
     {
         let chair = center.new_chair();
         let app = www::build_app(&mut center);
@@ -140,9 +135,24 @@ pub async fn main_loop() -> Result<()> {
         });
     }
 
-    tokio::signal::ctrl_c().await?;
-    log::error!("Caught ^C, quiting");
-    center.close();
+    // hub 调度循环（M1 §4.5）：消费 chairs 提交（try_push 内含持久化 diff）→ 每轮 maybe_flush；
+    // Ctrl+C 在循环内 close()（closing 标志发布 → www/engine 优雅退出 → closed()）。
+    let mut shutdown = Box::pin(tokio::signal::ctrl_c());
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                log::error!("Caught ^C, quiting");
+                center.close();
+                break;
+            }
+            running = center.run() => {
+                if !running {
+                    log::error!("hub updates channel closed unexpectedly");
+                    break;
+                }
+            }
+        }
+    }
     tokio::time::timeout(std::time::Duration::from_secs(30), center.closed())
         .await
         .map_err(|e| log::error!("force killing, graceful shutdown timeout: {}", e))

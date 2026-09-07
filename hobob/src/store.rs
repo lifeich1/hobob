@@ -192,6 +192,9 @@ pub struct VideoPostV1 {
     /// 保底字段：v1 JSON 里未类型化的部分先塞这里。
     /// JSON 文本（bincode 不支持 `serde_json::Value` 反序列化，按字符串收容；M1 校准语义）。
     pub extra: String,
+    /// API `episodic_button.uri`（`"//www.bilibili.com/..."` 无 `https:` 前缀）；
+    /// `db::VideoPost.episodic` 镜像（D7 增量字段，不 bump）。
+    pub episodic: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +217,10 @@ pub struct LivePostV1 {
     pub ts: i64,
     /// JSON 文本（同上）。
     pub extra: String,
+    /// 观看人数（v1 `pick.live.entropy`，live 排序索引值；无观看 -1）；
+    /// `db::LivePost.entropy/entropy_txt` 镜像（D7 增量字段，不 bump）。
+    pub entropy: i64,
+    pub entropy_txt: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -831,6 +838,11 @@ impl Store {
         self.buffer.flush(&self.db).map(|_| ())
     }
 
+    /// 阈值/间隔触发条件满足才 flush（run 循环每轮兜底；不满足为 no-op）。
+    pub fn maybe_flush(&mut self) -> Result<usize> {
+        self.buffer.maybe_flush(&self.db)
+    }
+
     /// 调参入口（测试/后续性能冒烟用）。
     #[cfg(test)]
     pub(crate) fn set_buffer_params(&mut self, max_records: usize, max_age: Duration) {
@@ -1126,6 +1138,7 @@ mod tests {
                             extra: json!({"part": 1}).to_string(),
                         }],
                         extra: json!({"n": 2}).to_string(),
+                        episodic: None,
                     },
                 )
                 .unwrap();
@@ -1223,6 +1236,7 @@ mod tests {
                 extra: json!([1, "two", null, {"k": true}]).to_string(),
             }],
             extra: json!({"mixed": [1, 2.5, "x", null]}).to_string(),
+            episodic: None,
         };
         assert_eq!(
             decode_bincode::<VideoPostV1>(&encode_bincode(&video).unwrap()).unwrap(),
@@ -1236,6 +1250,8 @@ mod tests {
             url: "https://live".to_string(),
             ts: 9,
             extra: json!(null).to_string(),
+            entropy: 0,
+            entropy_txt: String::new(),
         };
         assert_eq!(decode_bincode::<LivePostV1>(&encode_bincode(&live).unwrap()).unwrap(), live);
 
@@ -1434,6 +1450,7 @@ mod tests {
                     latest_ts: 0,
                     items: vec![],
                     extra: "{}".to_string(),
+                    episodic: None,
                 })
                 .unwrap();
             assert!(store.get_ec(TableId::VideoPost, 2).unwrap().is_none());
@@ -1444,6 +1461,7 @@ mod tests {
                     latest_ts: 0,
                     items: vec![],
                     extra: "{}".to_string(),
+                    episodic: None,
                 })
                 .unwrap();
             assert!(store.get_ec(TableId::VideoPost, 2).unwrap().is_some());
@@ -1466,6 +1484,7 @@ mod tests {
                 latest_ts: 0,
                 items: vec![],
                 extra: "{}".to_string(),
+                episodic: None,
             })
             .unwrap();
         assert!(store.get_ec(TableId::VideoPost, 2).unwrap().is_none());
@@ -1477,6 +1496,7 @@ mod tests {
                 latest_ts: 0,
                 items: vec![],
                 extra: "{}".to_string(),
+                episodic: None,
             })
             .unwrap();
         assert!(store.get_ec(TableId::VideoPost, 2).unwrap().is_some());
@@ -1496,6 +1516,7 @@ mod tests {
                     latest_ts: 0,
                     items: vec![],
                     extra: "{}".to_string(),
+                    episodic: None,
                 })
                 .unwrap();
             store.flush().unwrap();
@@ -1510,6 +1531,7 @@ mod tests {
                     latest_ts: 0,
                     items: vec![],
                     extra: "{}".to_string(),
+                    episodic: None,
                 })
                 .unwrap();
             assert!(store.get_ec(TableId::VideoPost, 3).unwrap().is_none());
@@ -1653,6 +1675,7 @@ mod tests {
                         extra: "{}".into(),
                     }],
                     extra: "{}".into(),
+                    episodic: None,
                 },
             )
             .unwrap();
@@ -1666,6 +1689,8 @@ mod tests {
                     url: "https://live".into(),
                     ts: 0,
                     extra: "{}".into(),
+                    entropy: 0,
+                    entropy_txt: String::new(),
                 },
             )
             .unwrap();
