@@ -18,6 +18,7 @@ use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 // ============================== 编解码 ==============================
@@ -108,12 +109,14 @@ const EC_LIVE_POST: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:live_
 const EC_COMMENT_POST: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:comment_post");
 const EC_RUNTIME: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:runtime");
 const EC_GROUP: TableDefinition<u64, &[u8]> = TableDefinition::new("ec:group");
+const KV_LOG: TableDefinition<u64, &[u8]> = TableDefinition::new("kv:log");
 
 /// 文件格式魔数：ASCII `"HOBB"`。
 pub const FORMAT_MAGIC: u64 = 0x484F4242;
 /// 布局级版本：表集合/键编码变化才 bump（与每表记录版本是两个维度）。
-/// M0 = 1；M1 = 2（新增 `ec:group` 表，升级钩子见 `upgrade_layout_1_to_2`）。
-pub const SCHEMA_VERSION: u64 = 2;
+/// M0 = 1；M1 = 2（新增 `ec:group` 表，升级钩子见 `upgrade_layout_1_to_2`）；
+/// M2 = 3（新增 `kv:log` 表，升级钩子见 `upgrade_layout_2_to_3`）。
+pub const SCHEMA_VERSION: u64 = 3;
 const META_FORMAT_MAGIC: &str = "format_magic";
 const META_SCHEMA_VERSION: &str = "schema_version";
 const META_NEXT_ENTITY_ID: &str = "next_entity_id";
@@ -263,6 +266,74 @@ pub struct GroupV1 {
     pub pin: bool,
 }
 
+/// KV 日志记录（M2 新增 `kv:log` 表；与 log4rs appender 同构）。
+/// key = 全局单调日志序号 seq（u64，0 起，跨重启续号）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogRecordV1 {
+    /// Unix 毫秒（append 时取 Utc::now；未使用 chrono 以保持 store 无 chrono 依赖）。
+    pub ts_ms: i64,
+    /// 1=ERROR 2=WARN 3=INFO 4=DEBUG 5=TRACE（log4rs 直接映射）。
+    pub level: u8,
+    /// 模块路径（log4rs `record.target()`）；业务镜像 = `"op"`。
+    pub target: String,
+    pub msg: String,
+    /// `"file:line"`（可选，业务镜像恒 None）。
+    pub loc: Option<String>,
+    /// 业务上下文 JSON 文本（本期恒空串；M3/M5 填充点）。
+    pub ctx: String,
+}
+
+impl Default for LogRecordV1 {
+    fn default() -> Self {
+        Self {
+            ts_ms: 0,
+            level: 3, // INFO
+            target: String::new(),
+            msg: String::new(),
+            loc: None,
+            ctx: String::new(),
+        }
+    }
+}
+
+/// KV 日志查询参数（供 M5 UI 日志页；本期不接 UI/HTTP，验收以单测为准）。
+/// 默认：limit=200、最新在前（seq 降序）。
+#[derive(Debug, Clone)]
+pub struct LogQuery<'a> {
+    pub limit: usize,
+    pub before_seq: Option<u64>,
+    pub min_level: Option<u8>,
+    pub target_prefix: Option<&'a str>,
+    pub since_ms: Option<i64>,
+    pub until_ms: Option<i64>,
+}
+
+impl<'a> Default for LogQuery<'a> {
+    fn default() -> Self {
+        Self {
+            limit: 200,
+            before_seq: None,
+            min_level: None,
+            target_prefix: None,
+            since_ms: None,
+            until_ms: None,
+        }
+    }
+}
+
+/// KV 日志统计（供 `log_stats()`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogStats {
+    /// 当前 `kv:log` 表总条数。
+    pub total: u64,
+    /// 通道满丢弃 + 写失败累计（logkv 模块写入，store 层合并读出）。
+    pub dropped: u64,
+}
+
+/// KV 日志丢弃计数（通道满 + 写失败；logkv 模块写入，store 层读取）。
+pub static LOG_DROPPED: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemSpecV1 {
@@ -380,6 +451,7 @@ fn validate_and_repair_meta(db: &Database, path: &std::path::Path) -> Result<()>
         while cur < SCHEMA_VERSION {
             match cur {
                 1 => upgrade_layout_1_to_2(&txn)?,
+                2 => upgrade_layout_2_to_3(&txn)?,
                 _ => bail!("missing layout upgrade hook from {cur}"),
             }
             cur += 1;
@@ -404,6 +476,13 @@ fn validate_and_repair_meta(db: &Database, path: &std::path::Path) -> Result<()>
 fn upgrade_layout_1_to_2(txn: &WriteTransaction) -> Result<()> {
     txn.open_table(EC_GROUP)
         .map_err(|e| anyhow!("upgrade layout 1 -> 2: open ec:group table: {e}"))?;
+    Ok(())
+}
+
+/// 布局 2 → 3：新增 `kv:log` 表。幂等：已升到 3 的库不会走到这里。
+fn upgrade_layout_2_to_3(txn: &WriteTransaction) -> Result<()> {
+    txn.open_table(KV_LOG)
+        .map_err(|e| anyhow!("upgrade layout 2 -> 3: open kv:log table: {e}"))?;
     Ok(())
 }
 
@@ -1010,6 +1089,174 @@ impl Store {
             out.push((key.value(), v));
         }
         Ok(out)
+    }
+
+    // ---- kv:log 表（M2 追加表；不复用 VolatileBuffer，独立写事务） ----
+
+    /// 批量追加日志记录（单写事务，seq 由调用方保证单调）。
+    pub fn append_logs(&self, batch: &[(u64, LogRecordV1)]) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let schema = TableSchema::v1();
+        let txn = self
+            .db
+            .begin_write()
+            .context("begin write for append_logs")?;
+        {
+            let mut table = txn
+                .open_table(KV_LOG)
+                .map_err(|e| anyhow!("open kv:log: {e}"))?;
+            for (seq, rec) in batch {
+                let payload = encode_bincode(rec)?;
+                let raw = encode_record(schema.current_version, payload)?;
+                table
+                    .insert(*seq, raw.as_slice())
+                    .map_err(|e| anyhow!("kv:log insert seq {seq}: {e}"))?;
+            }
+        }
+        txn.commit().context("commit append_logs")?;
+        Ok(())
+    }
+
+    /// 裁剪最旧记录，保留最近 `max_records` 条。返回删除条数。
+    pub fn trim_logs(&self, max_records: u64) -> Result<u64> {
+        let len = self.log_len()?;
+        if len <= max_records {
+            return Ok(0);
+        }
+        let delete_count = len - max_records;
+        // 先收集待删 key（最旧 = 最小 seq）
+        let to_remove: Vec<u64> = {
+            let read = self.db.begin_read().context("begin read for trim_logs collect")?;
+            let table = match read.open_table(KV_LOG) {
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+                Err(e) => return Err(anyhow!("open kv:log: {e}")),
+                Ok(t) => t,
+            };
+            let mut keys = Vec::with_capacity(delete_count as usize);
+            for entry in table
+                .iter()
+                .map_err(|e| anyhow!("iterate kv:log for trim: {e}"))?
+            {
+                let (key, _) = entry.map_err(|e| anyhow!("kv:log trim entry: {e}"))?;
+                keys.push(key.value());
+                if keys.len() as u64 >= delete_count {
+                    break;
+                }
+            }
+            keys
+        };
+        if to_remove.is_empty() {
+            return Ok(0);
+        }
+        let txn = self
+            .db
+            .begin_write()
+            .context("begin write for trim_logs")?;
+        {
+            let mut table = txn
+                .open_table(KV_LOG)
+                .map_err(|e| anyhow!("open kv:log: {e}"))?;
+            for seq in &to_remove {
+                table
+                    .remove(*seq)
+                    .map_err(|e| anyhow!("kv:log trim remove seq {seq}: {e}"))?;
+            }
+        }
+        txn.commit().context("commit trim_logs")?;
+        Ok(to_remove.len() as u64)
+    }
+
+    /// 查询日志（草案 API，供 M5 UI；seq 降序，最新在前）。
+    pub fn query_logs(&self, q: &LogQuery) -> Result<Vec<(u64, LogRecordV1)>> {
+        let schema = TableSchema::v1();
+        let read = self.db.begin_read().context("begin read for query_logs")?;
+        let table = match read.open_table(KV_LOG) {
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(anyhow!("open kv:log: {e}")),
+            Ok(t) => t,
+        };
+        let mut out = Vec::new();
+        // 倒序遍历（redb 默认升序，倒序需手动实现）
+        let iter = table
+            .iter()
+            .map_err(|e| anyhow!("iterate kv:log: {e}"))?;
+        // 收集所有 → 倒序 → 过滤
+        let mut all: Vec<(u64, Vec<u8>)> = Vec::new();
+        for entry in iter {
+            let (key, value) = entry.map_err(|e| anyhow!("kv:log query entry: {e}"))?;
+            let seq = key.value();
+            // before_seq 游标：只取 seq < before_seq
+            if let Some(before) = q.before_seq {
+                if seq >= before {
+                    continue;
+                }
+            }
+            all.push((seq, value.value().to_vec()));
+        }
+        drop(table);
+        drop(read);
+
+        // 倒序（最新在前）
+        all.reverse();
+        for (seq, raw) in all {
+            let payload = decode_envelope_to_current(
+                schema,
+                &raw,
+                &format!("kv:log seq {seq}"),
+            )?;
+            let rec: LogRecordV1 = decode_bincode(&payload)
+                .with_context(|| format!("decode kv:log seq {seq}"))?;
+
+            // 过滤
+            if let Some(min_lv) = q.min_level {
+                if rec.level > min_lv {
+                    continue;
+                }
+            }
+            if let Some(prefix) = q.target_prefix {
+                if !rec.target.starts_with(prefix) {
+                    continue;
+                }
+            }
+            if let Some(since) = q.since_ms {
+                if rec.ts_ms < since {
+                    continue;
+                }
+            }
+            if let Some(until) = q.until_ms {
+                if rec.ts_ms > until {
+                    continue;
+                }
+            }
+
+            out.push((seq, rec));
+            if out.len() >= q.limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// 返回 `kv:log` 表当前记录数。表不存在返回 0。
+    pub fn log_len(&self) -> Result<u64> {
+        let read = self.db.begin_read().context("begin read for log_len")?;
+        let table = match read.open_table(KV_LOG) {
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+            Err(e) => return Err(anyhow!("open kv:log: {e}")),
+            Ok(t) => t,
+        };
+        let len = table.len().map_err(|e| anyhow!("kv:log len: {e}"))?;
+        Ok(len)
+    }
+
+    /// 日志统计：总条数 + 丢弃计数。
+    pub fn log_stats(&self) -> Result<LogStats> {
+        Ok(LogStats {
+            total: self.log_len()?,
+            dropped: LOG_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
+        })
     }
 }
 
@@ -1876,5 +2123,290 @@ mod tests {
         assert_eq!(store.get_brick(2).unwrap().unwrap().uid, "42");
         assert_eq!(store.list_bricks().unwrap().len(), 1);
         store.close().unwrap();
+    }
+
+    // ---------- T17 kv:log 追加/持久化/重启可见（N1） ----------
+
+    fn sample_log(seq: u64, msg: &str, level: u8, target: &str) -> (u64, LogRecordV1) {
+        (
+            seq,
+            LogRecordV1 {
+                ts_ms: 1700000000000 + seq as i64,
+                level,
+                target: target.to_string(),
+                msg: msg.to_string(),
+                loc: Some("test.rs:1".to_string()),
+                ctx: String::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn t17_append_logs_reopen_visible_and_seq_continues() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        {
+            let store = Store::open_or_create(&cfg).unwrap();
+            let batch: Vec<_> = (0..100)
+                .map(|i| sample_log(i, &format!("msg-{i}"), 3, "test::mod"))
+                .collect();
+            store.append_logs(&batch).unwrap();
+            assert_eq!(store.log_len().unwrap(), 100);
+            // 同进程读事务可见
+            let results = store
+                .query_logs(&LogQuery {
+                    limit: 200,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert_eq!(results.len(), 100);
+            // 最新在前
+            assert_eq!(results[0].0, 99);
+            assert_eq!(results[0].1.msg, "msg-99");
+            assert_eq!(results[99].0, 0);
+            store.close().unwrap();
+        }
+        // reopen：全量可查，seq 续号不重复
+        let store = Store::open_or_create(&cfg).unwrap();
+        assert_eq!(store.log_len().unwrap(), 100);
+        let results = store
+            .query_logs(&LogQuery::default())
+            .unwrap();
+        assert_eq!(results.len(), 100);
+        // 追加新批次：seq 从 100 起（调用方分配，此处验证 reopen 后表不丢数据）
+        let batch2: Vec<_> = (100..110)
+            .map(|i| sample_log(i, &format!("msg-{i}"), 2, "test::mod"))
+            .collect();
+        store.append_logs(&batch2).unwrap();
+        assert_eq!(store.log_len().unwrap(), 110);
+        store.close().unwrap();
+    }
+
+    // ---------- T18 裁剪边界（N2） ----------
+
+    #[test]
+    fn t18_trim_logs_keeps_newest() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        let store = Store::open_or_create(&cfg).unwrap();
+        let batch: Vec<_> = (0..10)
+            .map(|i| sample_log(i, &format!("m{i}"), 3, "t"))
+            .collect();
+        store.append_logs(&batch).unwrap();
+        assert_eq!(store.log_len().unwrap(), 10);
+
+        // 上限 = 10，恰好等于：不删
+        assert_eq!(store.trim_logs(10).unwrap(), 0);
+        assert_eq!(store.log_len().unwrap(), 10);
+
+        // 上限 = 5：删最旧 5 条（seq 0..5），保留 5..10
+        assert_eq!(store.trim_logs(5).unwrap(), 5);
+        assert_eq!(store.log_len().unwrap(), 5);
+        let results = store
+            .query_logs(&LogQuery {
+                limit: 20,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(results.len(), 5);
+        let seqs: Vec<u64> = results.iter().map(|(s, _)| *s).collect();
+        assert_eq!(seqs, vec![9, 8, 7, 6, 5]);
+
+        // 上限 = 0：全删
+        assert_eq!(store.trim_logs(0).unwrap(), 5);
+        assert_eq!(store.log_len().unwrap(), 0);
+
+        // 空表 trim 不报错
+        assert_eq!(store.trim_logs(5).unwrap(), 0);
+        store.close().unwrap();
+    }
+
+    // ---------- T19 查询过滤（N3） ----------
+
+    #[test]
+    fn t19_query_logs_filters() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        let store = Store::open_or_create(&cfg).unwrap();
+        let mut batch = Vec::new();
+        for i in 0..50 {
+            let level = match i % 5 {
+                0 => 1u8, // ERROR
+                1 => 2,   // WARN
+                2 => 3,   // INFO
+                3 => 4,   // DEBUG
+                _ => 5,   // TRACE
+            };
+            let target = if i < 25 { "hobob::db" } else { "op" };
+            batch.push((
+                i as u64,
+                LogRecordV1 {
+                    ts_ms: 1000 + i as i64 * 100,
+                    level,
+                    target: target.to_string(),
+                    msg: format!("msg-{i}"),
+                    loc: None,
+                    ctx: String::new(),
+                },
+            ));
+        }
+        store.append_logs(&batch).unwrap();
+
+        // limit 截断
+        let r = store
+            .query_logs(&LogQuery {
+                limit: 5,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(r.len(), 5);
+        assert_eq!(r[0].0, 49); // 最新在前
+
+        // before_seq 翻页
+        let r = store
+            .query_logs(&LogQuery {
+                limit: 100,
+                before_seq: Some(5),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(r.len(), 5);
+        assert_eq!(r[0].0, 4);
+        assert_eq!(r[4].0, 0);
+
+        // min_level: 只取 ERROR(1)+WARN(2)
+        let r = store
+            .query_logs(&LogQuery {
+                limit: 100,
+                min_level: Some(2),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(r.iter().all(|(_, rec)| rec.level <= 2));
+        // 级别 1+2 各占 1/5，50 条共 20 条
+        assert_eq!(r.len(), 20);
+
+        // target_prefix
+        let r = store
+            .query_logs(&LogQuery {
+                limit: 100,
+                target_prefix: Some("op"),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(r.len(), 25);
+        assert!(r.iter().all(|(_, rec)| rec.target == "op"));
+
+        // 时间窗
+        let r = store
+            .query_logs(&LogQuery {
+                limit: 100,
+                since_ms: Some(2000),
+                until_ms: Some(3000),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(r.iter().all(|(_, rec)| rec.ts_ms >= 2000 && rec.ts_ms <= 3000));
+
+        // 空结果
+        let r = store
+            .query_logs(&LogQuery {
+                target_prefix: Some("nonexistent"),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(r.is_empty());
+
+        store.close().unwrap();
+    }
+
+    // ---------- T20 布局 2→3 升级（N9） ----------
+
+    #[test]
+    fn t20_layout_v2_db_auto_upgrade_to_v3_idempotent() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        // 手工构造 v2 布局库（M1：magic + schema_version=2 + next_entity_id，有 ec:group 表，无 kv:log 表）
+        {
+            let db = Database::create(&cfg.path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                meta.insert(META_FORMAT_MAGIC, FORMAT_MAGIC).unwrap();
+                meta.insert(META_SCHEMA_VERSION, 2).unwrap();
+                meta.insert(META_NEXT_ENTITY_ID, 2).unwrap();
+            }
+            // 建 ec:group 表（v2 特征）
+            txn.open_table(EC_GROUP).unwrap();
+            txn.commit().unwrap();
+        }
+        // 首次 open：自动升到 SCHEMA_VERSION=3 且 kv:log 表可开（空表）
+        let store = Store::open_or_create(&cfg).unwrap();
+        store.close().unwrap();
+        {
+            let db = Database::open(&cfg.path).unwrap();
+            let read = db.begin_read().unwrap();
+            let meta = read.open_table(META).unwrap();
+            assert_eq!(
+                meta.get(META_SCHEMA_VERSION).unwrap().unwrap().value(),
+                SCHEMA_VERSION
+            );
+            let log_table = read.open_table(KV_LOG).unwrap();
+            assert_eq!(log_table.len().unwrap(), 0);
+        }
+        // 幂等：二次 open 不再升级/报错，且 kv:log 可写
+        let store = Store::open_or_create(&cfg).unwrap();
+        store
+            .append_logs(&[sample_log(0, "hello", 3, "test")])
+            .unwrap();
+        assert_eq!(store.log_len().unwrap(), 1);
+        store.close().unwrap();
+
+        // 版本过高（schema > 3）仍拒开
+        {
+            let db = Database::open(&cfg.path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                meta.insert(META_SCHEMA_VERSION, 99).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        let err = Store::open_or_create(&cfg).unwrap_err();
+        assert!(format!("{err:#}").contains("数据文件比二进制新"));
+    }
+
+    // ---------- T21 v1 库升到 v3（跨两级升级） ----------
+
+    #[test]
+    fn t21_layout_v1_db_upgrades_to_v3() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        {
+            let db = Database::create(&cfg.path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                meta.insert(META_FORMAT_MAGIC, FORMAT_MAGIC).unwrap();
+                meta.insert(META_SCHEMA_VERSION, 1).unwrap();
+                meta.insert(META_NEXT_ENTITY_ID, 2).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        let store = Store::open_or_create(&cfg).unwrap();
+        // 两级升级：1→2→3，ec:group 和 kv:log 表都存在
+        store.close().unwrap();
+        {
+            let db = Database::open(&cfg.path).unwrap();
+            let read = db.begin_read().unwrap();
+            let meta = read.open_table(META).unwrap();
+            assert_eq!(
+                meta.get(META_SCHEMA_VERSION).unwrap().unwrap().value(),
+                SCHEMA_VERSION
+            );
+            // 两表都可开
+            assert!(read.open_table(EC_GROUP).is_ok());
+            assert!(read.open_table(KV_LOG).is_ok());
+        }
     }
 }
