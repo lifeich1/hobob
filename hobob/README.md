@@ -1,23 +1,26 @@
 # hobob — 主应用
 
-B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程内三部分协作：
+B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程内四部分协作：
 
 - **`www`**（`src/www.rs`）：warp HTTP 服务，渲染页面（tera 模板）+ 操作 API + SSE 事件推送
-- **`engine`**（`src/engine.rs`）：后台抓取循环，消费 `commands` 队列，用 `bilibili-api-rs` 抓取 UP 主数据
-- **`db`**（`src/db/`，核心）：数据中枢 `WeiYuanHui`/`WeiYuan`，持权威 `Snapshot`（ECS `world` + 内存索引 `res`），全部修改经 chair 通道提交（`ptr_eq` 冲突校验）、watch/broadcast 发布（详见 `src/db/README.md`）
+- **`systems`**（`src/systems.rs`，原 `engine.rs`）：后台抓取循环 `fetch_loop`，消费 `commands` 队列，用 `bilibili-api-rs` 抓取 UP 主数据；动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/内置 `builtin.tick`）
+- **`db`**（`src/db/`，核心）：数据中枢 `WeiYuanHui`/`WeiYuan`，持权威 `Snapshot`（ECS `world` + 内存索引 `res`），全部修改经 chair 通道提交（`ptr_eq` 冲突校验）、watch/broadcast 发布、`#SYSEV#` 事件通道分发动态 system（详见 `src/db/README.md`）
+- **`store`**（`src/store.rs`）：redb + bincode 持久化（详见下）
 
 ## 目录结构
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/lib.rs` | crate 入口：日志初始化 `prepare_log`、启动主循环 `main_loop`、`vpath!`/`schema_uri!` 宏、CLI `Flags`（`--port` 默认 3731、`--state`/`HOBOB_STATE` 指定 v2 状态文件）、store 启动探针 |
-| `src/db/`（`mod.rs`） | 数据层（详见 `src/db/README.md`）：`WeiYuanHui`/`WeiYuan` + `Snapshot`，通道提交 + 快照发布（**v1 实际使用的数据层**） |
-| `src/store.rs` | v2 持久化地基（redb + bincode）：7 张表、typed CRUD、版本信封 + 迁移钩子、`VolatileBuffer` 批量 flush；M0 仅测试 + 启动探针使用，**未接管 v1 数据路径** |
+| `src/lib.rs` | crate 入口：日志初始化 `prepare_log`、启动主循环 `main_loop`（hub 循环 + spawn www/fetch_loop）、`vpath!`/`schema_uri!` 宏、CLI `Flags`（`--port` 默认 3731、`--state`/`HOBOB_STATE` 指定状态文件）、`Store::open_or_create` 失败即退出 |
+| `src/db/`（`mod.rs`） | 数据层（详见 `src/db/README.md`）：`WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world`：Brick/LivePost/VideoPost/GroupInfo 等组件 + entity 1 runtime；`res` 内存索引/队列），通道提交 + 快照发布 + 持久化桥接（`open` 全量加载、`persist_diff` 直写/stage） |
+| `src/ecs.rs` | 轻量 ECS 内核（`Entity`/`Component`/`Storage`/`World`：spawn/insert/remove/get/iter + `ptr_eq` 结构共享判定；无外部依赖） |
+| `src/store.rs` | redb + bincode 持久化：8 张表（meta/systems/ec:*）、typed CRUD、`VersionedRecord` 版本信封 + 迁移钩子（Brick V1→V2）、`VolatileBuffer` 批量 flush、布局升级链；**M1 起接管数据路径**（brick/group 直写、video/live/comment/runtime 批量 flush、close 强刷，稳态零读） |
+| `src/systems.rs` | 基础 system：`fetch_loop` 抓取循环、动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/`builtin.tick` 补抓）；原 `engine.rs` 迁入（已删） |
 | `src/www.rs` | warp 路由、tera 渲染、SSE、boon schema 校验 |
-| `src/engine.rs` | 后台引擎循环、`fetch` 命令执行、bucket 速率控制 |
 | `src/data_schema.rs` | JSON schema 编译（boon），schema 从 `https://lintd.xyz/hobob/` 远程加载 |
 | `src/chunk.rs` + `src/chunkir.lalrpop` | Chunk AST 类型 + lalrpop 解析器（build.rs 生成，见 `src/README.md`） |
 | `src/vm.rs`、`src/bench.rs` | 未完成的设计实验（含 `todo!()`，勿依赖） |
+| `src/bin/perf_smoke.rs` | M1 性能冒烟 bin（200 up × 10 轮 fetch 突发，release 运行，见 `.plans/m1-ecs-core.md` §7） |
 | `src/bin/show_expect_value.rs` | 辅助 bin：打印 Chunk AST 示例 JSON |
 | `src/test_data/` | chunk 解析器测试用例（`in.txt` + `expect.json` 配对） |
 | `templates/` | tera HTML 模板；debug 从磁盘加载，release 编译期 `include_str!` 内嵌（`src/www.rs` `TERA`） |
@@ -32,20 +35,20 @@ B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程�
                       │ 经 WeiYuan（chair 句柄）提交
                       ▼
               WeiYuanHui 数据中枢 (Snapshot: ECS world + res)
-                      │ watch/broadcast 分发         │ mpsc 提交
-                      ▼                             ▼
-              页面渲染 / SSE 事件               engine 主循环
-                                              │ 消费 commands（如 fetch）
-                                              ▼
-                                   bilibili-api-rs 抓取
-                                              │ modify_up_info 写回
-                                              ▼
-                                     Snapshot → hub 校验发布（M1 不落盘；持久化 T4 交 store flush）
+                      │ watch/broadcast 分发   │ mpsc 提交      │ 持久化（store 直写/stage）
+                      ▼                        ▼               ▼
+              页面渲染 / SSE 事件          systems::fetch_loop   state.redb
+                                          │ 消费 commands（如 fetch）
+                                          ▼
+                               bilibili-api-rs 抓取
+                                          │ apply_fetch 组件写回 + #SYSEV# 事件上报
+                                          ▼
+                                 Snapshot → hub 校验发布（T4 起落盘：brick 直写、易变批量 flush）
 ```
 
 - 所有状态修改走 `WeiYuan::apply/update`（mpsc 通道，带冲突检测）；读取走 `recv`（watch 快照，COW）。
-- `engine` 空闲时由 `exec_timers` 按 `ctime` 索引挑最旧未刷新的 UP 主自动补抓，受 bucket 速率（`runtime.bucket.gap`）控制；`/op/silence` 把 gap 翻倍实现静默。
-- 事件（events）经 broadcast 通道推给 `/ev/engine` SSE。
+- 空闲补抓：`systems::fetch_loop` 在 commands 空时发 `Tick` 事件 → hub 分发内置 `builtin.tick`（原 `exec_timers`）按 `ctime` 索引挑最旧未刷新的 UP 主补抓，受 bucket 速率（`runtime.bucket.gap`）控制；`/op/silence` 把 gap 翻倍实现静默。
+- 事件（events）经 broadcast 通道推给 `/ev/engine` SSE；`#SYSEV#` 载荷（动态 system 触发）由 hub 提取分发，不进 SSE。
 
 ## HTTP 路由表（`src/www.rs` `build_app`）
 
@@ -76,14 +79,16 @@ cargo test -p hobob
 ```
 
 - `www.rs` tests：warp::test 对每个路由做端到端断言（follow 后 bench 状态、SSE 推送等）
-- `src/db/`（`mod.rs`）tests：通道/持久化/排序逻辑
+- `src/db/`（`mod.rs`）tests：通道/持久化 roundtrip/排序/动态 system 事件分发逻辑
+- `src/systems.rs` tests：fetch 循环（取命令/关闭/补抓 deadline）、`pick_*` 纯函数
+- `src/ecs.rs` tests：ECS 内核（spawn/insert/CoW/iter/ptr_eq）
 - `chunk.rs` tests：解析器对 `test_data/chunk_*.in.txt` 的 AST 与 `*.expect.json` 比对
-- `store.rs` tests：空库初始化/样例数据 roundtrip/错文件守卫/codec/迁移链/版本过高拒绝/entity id/直写/批量 flush 四路径/systems 一致性/配置解析（T1–T12）
+- `store.rs` tests：空库初始化/样例 roundtrip/错文件守卫/codec/迁移链（含 brick V1→V2）/版本过高拒绝/entity id/直写/批量 flush 四路径/group CRUD/布局 1→2 升级/list_* 全量（T1–T16）
 
 ## 已知坑
 
 - **远程 schema**：`data_schema.rs` 启动即从 `https://lintd.xyz/hobob/*.json` 拉取 schema（`schema_uri!` 宏），离线环境 `ChairData` 构建会 panic。
 - **模板加载差异**：debug 从 `templates/` 磁盘目录读（工作目录必须是 crate 根），release 内嵌编译期模板。
 - **vendor 子模块**：`bilibili-api-rs` 是 path 依赖，位于 `vendor/bilibili-api-rs`（git 子模块，锁 commit）；新 clone 后需 `git submodule update --init`，升级 SOP 见 `vendor/UPGRADE.md`。
-- **state.redb（v2）**：启动时 store 探针会在 `--state`/`HOBOB_STATE`/`$HOME/.hobob/state.redb` 建空库；M0 探针失败仅记日志不阻断。`serde_json::Value` 不能参与 bincode 反序列化，v2 类型中「未类型化 JSON」字段一律存 JSON 字符串（M1 校准语义）。
+- **state.redb**：启动 `Store::open_or_create` + `WeiYuanHui::open` 全量加载，**失败即退出**（取代 M0 探针的仅日志）。`serde_json::Value` 不能参与 bincode 反序列化，store 类型中「未类型化 JSON」字段一律存 JSON 字符串（M1 校准语义）。
 - `vm.rs`、`bench.rs` 是未完成的替代设计（`todo!()`），`db` 模块才是实际使用的数据层。

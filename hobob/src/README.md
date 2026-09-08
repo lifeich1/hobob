@@ -2,22 +2,26 @@
 
 本目录是 hobob 的全部 Rust 源码。以下按文件说明职责与关键实现，agent 处理具体问题时先看对应小节，避免通读全文。
 
-## `lib.rs` — crate 入口（140 行）
+## `lib.rs` — crate 入口（162 行）
 
 - `prepare_log()`：创建 `~/`（`home_dir`）下日志目录，若 `~/log4rs.yml` 不存在则从 `assets/log4rs.yml` 复制并初始化 log4rs。
-- `main_loop()`：解析 `Flags`（`--port`，默认 3731）→ `WeiYuanHui::load(~/"bench.json")` → 并行 spawn 两个任务：
-  - `www::build_app` 的 warp 服务（Ctrl+C / `chair.close` 触发 graceful shutdown）
-  - `engine::main_loop`
-  - 等待 `ctrl_c`，调用 `center.close()` 并最多等 30s 优雅退出。
-- 宏：`vpath!`（运行时文件路径：`~/`、`~/log4rs.yml`、`~/bench.json`）、`schema_uri!`（`https://lintd.xyz/hobob/{id}.json` 远程 schema URL）。
-- 模块声明：`bench`、`data_schema`、`db`、`engine`、`vm`、`www`、`chunk` + lalrpop 生成的 `chunkir`。
+- `main_loop()`：解析 `Flags`（`--port` 默认 3731、`--state`/`HOBOB_STATE` 指定状态文件路径）→ `Store::open_or_create` + `WeiYuanHui::open`（全量加载，失败即退出）→ 分派两个 chair 任务并跑 hub 主循环：
+  - `www::build_app` 的 warp 服务（Ctrl+C / closing 标志触发 graceful shutdown）
+  - `systems::fetch_loop`（后台抓取循环）
+  - hub 主循环（tokio::select ctrl_c / `center.run()`）消费 chair 提交 + 每轮 maybe_flush；Ctrl+C 调 `center.close()`（停机强刷 store）并最多等 30s 优雅退出。
+- 宏：`vpath!`（运行时文件路径：`~/`、`~/log4rs.yml`）、`schema_uri!`（`https://lintd.xyz/hobob/{id}.json` 远程 schema URL）。
+- 模块声明：`bench`、`data_schema`、`db`、`ecs`、`store`、`systems`、`vm`、`www`、`chunk` + lalrpop 生成的 `chunkir`（M1 不再有 `engine.rs`）。
 - 二进制入口是 `src/main.rs`（仅调用 `prepare_log` + `main_loop`）。
 
-## `db/` — 数据中枢（`db/mod.rs` 1794 行，核心）
+## `db/` — 数据中枢（`db/mod.rs` 2532 行，核心）
 
-数据中枢 `WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world` 组件 + `res` 内存索引），mpsc 提交（`ptr_eq` 冲突校验）/ watch 发布 / broadcast 事件。**db 已目录化，精炼导读见 `db/README.md`（架构要点、符号表、谁在用、坑、测试）；处理数据层问题先读它定位到符号，按需深挖，勿通读源码。**
+数据中枢 `WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world` 组件 + `res` 内存索引），mpsc 提交（`ptr_eq` 冲突校验）/ watch 发布 / broadcast 事件 / `#SYSEV#` 动态 system 事件通道；持久化桥接（`open` 全量加载、`persist_diff` 直写/stage、close 强刷）。**db 已目录化，精炼导读见 `db/README.md`（架构要点、符号表、谁在用、坑、测试）；处理数据层问题先读它定位到符号，按需深挖，勿通读源码。**
 
-## `www.rs` — HTTP 层（661 行）
+## `ecs.rs` — 轻量 ECS 内核（550 行）
+
+`Entity`(u64)/`Component`/`Storage<T>`（im::HashMap，结构共享）/`World`：`spawn`/`spawn_at`/`insert`/`remove`/`get`/`get_mut`（CoW）/`iter`/`iter2` + `ptr_eq`（world 结构未变判定）。纯数据结构，无 tokio/store 依赖。
+
+## `www.rs` — HTTP 层（660 行）
 
 - `TERA`（lazy_static）：debug 从 `templates/**/*.html` 磁盘加载；release 用 `include_str!` 内嵌 4 个模板。
 - 渲染管线：`render(page, Result<Value>)` → tera 渲染，失败统一进 `failure.html`。
@@ -26,12 +30,17 @@
 - SSE：`/ev/engine` 用 `BroadcastStream` 转发 events，`Lagged` 时发 comment 提示。
 - tests：warp::test 全路由端到端测试（`test_op_*`、`test_card_*`、`test_sse`）。
 
-## `engine.rs` — 后台引擎（362 行）
+## `systems.rs` — 基础 system（491 行，原 `engine.rs`）
 
-- `main_loop`：`while let Ok(bench) = runner.recv()` → 有命令则 `take_cmds`（带长度校验的原子取走）逐个 `exec_cmd`；无命令则 `exec_timers`（取 `up_index.ctime` 最旧 uid 补 `fetch`，`bucket_hang`）。之后按 `bucket_duration_to_next` 设 deadline 睡眠等待 `runner.changed()`。
+- `fetch_loop`：`while let Ok(bench) = runner.recv()` → 有命令则 `take_cmds`（带长度校验的原子取走）逐个 `exec_cmd`；无命令则发 `Tick` 事件（hub 分发内置 `builtin.tick` 补抓，见下）。之后按 `bucket_duration_to_next` 设 deadline 睡眠等待 `runner.changed()`。
 - `exec_cmd`：目前仅实现 `fetch`（`livelist` 是 `todo!()`）。
-- `do_fetch`：`bilibili-api-rs` 的 `user(uid).info()` + `latest_videos()`；失败时 `bucket_double_gap`；成功时 `pick_basic/pick_live/pick_video` 提取精简字段写入 `up_info[uid].pick`，`raw` 存完整响应，`bucket_good`。
+- `do_fetch`：`bilibili-api-rs` 的 `user(uid).info()` + `latest_videos()`；失败时 `bucket_double_gap` + 上报 `FetchFailed` 事件；成功时 `apply_fetch` 组件写回 + `bucket_good` + 上报 `FetchDone` 事件（组件字段 → `db` 组件，`raw` 内存 only）。
+- 动态 system 框架：`TriggerEvent`（Tick/FetchDone/FetchFailed/UpStateChanged）、`DynSystemRegistry`（hub 持有，按名序分发、handler 报错记日志继续）、内置 `builtin.tick`（原 `exec_timers`：commands 空时取 `up_index.ctime` 最旧 uid 补 `fetch` + `bucket_hang`）。store `systems` 表不加载（lua/condition 语法 M3 定）。
 - 注意：`Client::new()` 直接使用 bilibili-api-rs 默认凭据，无持久化登录态。
+
+## `store.rs` — redb 持久化（1880 行）
+
+redb + bincode：8 张表（`meta`/`systems`/`ec:brick`/`ec:video_post`/`ec:live_post`/`ec:comment_post`/`ec:runtime`/`ec:group`）+ typed CRUD + `VersionedRecord` 版本信封/迁移钩子（brick V1→V2）+ `VolatileBuffer` 批量 flush（256 条/5s）+ 布局升级链（schema_version 1→2）+ 全量 `list_*` 加载 API + `StoreStats` commit 埋点。**M1 起接管数据路径**：启动全量加载（`WeiYuanHui::open`）、运行期 `persist_diff` 直写/stage、close 强刷；稳态零 redb 读。
 
 ## `data_schema.rs` — JSON schema（356 行）
 

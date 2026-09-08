@@ -12,7 +12,7 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 
 - 首次 clone 后：`git submodule update --init`（vendor/bilibili-api-rs 子模块）
 - 运行：`cargo run -p hobob -- --port 3731`（默认端口 3731；`--state <PATH>`/`HOBOB_STATE` 指定 v2 状态文件）
-- 测试：`cargo test -p hobob`（www.rs 路由端到端测试、db 模块逻辑测试、chunk 解析器测试、store.rs v2 存储测试）
+- 测试：`cargo test -p hobob`（www.rs 路由 e2e、db 逻辑/持久化 roundtrip、systems fetch 循环、ecs 内核、chunk 解析器、store.rs redb 存储测试）
 - 交叉编译（部署 ARM 设备）：`cross build --bin hobob -r --target aarch64-unknown-linux-gnu`（容器配置见 `etc/`，需 podman/docker + cross；先确保子模块已 init）
 - 部署：scp 产物到 `opi:/lintd/`，用 `hobob_dbgconn restart` 重启
 - ⚠️ 以上 cargo/cross 命令须在 `nix develop` 的 devShell 内执行：本机直接 shell 无 `cargo`，`flake.nix` 自带 cargo/rustc/clippy/rustfmt；`nix develop -c` 可直接用（shellHook 已去 exec，自动开 `Session.vim` 仅限交互 tty，可 `HOBOB_NO_SESSION=1` 关闭）。工具链/依赖版本约束与坑详见 skill `hobob-nix`
@@ -20,6 +20,7 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 ## Architecture
 
 - `hobob/src/db/`（`db/mod.rs`）：数据中枢 `WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world` + `res` 内存索引；mpsc/watch/broadcast 通道 + `#SYSEV#` 动态 system 事件通道）。**实际使用的数据层（精炼导读见 `hobob/src/db/README.md`）。**
+- `hobob/src/ecs.rs`：轻量 ECS 内核（`World`/`Storage`/`ptr_eq` 结构共享判定，im::HashMap 底层），无 tokio/store 依赖。
 - `hobob/src/store.rs`：v2 持久化（redb + bincode，`state.redb`）：8 张表（meta/systems/ec:*）+ typed CRUD + `VersionedRecord` 版本信封/迁移钩子 + `VolatileBuffer` 批量 flush + 布局升级链；**M1 起已接管数据路径**（`WeiYuanHui::open` 全量加载、`persist_diff` 直写/stage、close 强刷；稳态零读）。
 - `vendor/bilibili-api-rs`：git 子模块（上游 `git@github.com:lifeich1/bilibili-api-rs.git`，锁 `7df423a`）；升级 SOP 见 `vendor/UPGRADE.md`。
 - `hobob/src/www.rs`：warp 路由（`/op/*` 操作、`/card/*` 渲染、`/ev/engine` SSE）、tera 渲染、boon schema 校验。
@@ -41,7 +42,7 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 
 读（先索引、后深挖，按需加载）：
 - 4 层导航：本文件（常驻索引）→ 根 `README.md`（目录导航表 + 跨目录关键事实 + 构建运行）→ 各目录 `README.md`（模块导航：符号表/谁在用/坑/测试）→ `.agents/skills/hobob-*.md`（lib.rs 启动、nix 工具链专项，`run_skill` 按需加载，勿预读）。
-- 源码最后读、只读片段：按 README 符号表行号（如 `Snapshot` ~172）用 read_file offset/limit 定位；禁止通读大文件（`db/mod.rs` ~1.8k 行、`www.rs` ~660 行——先读对应 README 小节）。
+- 源码最后读、只读片段：按 README 符号表行号（如 `Snapshot` ~196）用 read_file offset/limit 定位；禁止通读大文件（`db/mod.rs` ~2.5k 行、`store.rs` ~1.9k 行、`www.rs` ~660 行——先读对应 README 小节）。
 - `target/` 勿读；标「已弃用/遗留」的（`xtask/`、`monkey/`、`assets/db_init.sql`）勿据此推断现状；坑与测试入口 README 已集中列，勿重读测试源码及 `vm.rs`/`bench.rs`。
 
 写（事实按层归属，不跨层复制）：
