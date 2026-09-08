@@ -24,9 +24,9 @@ v1 **实际使用的数据层**（v2 `../store.rs` 尚未接管）。本页是�
 
 ## 谁在用
 
-- `../lib.rs`：`WeiYuanHui::load` → `new_chair` 分发 www/engine，Ctrl+C 后 `close`/`closed` 优雅退出。
+- `../lib.rs`：`Store::open_or_create` + `WeiYuanHui::open` → `new_chair` 分发 www/fetch_loop，hub 主循环消费提交，Ctrl+C 后 `close`/`closed` 优雅退出。
 - `../www.rs`：经 chair 提交操作 / 读快照渲染 / 订阅事件推 SSE。
-- `../engine.rs`：chair `recv` 取 `commands` → 抓取 → `update` 闭包内 `apply_fetch` 写回，bucket 控制节奏。
+- `../systems.rs`：基础 system（原 `engine.rs` 迁入）——`fetch_loop`（chair `recv` 取 `commands` → 抓取 → `apply_fetch` 写回，bucket 控制节奏）+ 动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/`builtin.tick`）。
 - `../store.rs`（v2 持久化）：T4 已桥接——`WeiYuanHui::open(&store)` 启动全量加载（`load_snapshot`），
   运行期 patch 经 `persist_diff` 落盘（brick/group 直写 + 易变 stage），`close()` 停机强刷；稳态零 redb 读。
 

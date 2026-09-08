@@ -5,7 +5,7 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 ## Project
 
 - Rust workspace（`Cargo.toml` members 仅 `hobob`），edition 2021。
-- 入口：`hobob/src/main.rs` → `hobob/src/lib.rs`（`prepare_log` + `main_loop`：spawn `www` 服务与 `engine` 循环）。
+- 入口：`hobob/src/main.rs` → `hobob/src/lib.rs`（`prepare_log` + `main_loop`：hub 主循环 + spawn `www` 服务与 `systems::fetch_loop`）。
 - 前端：warp + tera 模板 + jQuery（`hobob/templates/`、`hobob/static/`），SSE 事件推送（`/ev/engine`）。
 
 ## Commands
@@ -19,11 +19,11 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 
 ## Architecture
 
-- `hobob/src/db/`（`db/mod.rs`）：数据中枢 `WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world` + `res` 内存索引；mpsc/watch/broadcast 通道）。**v1 实际使用的数据层（精炼导读见 `hobob/src/db/README.md`）。**
-- `hobob/src/store.rs`：v2 持久化地基（redb + bincode，`state.redb`）：7 张表 + typed CRUD + `VersionedRecord` 版本信封/迁移钩子 + `VolatileBuffer` 批量 flush；M0 仅测试 + 启动探针使用，未接管 v1 数据路径。
+- `hobob/src/db/`（`db/mod.rs`）：数据中枢 `WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world` + `res` 内存索引；mpsc/watch/broadcast 通道 + `#SYSEV#` 动态 system 事件通道）。**实际使用的数据层（精炼导读见 `hobob/src/db/README.md`）。**
+- `hobob/src/store.rs`：v2 持久化（redb + bincode，`state.redb`）：8 张表（meta/systems/ec:*）+ typed CRUD + `VersionedRecord` 版本信封/迁移钩子 + `VolatileBuffer` 批量 flush + 布局升级链；**M1 起已接管数据路径**（`WeiYuanHui::open` 全量加载、`persist_diff` 直写/stage、close 强刷；稳态零读）。
 - `vendor/bilibili-api-rs`：git 子模块（上游 `git@github.com:lifeich1/bilibili-api-rs.git`，锁 `7df423a`）；升级 SOP 见 `vendor/UPGRADE.md`。
 - `hobob/src/www.rs`：warp 路由（`/op/*` 操作、`/card/*` 渲染、`/ev/engine` SSE）、tera 渲染、boon schema 校验。
-- `hobob/src/engine.rs`：后台循环，消费 `commands`（目前仅 `fetch`），用 `bilibili-api-rs` 抓取，bucket 速率控制。
+- `hobob/src/systems.rs`：基础 system（原 `engine.rs` 迁入）：`fetch_loop` 抓取循环 + 动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/内置 `builtin.tick`）；事件经 db `#SYSEV#` 通道上报，hub 分发。
 - `hobob/src/data_schema.rs`：JSON schema 校验，schema 从远程 `https://lintd.xyz/hobob/*.json` 加载（离线 panic）。
 - `hobob/src/chunk.rs` + `chunkir.lalrpop`：Chunk AST + 解析器（测试用）。
 - `hobob/src/vm.rs`、`bench.rs`：未完成实验（`todo!()`），勿依赖。

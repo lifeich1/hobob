@@ -48,8 +48,8 @@ pub mod bench;
 mod data_schema;
 pub mod db;
 pub mod ecs;
-pub mod engine;
 pub mod store;
+pub mod systems;
 pub mod vm;
 pub mod www;
 
@@ -130,7 +130,7 @@ pub async fn main_loop() -> Result<()> {
         let chair = center.new_chair();
         tokio::spawn(async move {
             log::info!("engine starting");
-            engine::main_loop(chair).await;
+            systems::fetch_loop(chair).await;
             log::info!("engine stopped");
         });
     }

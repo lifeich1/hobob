@@ -21,6 +21,7 @@
 use crate::data_schema::ChairData;
 use crate::ecs::{Entity, World};
 use crate::store::{self, Store};
+use crate::systems::{builtin_tick, trigger_from_json, DynSystemRegistry};
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
@@ -31,6 +32,10 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc, watch};
 
 const COUNTER_TAG: &str = "#COUNTER#";
+/// 动态 system 事件通道 tag（T6 §4.5）：payload 是 `TriggerEvent` JSON；hub push 时提取
+/// 分发，**不进 SSE 广播**（`/ev/engine` 形状不变）。发送方 = db ops（UpStateChanged）与
+/// fetch 系统（Tick/FetchDone/FetchFailed），见 `Snapshot::push_sys_event`。
+pub const SYS_EVENT_TAG: &str = "#SYSEV#";
 
 /// 实体号布局（与 store `INITIAL_ENTITY_ID`/`alloc_entity_id` 语义衔接，D6）：
 /// 1 = 全局 runtime；2/3 = 内置组「全部/特殊关注」（API gid 0/1）；≥4 普通实体。
@@ -444,6 +449,14 @@ impl Snapshot {
         r
     }
 
+    /// 动态 system 事件上报（T6）：payload 打 `#SYSEV#` tag 进 events；hub push 时提取
+    /// 分发（SSE 不广播，`SYS_EVENT_TAG` 注释）。跨 hub 的发送方（fetch 循环）经此通道。
+    pub(crate) fn push_sys_event(&mut self, payload: Value) {
+        self.res
+            .events
+            .push_back(json!({ SYS_EVENT_TAG: payload }));
+    }
+
     pub fn inspect<'a, T>(&mut self, res: &'a Result<T>) -> &'a Result<T> {
         if let Err(e) = res {
             self.log(1, &format!("inspect: {e:#}"));
@@ -668,6 +681,12 @@ impl Snapshot {
             self.update_index("ctime", -1, 0, &uid_str);
             self.res.up_by_fid.push_back(entity.0);
         }
+        // T6：管理状态变化 → 动态 system 事件（hub 分发，SSE 不广播）
+        self.push_sys_event(json!({
+            "kind": "up_state",
+            "uid": uid,
+            "state": if enable { "followed" } else { "unfollowed" },
+        }));
         Ok(())
     }
 
@@ -732,6 +751,12 @@ impl Snapshot {
                 .0
                 .insert(entity.0);
         }
+        // T6：分组翻转 → 动态 system 事件（hub 分发，SSE 不广播）
+        self.push_sys_event(json!({
+            "kind": "up_state",
+            "uid": uid,
+            "state": "group_toggled",
+        }));
         Ok(())
     }
 
@@ -1407,6 +1432,8 @@ pub struct WeiYuanHui {
     /// 持久化（T4 接轨）：`open(&store)` 时 Some；`close()` 强刷后 take 置 None。
     /// 默认/`From<Snapshot>` 构造为 None（纯内存 hub，测试/无盘场景）。
     store: Option<Store>,
+    /// 动态 system 注册表（T6 §4.5）：hub 唯一分发点，不进快照（见 systems.rs 模块文档）。
+    dynsys: DynSystemRegistry,
 }
 
 impl Default for WeiYuanHui {
@@ -1414,6 +1441,8 @@ impl Default for WeiYuanHui {
         let (updates_src, updates) = mpsc::channel(64);
         let (ev_tx, ev_rx) = broadcast::channel(64);
         let (publish, publish_dst) = watch::channel(Snapshot::new());
+        let mut dynsys = DynSystemRegistry::new();
+        dynsys.register(builtin_tick());
         Self {
             updates,
             updates_src: Some(updates_src),
@@ -1424,6 +1453,7 @@ impl Default for WeiYuanHui {
             bench: Snapshot::new(),
             counter: VCounter::default(),
             store: None,
+            dynsys,
         }
     }
 }
@@ -1451,6 +1481,11 @@ impl WeiYuanHui {
     #[must_use]
     pub fn store_stats(&self) -> Option<(u64, u64)> {
         self.store.as_ref().map(|s| s.stats.get())
+    }
+
+    /// 注册动态 system（T6；测试/未来 M3 加载 store systems 表时调用）。同名覆盖。
+    pub fn register_system(&mut self, spec: crate::systems::DynSystemSpec) {
+        self.dynsys.register(spec);
     }
 
     #[must_use]
@@ -1567,11 +1602,18 @@ impl WeiYuanHui {
     }
 
     fn push(&mut self, mut next: Snapshot) {
+        // 事件 drain：`#SYSEV#` → 动态 system 分发（不进 SSE）；`#COUNTER#` → 计数丢弃；
+        // 其余 → broadcast（`/ev/engine` 形状不变）。
+        let mut sys_evs: Vec<Value> = Vec::new();
         if !next.res.events.is_empty() {
             let events = std::mem::take(&mut next.res.events);
             let pass: Events = events
                 .into_iter()
                 .filter(|ev| {
+                    if let Some(sys) = ev.get(SYS_EVENT_TAG) {
+                        sys_evs.push(sys.clone());
+                        return false;
+                    }
                     ev[COUNTER_TAG]
                         .as_str()
                         .map(|s| *self.counter.ext.entry(s.into()).or_default() += 1)
@@ -1580,6 +1622,14 @@ impl WeiYuanHui {
                 .collect();
             if !pass.is_empty() && self.ev_tx.as_ref().is_none_or(|tx| tx.send(pass).is_err()) {
                 self.counter.broadcast_void_cnt += 1;
+            }
+        }
+        // T6 动态 system 分发（按 events 原序；handler 可改 next，如 builtin.tick 补抓）。
+        // registry 内部已容错（单 handler 报错记日志继续）；无法识别的事件在此告警。
+        for sev in &sys_evs {
+            match trigger_from_json(sev, &next) {
+                Some(ev) => self.dynsys.dispatch(&ev, &mut next),
+                None => log::warn!("unrecognized sys event: {:?}", sev),
             }
         }
         // T4 持久化钩子：patch 落盘在 bench 替换前执行（hub 主循环同步写，D9）。
@@ -1724,7 +1774,9 @@ mod tests {
     use super::*;
     use crate::ecs::World;
     use crate::store::StoreConfig;
+    use crate::systems::{DynSystemSpec, TriggerEvent, UpStateKind};
     use std::mem;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration as Dur;
     use tempfile::tempdir;
     use tokio::time::timeout;
@@ -2129,8 +2181,9 @@ mod tests {
             snap.res.up_index.get("live").unwrap().get_min(),
             Some(&(117i64, "12345".to_string()))
         );
-        // 事件在 live/video 值变化时 push（无组件 → payload null，v1 同款）
-        assert_eq!(snap.res.events.len(), 2);
+        // 事件在 live/video 值变化时 push（无组件 → payload null，v1 同款）；
+        // T6 起 follow 额外产生 1 条 #SYSEV# up_state（不广播，hub 分发用）
+        assert_eq!(snap.res.events.len(), 3);
     }
 
     #[test]
@@ -2358,5 +2411,126 @@ mod tests {
         .await;
         assert_eq!(up_ids(center2.bench()), vec![4, 5, 7]);
         center2.close();
+    }
+
+    // ---------- T6 动态 system 事件分发（N10） ----------
+
+    #[tokio::test]
+    async fn test_sys_event_dispatch_order_and_tolerance() {
+        init();
+        let mut center = WeiYuanHui::default();
+        // spy handler：记录全部 TriggerEvent（按分发到达序）
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s1 = seen.clone();
+        center.register_system(DynSystemSpec {
+            name: "test.spy".into(),
+            condition: "always".into(),
+            callback: Arc::new(move |ev, _snap| {
+                s1.lock().unwrap().push(ev.clone());
+                Ok(())
+            }),
+        });
+        // broken handler：永远报错——验证报错不中断后续 handler（test.broken < test.spy 名序）
+        center.register_system(DynSystemSpec {
+            name: "test.broken".into(),
+            condition: "always".into(),
+            callback: Arc::new(|_ev, _snap| Err(anyhow!("boom (expected in test)"))),
+        });
+        let mut chair = center.new_chair();
+        // 1) follow → UpStateChanged(Followed, entity 4)
+        chair.apply(|b| b.follow(&json!({"uid": 12345}))).unwrap();
+        assert!(center.run().await);
+        // 2) toggle_group → UpStateChanged(GroupToggled)
+        chair
+            .apply(|b| b.toggle_group(&json!({"uid": 12345, "gid": 5})))
+            .unwrap();
+        assert!(center.run().await);
+        // 3/4) fetch 成功/失败（模拟 fetch 系统上报）
+        chair
+            .apply(|b| {
+                b.push_sys_event(json!({"kind": "fetch_done", "uid": 12345}));
+                Ok(())
+            })
+            .unwrap();
+        assert!(center.run().await);
+        chair
+            .apply(|b| {
+                b.push_sys_event(json!({"kind": "fetch_failed", "uid": 12345, "error": "e"}));
+                Ok(())
+            })
+            .unwrap();
+        assert!(center.run().await);
+        // 5) tick → 分发 Tick；builtin.tick（ctime 最小补抓 + bucket_hang）同时生效。
+        //    follow 已 push 1 条初始 fetch 命令（v1 语义），先清空模拟 engine take_cmds 后；
+        //    bucket 是 epoch-atime 形态（v1：engine 首轮 fetch 后才有，见 bucket_hang 前提）。
+        chair
+            .apply(|b| {
+                b.res.commands.clear();
+                b.world
+                    .get_mut::<RuntimeCfg>(Entity(ENTITY_RUNTIME))
+                    .unwrap()
+                    .0
+                    .insert(
+                        "bucket".into(),
+                        json!({"atime": now_timestamp(), "min_gap": 10, "min_change_gap": 10, "gap": 30}),
+                    );
+                Ok(())
+            })
+            .unwrap();
+        assert!(center.run().await);
+        assert!(center.bench().res.commands.is_empty());
+        chair
+            .apply(|b| {
+                b.push_sys_event(json!({"kind": "tick"}));
+                Ok(())
+            })
+            .unwrap();
+        assert!(center.run().await);
+        assert_eq!(center.bench().res.commands.len(), 1, "builtin.tick 补抓 1 条");
+        // commands 非空时再 tick：builtin.tick 幂等（v1：commands 空才补抓）
+        chair
+            .apply(|b| {
+                b.push_sys_event(json!({"kind": "tick"}));
+                Ok(())
+            })
+            .unwrap();
+        assert!(center.run().await);
+        assert_eq!(
+            center.bench().res.commands.len(),
+            1,
+            "commands 非空时 tick 不再补抓"
+        );
+        // 事件按序送达（broken 报错不中断 spy）
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got.len(), 6);
+        assert_eq!(got[0], TriggerEvent::UpStateChanged { entity: 4, kind: UpStateKind::Followed });
+        assert_eq!(got[1], TriggerEvent::UpStateChanged { entity: 4, kind: UpStateKind::GroupToggled });
+        assert_eq!(got[2], TriggerEvent::FetchDone { entity: 4, uid: "12345".into() });
+        assert_eq!(
+            got[3],
+            TriggerEvent::FetchFailed { entity: 4, uid: "12345".into(), error: "e".into() }
+        );
+        match &got[4] {
+            TriggerEvent::Tick { at } => assert!(at.timestamp() > 0),
+            other => panic!("expected Tick, got {other:?}"),
+        }
+        match &got[5] {
+            TriggerEvent::Tick { .. } => {}
+            other => panic!("expected second Tick, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sys_event_not_broadcast_to_sse() {
+        init();
+        let mut center = WeiYuanHui::default();
+        let mut rx = center.listen_events();
+        let mut chair = center.new_chair();
+        chair.apply(|b| b.follow(&json!({"uid": 12345}))).unwrap();
+        assert!(center.run().await);
+        // #SYSEV# 事件不得进入 SSE 流（follow 产生的 up_state 事件被 hub 拦截）
+        let r = tokio::time::timeout(Dur::from_millis(50), rx.recv()).await;
+        assert!(r.is_err(), "SSE 通道不应收到 sys 事件: {:?}", r.ok());
+        center.close();
     }
 }
