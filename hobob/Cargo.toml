@@ -28,15 +28,9 @@ url = "2.4.1"
 bytes = "1.5.0"
 boon = "0.5.1"
 clap = { version = "4.4.7", features = ["derive", "env"] }
-lalrpop-util = { version = "0.22.0", features = ["lexer", "unicode"] }
-
-[build-dependencies]
-lalrpop = "0.22.0"
+mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"] }
 
 [dev-dependencies]
 env_logger = "0.11.5"
 hyper = "0.14.27"
 tempfile = "3"
-
-[[bin]]
-name = "show_expect_value"
