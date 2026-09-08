@@ -2681,4 +2681,53 @@ mod tests {
         assert_eq!(all[0].1.msg, "r2");
         assert_eq!(all[1].1.msg, "r1");
     }
+
+    #[tokio::test]
+    async fn test_logkv_hub_drop_without_close_loses_undrained() {
+        init();
+        let dir = tempdir().unwrap();
+        let cfg = StoreConfig::new(dir.path().join("state.redb"));
+        let store = Store::open_or_create(&cfg).unwrap();
+        let (mut center, tx) = hub_with_injected_log_channel(store, 0);
+        // 2 条入 channel → run 触发 drain 落盘
+        for i in 0..2 {
+            tx.send(logkv::LogEntry {
+                ts_ms: 1000 + i,
+                level: 3,
+                target: "op".to_owned(),
+                msg: format!("drained-{i}"),
+                loc: None,
+                ctx: String::new(),
+            })
+            .unwrap();
+        }
+        let mut chair = center.new_chair();
+        chair.apply(|_| Ok(())).unwrap();
+        assert!(center.run().await);
+        assert_eq!(center.store.as_ref().unwrap().log_len().unwrap(), 2);
+        // 1 条残余入 channel，不 drain 直接 drop（不 close）→ 应丢失
+        tx.send(logkv::LogEntry {
+            ts_ms: 9999,
+            level: 2,
+            target: "op".to_owned(),
+            msg: "undrained".to_owned(),
+            loc: None,
+            ctx: String::new(),
+        })
+        .unwrap();
+        drop(center);
+        // reopen：仅已 drain 的 2 条可见，channel 内未 drain 部分丢失
+        let store2 = Store::open_or_create(&cfg).unwrap();
+        assert_eq!(
+            store2.log_len().unwrap(),
+            2,
+            "drop 不做 last-drain，channel 残余丢失"
+        );
+        let all = store2.query_logs(&store::LogQuery::default()).unwrap();
+        assert!(
+            all.iter().all(|(_, r)| r.msg.starts_with("drained-")),
+            "无 undrained 记录：{:?}",
+            all.iter().map(|(_, r)| r.msg.as_str()).collect::<Vec<_>>()
+        );
+    }
 }
