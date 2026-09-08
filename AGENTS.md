@@ -26,6 +26,7 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 - `vendor/bilibili-api-rs`：git 子模块（上游 `git@github.com:lifeich1/bilibili-api-rs.git`，锁 `7df423a`）；升级 SOP 见 `vendor/UPGRADE.md`。
 - `hobob/src/www.rs`：warp 路由（`/op/*` 操作、`/card/*` 渲染、`/ev/engine` SSE）、tera 渲染、boon schema 校验。
 - `hobob/src/systems.rs`：基础 system（原 `engine.rs` 迁入）：`fetch_loop` 抓取循环 + 动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/内置 `builtin.tick`）；事件经 db `#SYSEV#` 通道上报，hub 分发。
+- `hobob/src/libcall.rs`：lua↔Rust 桥（M3 T2）：mlua 沙箱 + `ctx.admin`（直接改 `&mut Snapshot`）/`ctx.bapi`（`spawn_blocking` 同步桥 + 本地 5s 兜底超时）；**尚未接线到 dispatch（T3）**，缺口与 D6 `!Send` 冲突见 `.plans/m3-mlua-dynsys.md`「执行偏差与事实核对」。
 - `hobob/src/data_schema.rs`：JSON schema 校验，schema 从远程 `https://lintd.xyz/hobob/*.json` 加载（离线 panic）。
 - `hobob/src/chunk.rs` + `chunkir.lalrpop`：Chunk AST + 解析器（测试用）。
 - `hobob/src/vm.rs`、`bench.rs`：未完成实验（`todo!()`），勿依赖。

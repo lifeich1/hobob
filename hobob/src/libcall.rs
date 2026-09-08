@@ -1,8 +1,15 @@
 //! libcall 接口：lua 与 Rust 能力的桥梁
 //!
 //! 分两组：
-//! - **admin**：管理操作（follow/toggle_group/register_system 等），直接修改 ECS 世界
-//! - **bapi**：B 站 API 封装（info/latest_videos/xlive_recommend 等），同步网络调用
+//! - **admin**：管理操作（follow/unfollow/toggle_group/new_group/refresh/get_state/
+//!   set_silent/register_system + last_error），直接改 `&mut Snapshot`
+//! - **bapi**：B 站 API 封装（info/latest_videos/recent_posts/card/live_info/xlive_recommend），
+//!   同步网络调用（`spawn_blocking` + 新 runtime，带本地 5s 兜底超时）
+//!
+//! 现状与缺口（T3 待补）：
+//! - `register_system` 只落盘，尚未编译注册进 `DynSystemRegistry`
+//! - `set_silent` 依赖的 `Snapshot::force_silence` 仍是 stub，故当前恒返回 `false` + `last_error`
+//! - 尚无 `unregister_system`/`reload_system`/`reload_all`（计划 §4.2 / D4）
 //!
 //! 使用方式：
 //! 1. `new_sandbox()` 创建沙箱 Lua 实例（已注册 `json.encode`/`json.decode` 到全局）
@@ -26,6 +33,8 @@ use serde_json::{json, Value as JValue};
 /// 创建沙箱 Lua 实例（禁止 IO/OS/PACKAGE，注册 json 编解码到全局）。
 /// DEBUG 由 `new_with` 安全构造函数自动拒绝。
 pub fn new_sandbox() -> mlua::Result<Lua> {
+    // `^` 在此等价「差集」的前提是 IO/OS/PACKAGE 都在 ALL_SAFE 内（有测试钉住该前提）；
+    // mlua 未给 StdLib 实现 `Not`/`Sub`，写不出真正的差集。
     let libs = StdLib::ALL_SAFE ^ (StdLib::IO | StdLib::OS | StdLib::PACKAGE);
     let lua = Lua::new_with(libs, Default::default())?;
     register_json_globals(&lua)?;
@@ -77,6 +86,9 @@ pub fn build_ctx_table<'scope>(
     let err1 = Rc::clone(&last_error);
     let follow_fn = scope.create_function(
         move |_, (uid, enable): (i64, bool)| -> mlua::Result<bool> {
+            if !valid_arg(&err1, "uid", uid) {
+                return Ok(false);
+            }
             let opt = json!({"uid": uid, "enable": enable});
             match with_snap(&snap1, |s| s.follow(&opt)) {
                 Ok(()) => Ok(true),
@@ -93,6 +105,9 @@ pub fn build_ctx_table<'scope>(
     let snap1 = Rc::clone(&snap_rc);
     let err1 = Rc::clone(&last_error);
     let unfollow_fn = scope.create_function(move |_, uid: i64| -> mlua::Result<bool> {
+        if !valid_arg(&err1, "uid", uid) {
+            return Ok(false);
+        }
         let opt = json!({"uid": uid, "enable": false});
         match with_snap(&snap1, |s| s.follow(&opt)) {
             Ok(()) => Ok(true),
@@ -109,6 +124,9 @@ pub fn build_ctx_table<'scope>(
     let err1 = Rc::clone(&last_error);
     let toggle_group_fn = scope.create_function(
         move |_, (uid, gid): (i64, i64)| -> mlua::Result<bool> {
+            if !valid_arg(&err1, "uid", uid) || !valid_arg(&err1, "gid", gid) {
+                return Ok(false);
+            }
             let opt = json!({"uid": uid, "gid": gid});
             match with_snap(&snap1, |s| s.toggle_group(&opt)) {
                 Ok(()) => Ok(true),
@@ -127,7 +145,16 @@ pub fn build_ctx_table<'scope>(
     let new_group_fn = scope.create_function(
         move |_, (name, pin): (String, bool)| -> mlua::Result<mlua::Value> {
             let gid = with_snap(&snap1, |s| {
-                let new_gid = s.res.gid_index.keys().max().copied().unwrap_or(0) + 1;
+                // 内置组 0/1 恒存在，用户组从 2 起；索引为空时也不能回落到 1（那是「特殊关注」）
+                let new_gid = s
+                    .res
+                    .gid_index
+                    .keys()
+                    .copied()
+                    .filter(|g| *g >= 2)
+                    .max()
+                    .unwrap_or(1)
+                    + 1;
                 let opt = json!({"gid": new_gid as i64, "pin": pin, "name": name});
                 s.touch_group(&opt).map_err(|e| anyhow!("{e}"))?;
                 Ok(new_gid as i64)
@@ -147,9 +174,21 @@ pub fn build_ctx_table<'scope>(
     let snap1 = Rc::clone(&snap_rc);
     let err1 = Rc::clone(&last_error);
     let set_silent_fn = scope.create_function(
-        move |_, (_uid, _silent): (i64, bool)| -> mlua::Result<bool> {
-            match with_snap(&snap1, |s| s.force_silence(&json!({}))) {
-                Ok(()) => Ok(true),
+        move |_, (uid, silent): (i64, bool)| -> mlua::Result<bool> {
+            if !valid_arg(&err1, "uid", uid) {
+                return Ok(false);
+            }
+            // 参数透传，便于 `force_silence` 落地后直接生效；但 `Snapshot::force_silence`
+            // 目前是 stub（忽略 opt，仅 bucket_double_gap），返回 Ok 不代表真的静音了，
+            // 因此这里仍返回 false——不能给 lua 侧假成功。T6 实现后把 `Ok(())` 分支
+            // 改成 `Ok(true)` 即可。
+            match with_snap(&snap1, |s| {
+                s.force_silence(&json!({"uid": uid, "silent": silent}))
+            }) {
+                Ok(()) => {
+                    *err1.borrow_mut() = "set_silent: force_silence 尚未实现（M3 T6 待补）".into();
+                    Ok(false)
+                }
                 Err(e) => {
                     *err1.borrow_mut() = e.to_string();
                     Ok(false)
@@ -163,6 +202,9 @@ pub fn build_ctx_table<'scope>(
     let snap1 = Rc::clone(&snap_rc);
     let err1 = Rc::clone(&last_error);
     let refresh_fn = scope.create_function(move |_, uid: i64| -> mlua::Result<bool> {
+        if !valid_arg(&err1, "uid", uid) {
+            return Ok(false);
+        }
         let opt = json!({"uid": uid});
         match with_snap(&snap1, |s| s.refresh(&opt)) {
             Ok(()) => Ok(true),
@@ -179,6 +221,9 @@ pub fn build_ctx_table<'scope>(
     let err1 = Rc::clone(&last_error);
     let get_state_fn = scope.create_function(
         move |lua, uid: i64| -> mlua::Result<mlua::Value> {
+            if !valid_arg(&err1, "uid", uid) {
+                return Ok(mlua::Value::Nil);
+            }
             let jv = with_snap(&snap1, |s| s.pick_of(uid));
             match jv {
                 Ok(jv) => lua
@@ -194,6 +239,7 @@ pub fn build_ctx_table<'scope>(
     admin.set("get_state", get_state_fn)?;
 
     // ---- admin：register_system(name, lua, condition) -> bool ----
+    // 目前只落盘（store.put_system）；注册进 registry 与 `lib.` 前缀/condition 校验属 T3。
     let err1 = Rc::clone(&last_error);
     let register_system_fn = scope.create_function(
         move |_, (name, lua_src, condition): (String, String, String)| -> mlua::Result<bool> {
@@ -229,19 +275,49 @@ pub fn build_ctx_table<'scope>(
 
 // ============================== 辅助函数 ==============================
 
+/// 校验 lua 传入的非负整数参数：非法时写 `last_error` 并返回 `false`，
+/// 调用方据此直接 `return Ok(false)`（/`Ok(mlua::Value::Nil)`）。
+///
+/// lua 侧 `integer` 是 i64，负数会在 `Snapshot` 内部撞上 `as_u64().expect(...)`
+/// 之类的断言，所以必须在这一层先挡（同时 schema 侧补 `minimum: 0` 兜底）。
+fn valid_arg(err: &RefCell<String>, name: &str, v: i64) -> bool {
+    if v < 0 {
+        *err.borrow_mut() = format!("{name} 非法：{v}（需 >= 0）");
+        false
+    } else {
+        true
+    }
+}
+
 /// 在共享的可变快照借用上执行闭包。
 fn with_snap<T>(
     snap_rc: &Rc<RefCell<&mut Snapshot>>,
     f: impl FnOnce(&mut Snapshot) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let mut guard = snap_rc.borrow_mut();
+    let mut guard = snap_rc
+        .try_borrow_mut()
+        .map_err(|_| anyhow!("snapshot already borrowed (re-entrant libcall?)"))?;
     f(&mut guard)
 }
 
+/// bapi 调用的本地兜底超时（对齐计划 D12 的「hub 冻结 ≤5s」）。
+const BAPI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// 同步阻塞执行 async API（方案 A：spawn_blocking + 新 runtime）。
-/// 仅在 bapi 内部使用，冻结当前线程 ≤5s（D12）。
+///
+/// 仅在 bapi 内部使用。`BAPI_TIMEOUT` 只是**本地兜底**，并不代表任务被取消：
+/// `spawn_blocking` 任务不可 abort，超时后请求仍会在后台跑完，结果被丢弃。
+/// 真正的隔离强度取决于 T3 dispatch 侧的超时策略。
 fn bapi_block_on<T: Send + 'static>(
     fut: impl std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+) -> anyhow::Result<T> {
+    bapi_block_on_with(fut, BAPI_TIMEOUT)
+}
+
+/// `bapi_block_on` 的可注入超时版本（测试用短超时，避免真等 5s）。
+fn bapi_block_on_with<T: Send + 'static>(
+    fut: impl std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+    timeout: std::time::Duration,
 ) -> anyhow::Result<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     tokio::task::spawn_blocking(move || {
@@ -252,7 +328,15 @@ fn bapi_block_on<T: Send + 'static>(
         let result = rt.block_on(fut);
         let _ = tx.send(result);
     });
-    rx.recv().map_err(|_| anyhow!("bapi: channel closed without result"))?
+    rx.recv_timeout(timeout)
+        .map_err(|e| match e {
+            std::sync::mpsc::RecvTimeoutError::Timeout => {
+                anyhow!("bapi: timeout after {timeout:?}（请求仍在后台执行，结果丢弃）")
+            }
+            std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                anyhow!("bapi: channel closed without result")
+            }
+        })?
 }
 
 /// 构建 bapi 表（'static 闭包，无 snap 借用）。
@@ -349,17 +433,19 @@ mod tests {
     use tempfile::tempdir;
 
     /// 创建沙箱 Lua + 临时 Store。
-    fn setup() -> anyhow::Result<(Lua, Store)> {
+    ///
+    /// `TempDir` 必须由调用方持有：直接 drop 会把 redb 文件 unlink，断言就落在已删除文件上。
+    fn setup() -> anyhow::Result<(Lua, Store, tempfile::TempDir)> {
         let lua = new_sandbox().map_err(|e| anyhow!("{e}"))?;
         let dir = tempdir()?;
         let cfg = StoreConfig::new(dir.path().join("test.redb"));
         let store = Store::open_or_create(&cfg)?;
-        Ok((lua, store))
+        Ok((lua, store, dir))
     }
 
     #[test]
     fn test_admin_follow_uid() -> anyhow::Result<()> {
-        let (lua, store) = setup()?;
+        let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
         let uid: i64 = 12345;
 
@@ -387,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_admin_unfollow_uid() -> anyhow::Result<()> {
-        let (lua, store) = setup()?;
+        let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
         let uid: i64 = 12346;
 
@@ -430,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_admin_toggle_group() -> anyhow::Result<()> {
-        let (lua, store) = setup()?;
+        let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
         let uid: i64 = 12347;
         snap.follow(&json!({"uid": uid, "enable": true}))?;
@@ -461,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_admin_new_group() -> anyhow::Result<()> {
-        let (lua, store) = setup()?;
+        let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
 
         lua.scope(|scope| {
@@ -487,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_admin_get_state() -> anyhow::Result<()> {
-        let (lua, store) = setup()?;
+        let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
         snap.follow(&json!({"uid": 12348, "enable": true}))?;
 
@@ -511,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_admin_last_error_on_missing_uid() -> anyhow::Result<()> {
-        let (lua, store) = setup()?;
+        let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
 
         lua.scope(|scope| {
@@ -536,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_admin_register_system() -> anyhow::Result<()> {
-        let (lua, store) = setup()?;
+        let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
 
         lua.scope(|scope| {
@@ -619,13 +705,13 @@ mod tests {
         let r: String = lua.load(r#"return string.upper("hello")"#).eval().map_err(|e| anyhow!("{e}"))?;
         assert_eq!(r, "HELLO");
         let r: bool = lua.load(r#"return coroutine.isyieldable()"#).eval().map_err(|e| anyhow!("{e}"))?;
-        assert_eq!(r, false);
+        assert!(!r);
         Ok(())
     }
 
     #[test]
     fn test_bapi_signature_present() -> anyhow::Result<()> {
-        let (lua, store) = setup()?;
+        let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
         lua.scope(|scope| {
             let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
@@ -644,5 +730,142 @@ mod tests {
         })
         .map_err(|e| anyhow!("{e}"))?;
         Ok(())
+    }
+
+    #[test]
+    fn test_admin_negative_args_rejected() -> anyhow::Result<()> {
+        let (lua, store, _dir) = setup()?;
+        let mut snap = Snapshot::new();
+
+        lua.scope(|scope| {
+            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let chunk = lua
+                .load(
+                    r#"
+                    local ctx = ...
+                    -- 负 uid：全部 admin 入口拒绝，且不 panic
+                    assert(ctx.admin.follow(-1, true) == false)
+                    assert(#ctx.admin.last_error() > 0)
+                    assert(ctx.admin.unfollow(-1) == false)
+                    assert(ctx.admin.refresh(-1) == false)
+                    assert(ctx.admin.get_state(-1) == nil)
+                    assert(ctx.admin.toggle_group(-1, 2) == false)
+                    assert(ctx.admin.set_silent(-1, true) == false)
+                    -- 负 gid：只有 toggle_group 受影响
+                    assert(ctx.admin.toggle_group(12345, -2) == false)
+                    local err = ctx.admin.last_error()
+                    assert(#err > 0, "last_error should be non-empty, got " .. err)
+                    "#,
+                )
+                .into_function()?;
+            chunk.call::<()>(ctx)?;
+            Ok(())
+        })
+        .map_err(|e| anyhow!("{e}"))?;
+
+        // 负参数不应产生任何实体
+        assert!(snap.res.uid_index.is_empty(), "no uid should be traced");
+        Ok(())
+    }
+
+    #[test]
+    fn test_admin_set_silent_unimplemented() -> anyhow::Result<()> {
+        let (lua, store, _dir) = setup()?;
+        let mut snap = Snapshot::new();
+
+        lua.scope(|scope| {
+            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let chunk = lua
+                .load(
+                    r#"
+                    local ctx = ...
+                    -- force_silence 仍是 stub：必须返回 false，不能给假成功
+                    assert(ctx.admin.set_silent(12345, true) == false)
+                    local err = ctx.admin.last_error()
+                    assert(#err > 0, "last_error should explain the stub, got " .. err)
+                    "#,
+                )
+                .into_function()?;
+            chunk.call::<()>(ctx)?;
+            Ok(())
+        })
+        .map_err(|e| anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    // ---- bapi 同步桥（原先零覆盖） ----
+
+    #[tokio::test]
+    async fn test_bapi_block_on_bridge_ok() -> anyhow::Result<()> {
+        let v = bapi_block_on(async { Ok::<_, anyhow::Error>(42_i64) })?;
+        assert_eq!(v, 42);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bapi_block_on_bridge_err() -> anyhow::Result<()> {
+        let e = bapi_block_on(async { Err::<i64, _>(anyhow!("boom")) }).unwrap_err();
+        assert!(e.to_string().contains("boom"), "got {e}");
+        Ok(())
+    }
+
+    /// 慢 future + 短超时 → 本地兜底生效。
+    /// future 只睡 200ms：超时后任务仍在跑，测试退出时会等它收尾，别用长 sleep。
+    #[tokio::test]
+    async fn test_bapi_block_on_timeout() -> anyhow::Result<()> {
+        let e = bapi_block_on_with(
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                Ok::<_, anyhow::Error>(1_i64)
+            },
+            std::time::Duration::from_millis(50),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("timeout"), "got {e}");
+        Ok(())
+    }
+
+    /// 空 `gid_index`（无内置组）时也不能分配 1——那是「特殊关注」的保留号。
+    #[test]
+    fn test_admin_new_group_empty_index_starts_at_2() -> anyhow::Result<()> {
+        let (lua, store, _dir) = setup()?;
+        let mut snap = Snapshot::default();
+
+        lua.scope(|scope| {
+            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let chunk = lua
+                .load(
+                    r#"
+                    local ctx = ...
+                    local gid = ctx.admin.new_group("fresh", false)
+                    assert(gid == 2, "expected gid 2, got " .. tostring(gid))
+                    "#,
+                )
+                .into_function()?;
+            chunk.call::<()>(ctx)?;
+            Ok(())
+        })
+        .map_err(|e| anyhow!("{e}"))?;
+
+        assert!(snap.res.gid_index.contains_key(&2), "gid 2 should exist");
+        assert!(
+            !snap.res.gid_index.contains_key(&1),
+            "gid 1 must stay reserved"
+        );
+        Ok(())
+    }
+
+    /// 沙箱掩码前提：`ALL_SAFE ^ (IO|OS|PACKAGE)` 只有在三者都属于 ALL_SAFE 时才等价差集。
+    #[test]
+    fn test_sandbox_stdlib_mask_premise() {
+        assert!(StdLib::ALL_SAFE.contains(StdLib::IO));
+        assert!(StdLib::ALL_SAFE.contains(StdLib::OS));
+        assert!(StdLib::ALL_SAFE.contains(StdLib::PACKAGE));
+        assert!(!StdLib::ALL_SAFE.contains(StdLib::DEBUG));
+        let masked = StdLib::ALL_SAFE ^ (StdLib::IO | StdLib::OS | StdLib::PACKAGE);
+        assert!(!masked.contains(StdLib::IO));
+        assert!(!masked.contains(StdLib::OS));
+        assert!(!masked.contains(StdLib::PACKAGE));
+        assert!(masked.contains(StdLib::MATH));
     }
 }

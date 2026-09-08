@@ -162,7 +162,8 @@ fn follow_schema() -> Value {
         "description": "operate follow option schema",
         "type": "object",
         "properties": {
-            "uid": { "type": "integer", },
+            // lua/libcall 传 i64：负数会在 Snapshot 内 as_u64().expect 处 panic，这里先挡
+            "uid": { "type": "integer", "minimum": 0 },
             "enable": { "type": "boolean", },
         },
         "required": [ "uid", ],
@@ -175,7 +176,7 @@ fn refresh_schema() -> Value {
         "description": "operate refresh option schema",
         "type": "object",
         "properties": {
-            "uid": { "type": "integer", },
+            "uid": { "type": "integer", "minimum": 0 },
         },
         "required": [ "uid", ],
         "additionalProperties": false,
@@ -187,8 +188,9 @@ fn toggle_group_schema() -> Value {
         "description": "operate toggle/group option schema",
         "type": "object",
         "properties": {
-            "uid": { "type": "integer", },
-            "gid": { "type": "integer", },
+            "uid": { "type": "integer", "minimum": 0 },
+            // 0/1 是内置组（全部/特殊关注），合法 toggle 目标，故不能像 touch_group 那样 minimum 2
+            "gid": { "type": "integer", "minimum": 0 },
         },
         "required": [ "uid", "gid", ],
         "additionalProperties": false,

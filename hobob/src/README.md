@@ -30,6 +30,16 @@
 - SSE：`/ev/engine` 用 `BroadcastStream` 转发 events，`Lagged` 时发 comment 提示。
 - tests：warp::test 全路由端到端测试（`test_op_*`、`test_card_*`、`test_sse`）。
 
+## `libcall.rs` — libcall 接口（mlua 桥，M3 T2，~870 行）
+
+lua 与 Rust 能力的桥梁，两组注册进每次 call 新建的 `ctx` 表（不进 `_G`，计划 D14）。
+
+- 沙箱：`new_sandbox()` = `StdLib::ALL_SAFE ^ (IO|OS|PACKAGE)`（DEBUG 本就不在 `ALL_SAFE`；`^` 等价差集的前提由 `test_sandbox_stdlib_mask_premise` 钉住，mlua 未实现 `Not`/`Sub`）+ 全局 `json.encode/decode`。
+- admin（直接改 `&mut Snapshot`，失败返回 `false`/`nil` + `ctx.admin.last_error()`）：`follow`/`unfollow`/`toggle_group`/`new_group`/`refresh`/`get_state`/`set_silent`/`register_system`。负 uid/gid 由 `valid_arg` 在 libcall 层拦截（schema 侧 `minimum: 0` 兜底）；`set_silent` 依赖的 `Snapshot::force_silence` 仍是 stub，故当前恒返回 false。
+- bapi（`spawn_blocking` + 新 current-thread runtime 同步桥，`BAPI_TIMEOUT` 本地 5s 兜底，失败返回 `nil, err_msg`）：`info`/`latest_videos`/`recent_posts`/`card`/`live_info`/`xlive_recommend`。
+- 缺口（T3 接线）：`register_system` 只落盘不注册 registry；缺 `unregister_system`/`reload_system`/`reload_all`；dispatch 侧超时隔离未接（D6 ② 与 mlua `!Send` 冲突，见计划文档执行偏差节）。
+- tests：19 个（admin 操作/负参数拒绝/set_silent 未实现/json 编解码/沙箱拒绝与掩码前提/标准库可用/bapi 签名与同步桥三例）。
+
 ## `systems.rs` — 基础 system（491 行，原 `engine.rs`）
 
 - `fetch_loop`：`while let Ok(bench) = runner.recv()` → 有命令则 `take_cmds`（带长度校验的原子取走）逐个 `exec_cmd`；无命令则发 `Tick` 事件（hub 分发内置 `builtin.tick` 补抓，见下）。之后按 `bucket_duration_to_next` 设 deadline 睡眠等待 `runner.changed()`。
