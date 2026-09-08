@@ -598,7 +598,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let mut body = resp.into_body();
         let mut tx = center.new_chair();
-        // FIXME use modify_up_info to trigger events
+        // SSE 事件即 hub push 时 drain 的 res.events（任意合法载荷都会广播；fetch/索引事件
+        // 由 db ops 产生，此处直接 push 模拟订阅端可见的事件流）
         let ls = vec![json!({
             "uid":12345,
             "live": {"isopen":"true"},

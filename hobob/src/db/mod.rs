@@ -164,7 +164,7 @@ pub struct Resources {
     pub events: Events,
     /// 环形日志缓冲（M2 KV 化前保持 v1 语义）。
     pub logs: LogRecords,
-    /// fetch 命令队列（engine take_cmds 消费）。
+    /// fetch 命令队列（fetch 系统 take_cmds 消费）。
     pub commands: Commands,
     /// closing 标志（v1 runtime JSON `#CLOSING#` 挪入 Resources，§4.4；对外不可见）。
     pub closing: bool,
@@ -179,7 +179,7 @@ pub struct Snapshot {
     pub res: Resources,
 }
 
-/// 简易运行时错误日志（engine apply 闭包外用）。
+/// 简易运行时错误日志（fetch/外部 apply 闭包外用）。
 pub struct BenchUpdate(Snapshot, Snapshot);
 
 impl Default for Snapshot {
@@ -844,7 +844,7 @@ impl Snapshot {
         json!({ "filters": a })
     }
 
-    // ---------- fetch 结果写入（engine 用，v1 `modify_up_info` 等价物） ----------
+    // ---------- fetch 结果写入（fetch 系统用，v1 `modify_up_info` 等价物） ----------
 
     /// fetch 成功后按组件写入 + 索引/事件维护 + bucket_access（v1 `modify_up_info` 语义）。
     ///
@@ -967,7 +967,7 @@ pub fn now_timestamp() -> i64 {
     Utc::now().timestamp()
 }
 
-// ============================== API 原始值 → pick 段（v1 engine.rs 迁入） ==============================
+// ============================== API 原始值 → pick 段（v1 起自 engine，M1 归 systems.rs） ==============================
 
 /// API `user.info()` → v1 `pick.basic` 合并结果（保留旧 ban/fid 等管理字段）。
 pub fn pick_basic(a: &Value, b: &Value) -> Value {
@@ -2212,7 +2212,7 @@ mod tests {
         let mut snap = Snapshot::new();
         // 线上 bucket.atime 是 epoch 数字（utils/ts schema），引擎 tick 路径（bucket_hang
         // 的 as_i64 读取）依赖该形态；default_bucket 的 RFC3339 atime 只在 access 前存在
-        //（bucket_duration_to_next 的 from_value 路径由 engine test_next_deadline 覆盖）。
+        //（bucket_duration_to_next 的 from_value 路径由 systems test_next_deadline 覆盖）。
         snap.world
             .get_mut::<RuntimeCfg>(Entity(ENTITY_RUNTIME))
             .unwrap()
@@ -2254,10 +2254,6 @@ mod tests {
         w.insert(e, Brick::default());
         assert!(w.contains::<Brick>(e));
     }
-
-    // TODO test modify_up_info
-    // 1. expect events
-    // 2. index
 
     // ---------- T4 持久化接轨 ----------
 
