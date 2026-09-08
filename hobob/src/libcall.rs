@@ -6,23 +6,28 @@
 //! - **bapi**：B 站 API 封装（info/latest_videos/recent_posts/card/live_info/xlive_recommend），
 //!   同步网络调用（`spawn_blocking` + 新 runtime，带本地 5s 兜底超时）
 //!
-//! 现状与缺口（T3 待补）：
-//! - `register_system` 只落盘，尚未编译注册进 `DynSystemRegistry`
-//! - `set_silent` 依赖的 `Snapshot::force_silence` 仍是 stub，故当前恒返回 `false` + `last_error`
-//! - 尚无 `unregister_system`/`reload_system`/`reload_all`（计划 §4.2 / D4）
+//! 现状与缺口：
+//! - `set_silent` 恒返回 `false`：`Snapshot::force_silence` 目前只做 Silenced 事件上报
+//!   （T3），真实静音语义（`Brick::silent` 置位 + 屏蔽抓取）待 T6。
 //!
 //! 使用方式：
 //! 1. `new_sandbox()` 创建沙箱 Lua 实例（已注册 `json.encode`/`json.decode` 到全局）
-//! 2. `build_ctx_table(lua, scope, snap, store)` 在每次 lua 回调 call 前构建 ctx 表
+//! 2. `build_ctx_table(lua, scope, snap, store, dynsys)` 在每次 lua 回调 call 前构建 ctx 表
 //! 3. lua 回调内通过 `ctx.admin.follow(uid, enable)` 或 `ctx.bapi.info(uid)` 调用
 //!
 //! ctx 表不进 lua 全局环境（D14），每次 call 新建。
+//!
+//! M3 T3 接线（原缺口已补）：
+//! - `register_system`/`unregister_system`/`reload_system`/`reload_all` 经 `DynSystemRegistry`
+//!   句柄直接编译注册/热加载（`lib.` 前缀 = oneshot，condition 校验在 registry 侧）；
+//!   `store = None`（内存 hub）时只注册不落盘，`dynsys = None` 时拒绝并写 `last_error`。
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::db::Snapshot;
 use crate::store::{Store, SystemSpecV1};
+use crate::systems::DynSystemRegistry;
 use anyhow::anyhow;
 use bilibili_api_rs::Client;
 use mlua::{Lua, LuaSerdeExt, StdLib, Table};
@@ -69,11 +74,15 @@ pub fn register_json_globals(lua: &Lua) -> mlua::Result<()> {
 /// 构建 ctx 表（scope 内，admin 借用 snap，bapi 无借用）。
 ///
 /// 必须在 `lua.scope(...)` 内调用；scope 结束前必须使用完返回的 ctx 表。
+///
+/// `store`/`dynsys` 为 `None` 时对应能力降级（`register_system` 等返回 `false` +
+/// `last_error`），不透传假成功：内存 hub 无 store，registry 缺失时无法编译注册。
 pub fn build_ctx_table<'scope>(
     lua: &Lua,
     scope: &'scope mlua::Scope<'scope, '_>,
     snap: &'scope mut Snapshot,
-    store: &'scope Store,
+    store: Option<&'scope Store>,
+    dynsys: Option<DynSystemRegistry>,
 ) -> mlua::Result<Table> {
     let snap_rc = Rc::new(RefCell::new(snap));
     let last_error = Rc::new(RefCell::new(String::new()));
@@ -239,25 +248,110 @@ pub fn build_ctx_table<'scope>(
     admin.set("get_state", get_state_fn)?;
 
     // ---- admin：register_system(name, lua, condition) -> bool ----
-    // 目前只落盘（store.put_system）；注册进 registry 与 `lib.` 前缀/condition 校验属 T3。
+    // T3：校验 + 编译注册进 registry（`lib.` 前缀 = oneshot，condition 校验在 registry 侧）
+    // → 落盘 store。内存 hub（无 registry）拒绝；无 store 只注册不落盘。
+    let ds1 = dynsys.clone();
     let err1 = Rc::clone(&last_error);
     let register_system_fn = scope.create_function(
         move |_, (name, lua_src, condition): (String, String, String)| -> mlua::Result<bool> {
-            let spec = SystemSpecV1 {
-                name,
-                lua: lua_src,
-                condition,
+            let Some(ds) = &ds1 else {
+                *err1.borrow_mut() = "register_system: 无 registry（内存 hub 不支持）".into();
+                return Ok(false);
             };
-            match store.put_system(&spec) {
-                Ok(()) => Ok(true),
-                Err(e) => {
-                    *err1.borrow_mut() = e.to_string();
-                    Ok(false)
+            if let Err(e) = ds.register_from_source(&name, &lua_src, &condition) {
+                *err1.borrow_mut() = format!("{e:#}");
+                return Ok(false);
+            }
+            if let Some(store) = store {
+                let spec = SystemSpecV1 {
+                    name: name.clone(),
+                    lua: lua_src,
+                    condition,
+                };
+                if let Err(e) = store.put_system(&spec) {
+                    // 落盘失败回滚注册，避免内存/磁盘不一致
+                    ds.unregister_lua(&name);
+                    *err1.borrow_mut() = format!("{e:#}");
+                    return Ok(false);
                 }
             }
+            Ok(true)
         },
     )?;
     admin.set("register_system", register_system_fn)?;
+
+    // ---- admin：unregister_system(name) -> bool ----
+    let ds1 = dynsys.clone();
+    let err1 = Rc::clone(&last_error);
+    let unregister_system_fn = scope.create_function(move |_, name: String| -> mlua::Result<bool> {
+        let Some(ds) = &ds1 else {
+            *err1.borrow_mut() = "unregister_system: 无 registry（内存 hub 不支持）".into();
+            return Ok(false);
+        };
+        let removed = ds.unregister_lua(&name);
+        if let Some(store) = store {
+            if let Err(e) = store.delete_system(&name) {
+                *err1.borrow_mut() = format!("{e:#}");
+                return Ok(false);
+            }
+        }
+        Ok(removed)
+    })?;
+    admin.set("unregister_system", unregister_system_fn)?;
+
+    // ---- admin：reload_system(name) -> bool（D4 热加载） ----
+    let ds1 = dynsys.clone();
+    let err1 = Rc::clone(&last_error);
+    let reload_system_fn = scope.create_function(move |_, name: String| -> mlua::Result<bool> {
+        let Some(ds) = &ds1 else {
+            *err1.borrow_mut() = "reload_system: 无 registry（内存 hub 不支持）".into();
+            return Ok(false);
+        };
+        let Some(store) = store else {
+            *err1.borrow_mut() = "reload_system: 无 store（内存 hub 不支持）".into();
+            return Ok(false);
+        };
+        match store.get_system(&name) {
+            Ok(Some(spec)) => match ds.reload_one(&spec) {
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    *err1.borrow_mut() = format!("{e:#}");
+                    Ok(false)
+                }
+            },
+            Ok(None) => {
+                *err1.borrow_mut() = format!("reload_system: store 中无 system {name:?}");
+                Ok(false)
+            }
+            Err(e) => {
+                *err1.borrow_mut() = format!("{e:#}");
+                Ok(false)
+            }
+        }
+    })?;
+    admin.set("reload_system", reload_system_fn)?;
+
+    // ---- admin：reload_all() -> bool（D4：`_lib` 重置 + 全量重编译） ----
+    let ds1 = dynsys.clone();
+    let err1 = Rc::clone(&last_error);
+    let reload_all_fn = scope.create_function(move |_, ()| -> mlua::Result<bool> {
+        let Some(ds) = &ds1 else {
+            *err1.borrow_mut() = "reload_all: 无 registry（内存 hub 不支持）".into();
+            return Ok(false);
+        };
+        let Some(store) = store else {
+            *err1.borrow_mut() = "reload_all: 无 store（内存 hub 不支持）".into();
+            return Ok(false);
+        };
+        match ds.load_from_store(store) {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                *err1.borrow_mut() = format!("{e:#}");
+                Ok(false)
+            }
+        }
+    })?;
+    admin.set("reload_all", reload_all_fn)?;
 
     // ---- admin：last_error() -> string ----
     let err1 = Rc::clone(&last_error);
@@ -450,7 +544,7 @@ mod tests {
         let uid: i64 = 12345;
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -478,7 +572,7 @@ mod tests {
         let uid: i64 = 12346;
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -494,7 +588,7 @@ mod tests {
         .map_err(|e| anyhow!("{e}"))?;
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -523,7 +617,7 @@ mod tests {
         snap.touch_group(&json!({"gid": 100, "pin": false, "name": "test_group"}))?;
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -551,7 +645,7 @@ mod tests {
         let mut snap = Snapshot::new();
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -578,7 +672,7 @@ mod tests {
         snap.follow(&json!({"uid": 12348, "enable": true}))?;
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -601,7 +695,7 @@ mod tests {
         let mut snap = Snapshot::new();
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -622,17 +716,27 @@ mod tests {
 
     #[test]
     fn test_admin_register_system() -> anyhow::Result<()> {
-        let (lua, store, _dir) = setup()?;
+        let (_lua, store, _dir) = setup()?;
+        // T3：注册要编译进 registry，测试须用 registry 自己的 Lua 实例（生产同款）
+        let ds = DynSystemRegistry::new();
+        let lua = ds.lua().clone();
         let mut snap = Snapshot::new();
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), Some(ds.clone()))?;
             let chunk = lua
                 .load(
                     r#"
                     local ctx = ...
-                    local ok = ctx.admin.register_system("test_sys", "return 1", "")
+                    local ok = ctx.admin.register_system("test_sys", "function(event, ctx) end", "")
                     assert(ok, "register_system should succeed")
+                    -- oneshot（lib. 前缀）+ 空 condition
+                    local ok2 = ctx.admin.register_system("lib.helper", "return { ping = function() return 1 end }", "")
+                    assert(ok2, "oneshot register should succeed")
+                    -- oneshot 不允许 condition（D16）
+                    local ok3 = ctx.admin.register_system("lib.bad", "return {}", "always")
+                    assert(ok3 == false, "oneshot with condition must be rejected")
+                    assert(#ctx.admin.last_error() > 0, "last_error should explain")
                     "#,
                 )
                 .into_function()?;
@@ -643,7 +747,10 @@ mod tests {
 
         let spec = store.get_system("test_sys")?.expect("should exist");
         assert_eq!(spec.name, "test_sys");
-        assert_eq!(spec.lua, "return 1");
+        assert_eq!(spec.lua, "function(event, ctx) end");
+        assert!(ds.contains_lua("test_sys"), "registry 应持有编译产物");
+        assert!(store.get_system("lib.helper")?.is_some(), "oneshot 落盘");
+        assert!(store.get_system("lib.bad")?.is_none(), "非法 oneshot 不落盘");
         Ok(())
     }
 
@@ -714,7 +821,7 @@ mod tests {
         let (lua, store, _dir) = setup()?;
         let mut snap = Snapshot::new();
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -738,7 +845,7 @@ mod tests {
         let mut snap = Snapshot::new();
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -774,7 +881,7 @@ mod tests {
         let mut snap = Snapshot::new();
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"
@@ -832,7 +939,7 @@ mod tests {
         let mut snap = Snapshot::default();
 
         lua.scope(|scope| {
-            let ctx = build_ctx_table(&lua, scope, &mut snap, &store)?;
+            let ctx = build_ctx_table(&lua, scope, &mut snap, Some(&store), None)?;
             let chunk = lua
                 .load(
                     r#"

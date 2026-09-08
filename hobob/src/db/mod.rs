@@ -708,8 +708,20 @@ impl Snapshot {
 
     /// # Errors
     /// Currently no errors in impl.
-    pub fn force_silence(&mut self, _opt: &Value) -> Result<()> {
+    ///
+    /// M3 T3：上报 `Silenced` 事件（lua/native 动态 system 可响应）；**真实静音语义
+    /// （`Brick::silent` 置位 + 屏蔽抓取）仍待 T6**，故带 uid 才发事件。
+    pub fn force_silence(&mut self, opt: &Value) -> Result<()> {
         self.bucket_double_gap();
+        if let Some(uid) = opt.get("uid").and_then(Value::as_i64) {
+            if self.res.uid_index.contains_key(&uid.to_string()) {
+                self.push_sys_event(json!({
+                    "kind": "up_state",
+                    "uid": uid,
+                    "state": "silenced",
+                }));
+            }
+        }
         Ok(())
     }
 
@@ -1445,9 +1457,8 @@ impl Default for WeiYuanHui {
         let (updates_src, updates) = mpsc::channel(64);
         let (ev_tx, ev_rx) = broadcast::channel(64);
         let (publish, publish_dst) = watch::channel(Snapshot::new());
-        let mut dynsys = DynSystemRegistry::new();
-        dynsys.register(builtin_tick());
-        Self {
+        let dynsys = DynSystemRegistry::new();
+        dynsys.register(builtin_tick());        Self {
             updates,
             updates_src: Some(updates_src),
             publish,
@@ -1491,6 +1502,9 @@ impl WeiYuanHui {
         let snap = load_snapshot(&store)?;
         let mut h: Self = snap.into();
         h.kv_max = kv_max;
+        // M3 T3（D3）：systems 表全量加载 + 编译注册（oneshot → event 三步骤）。
+        // list_systems 读取失败 = Err（调用方退出）；单条 spec 失败只记日志跳过。
+        h.dynsys.load_from_store(&store)?;
         h.store = Some(store);
         Ok(h)
     }
@@ -1512,9 +1526,51 @@ impl WeiYuanHui {
         self.store.as_ref().map(|s| s.stats.get())
     }
 
-    /// 注册动态 system（T6；测试/未来 M3 加载 store systems 表时调用）。同名覆盖。
+    /// 注册动态 system（T6；测试用）。同名覆盖。M3 起 store 中 systems 表在 `open` 时自动加载。
     pub fn register_system(&mut self, spec: crate::systems::DynSystemSpec) {
         self.dynsys.register(spec);
+    }
+
+    /// D4 热加载单个 system（T3）：从 store 重新读取 spec → 重编译替换 registry。
+    /// 返回 `false` = store 中无此 spec（不报错）。
+    ///
+    /// # Errors
+    /// Throw if no store attached or store read fails.
+    pub fn reload_system(&mut self, name: &str) -> Result<bool> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| anyhow!("reload_system: no store attached (in-memory hub)"))?;
+        let Some(spec) = store.get_system(name)? else {
+            return Ok(false);
+        };
+        self.dynsys.reload_one(&spec)?;
+        Ok(true)
+    }
+
+    /// D4 全量热加载（T3）：`_lib` 重置 + 全部 oneshot 重跑 + 全部 event 重编译；
+    /// native spec（`builtin.tick`）保留。
+    ///
+    /// # Errors
+    /// Throw if no store attached or store read fails.
+    pub fn reload_all(&mut self) -> Result<()> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| anyhow!("reload_all: no store attached (in-memory hub)"))?;
+        self.dynsys.load_from_store(store)
+    }
+
+    /// 已注册动态 system 数（native + lua；观测/测试）。
+    #[must_use]
+    pub fn dynsys_len(&self) -> usize {
+        self.dynsys.len()
+    }
+
+    /// 是否已注册同名 lua system（观测/测试）。
+    #[must_use]
+    pub fn has_lua_system(&self, name: &str) -> bool {
+        self.dynsys.contains_lua(name)
     }
 
     #[must_use]
@@ -1665,7 +1721,12 @@ impl WeiYuanHui {
         // registry 内部已容错（单 handler 报错记日志继续）；无法识别的事件在此告警。
         for sev in &sys_evs {
             match trigger_from_json(sev, &next) {
-                Some(ev) => self.dynsys.dispatch(&ev, &mut next),
+                Some(ev) => {
+                    // M3 T3：两段式分发（native → lua）；lua 侧 admin（register/reload）需 store。
+                    // registry 句柄克隆后分发：lua 回调内可改写注册表而不撞 borrow。
+                    let dynsys = self.dynsys.clone();
+                    dynsys.dispatch(&ev, &mut next, self.store.as_ref());
+                }
                 None => log::warn!("unrecognized sys event: {:?}", sev),
             }
         }
@@ -1810,7 +1871,7 @@ impl WeiYuan {
 mod tests {
     use super::*;
     use crate::ecs::World;
-    use crate::store::StoreConfig;
+    use crate::store::{StoreConfig, SystemSpecV1};
     use crate::systems::{DynSystemSpec, TriggerEvent, UpStateKind};
     use std::mem;
     use std::sync::{Arc, Mutex};
@@ -2548,6 +2609,7 @@ mod tests {
             got[0],
             TriggerEvent::UpStateChanged {
                 entity: 4,
+                uid: "12345".into(),
                 kind: UpStateKind::Followed
             }
         );
@@ -2555,6 +2617,7 @@ mod tests {
             got[1],
             TriggerEvent::UpStateChanged {
                 entity: 4,
+                uid: "12345".into(),
                 kind: UpStateKind::GroupToggled
             }
         );
@@ -2581,6 +2644,211 @@ mod tests {
             TriggerEvent::Tick { .. } => {}
             other => panic!("expected second Tick, got {other:?}"),
         }
+    }
+
+    // ---------- M3 T3：lua 动态 system 加载 / 热加载 / Silenced ----------
+
+    /// 某 uid 所在分组的 gid 列表（测试辅助）。
+    fn group_gids_of(snap: &Snapshot, uid: i64) -> Vec<u64> {
+        let Some(&eid) = snap.res.uid_index.get(&uid.to_string()) else {
+            return Vec::new();
+        };
+        let Some(brick) = snap.world.get::<Brick>(Entity(eid)) else {
+            return Vec::new();
+        };
+        let mut out: Vec<u64> = brick
+            .groups
+            .iter()
+            .filter_map(|&ge| snap.world.get::<GroupInfo>(Entity(ge)).map(|g| g.gid))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// 临时 state.redb + 写入 specs（`(name, lua, condition)`）。
+    fn store_with_lua_systems(
+        path: &std::path::Path,
+        specs: &[(&str, &str, &str)],
+    ) -> Result<Store> {
+        let store = Store::open_or_create(&StoreConfig::new(path.to_path_buf()))?;
+        for (name, lua, cond) in specs {
+            store.put_system(&SystemSpecV1 {
+                name: (*name).into(),
+                lua: (*lua).into(),
+                condition: (*cond).into(),
+            })?;
+        }
+        Ok(store)
+    }
+
+    /// D3：open 加载 store systems → FetchDone 触发 lua 回调改分组 → 重启后持久化。
+    #[tokio::test]
+    async fn test_hub_loads_lua_system_and_persists_group_change() {
+        init();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.redb");
+        let store = store_with_lua_systems(
+            &path,
+            &[
+                (
+                    "lib.g",
+                    "return { big = function(ev) return ev.uid and ev.uid > 1000 end }",
+                    "",
+                ),
+                (
+                    "on_fetch",
+                    "function(event, ctx) \
+                     if event.kind == 'fetch_done' and _lib.g.big(event) then \
+                       ctx.admin.toggle_group(event.uid, 2) \
+                     end end",
+                    "",
+                ),
+            ],
+        )
+        .unwrap();
+        let mut center = WeiYuanHui::open(store).unwrap();
+        assert!(center.has_lua_system("on_fetch"), "open 应加载 store systems");
+        assert_eq!(
+            center.dynsys_len(),
+            2,
+            "builtin.tick + on_fetch（oneshot 不参与 dispatch）"
+        );
+        let mut chair = center.new_chair();
+        chair
+            .apply(|b| b.follow(&json!({"uid": 12345})))
+            .unwrap();
+        assert!(center.run().await);
+        assert!(
+            group_gids_of(center.bench(), 12345).is_empty(),
+            "follow 事件（kind 不匹配）不触发回调"
+        );
+        chair
+            .apply(|b| {
+                b.push_sys_event(json!({"kind": "fetch_done", "uid": 12345}));
+                Ok(())
+            })
+            .unwrap();
+        assert!(center.run().await);
+        assert_eq!(
+            group_gids_of(center.bench(), 12345),
+            vec![2],
+            "lua 回调应把 uid 加入分组 2"
+        );
+        center.close();
+        // 重启：分组持久化（ec:group + brick.groups 经 redb 重建）
+        let store2 = Store::open_or_create(&StoreConfig::new(path.clone())).unwrap();
+        let center2 = WeiYuanHui::open(store2).unwrap();
+        assert_eq!(
+            group_gids_of(center2.bench(), 12345),
+            vec![2],
+            "重启后分组保留"
+        );
+        assert!(center2.has_lua_system("on_fetch"), "重启后重新编译注册");
+    }
+
+    /// D4：`reload_system` 热替换回调（未知 name 返回 false）。
+    #[tokio::test]
+    async fn test_hub_reload_system_hot_swap() {
+        init();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.redb");
+        let store = store_with_lua_systems(
+            &path,
+            &[(
+                "a.reload",
+                "function(event, ctx) ctx.admin.follow(999, true) end",
+                "",
+            )],
+        )
+        .unwrap();
+        let mut center = WeiYuanHui::open(store).unwrap();
+        assert!(!center.reload_system("no.such").unwrap(), "未知 name → false");
+        // 直接改 store（hub 持同一 redb 文件句柄），再热加载
+        center
+            .store
+            .as_ref()
+            .unwrap()
+            .put_system(&SystemSpecV1 {
+                name: "a.reload".into(),
+                lua: "function(event, ctx) ctx.admin.new_group('hot', false) end".into(),
+                condition: String::new(),
+            })
+            .unwrap();
+        assert!(center.reload_system("a.reload").unwrap());
+        let mut chair = center.new_chair();
+        chair
+            .apply(|b| {
+                b.push_sys_event(json!({"kind": "tick"}));
+                Ok(())
+            })
+            .unwrap();
+        assert!(center.run().await);
+        assert!(
+            center.bench().res.gid_index.contains_key(&2),
+            "热加载后执行新回调（建组）"
+        );
+        assert!(
+            !center.bench().res.uid_index.contains_key("999"),
+            "旧回调不再执行"
+        );
+        center.close();
+    }
+
+    /// D4：`reload_all` 全量重建（删除的 lua system 消失，native 保留）。
+    #[tokio::test]
+    async fn test_hub_reload_all_resets_lua_systems() {
+        init();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.redb");
+        let store = store_with_lua_systems(&path, &[("a.x", "function(event, ctx) end", "")]).unwrap();
+        let mut center = WeiYuanHui::open(store).unwrap();
+        assert!(center.has_lua_system("a.x"));
+        center.store.as_ref().unwrap().delete_system("a.x").unwrap();
+        center.reload_all().unwrap();
+        assert!(!center.has_lua_system("a.x"), "reload_all 清掉已删除的 system");
+        assert_eq!(center.dynsys_len(), 1, "native builtin.tick 保留");
+        center.close();
+    }
+
+    /// T3：`force_silence` 上报 Silenced（带 uid 且 uid 已跟踪时；未知 uid 不发）。
+    #[tokio::test]
+    async fn test_force_silence_emits_silenced_event() {
+        init();
+        let mut center = WeiYuanHui::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        center.register_system(DynSystemSpec {
+            name: "test.silence_spy".into(),
+            condition: "always".into(),
+            callback: Arc::new(move |ev, _snap| {
+                s.lock().unwrap().push(ev.clone());
+                Ok(())
+            }),
+        });
+        let mut chair = center.new_chair();
+        chair
+            .apply(|b| b.follow(&json!({"uid": 12345})))
+            .unwrap();
+        assert!(center.run().await);
+        chair
+            .apply(|b| b.force_silence(&json!({"uid": 12345})))
+            .unwrap();
+        assert!(center.run().await);
+        chair
+            .apply(|b| b.force_silence(&json!({"uid": 999})))
+            .unwrap();
+        assert!(center.run().await);
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got.len(), 2, "follow + silenced 各一条；未知 uid 不发事件");
+        assert_eq!(
+            got[1],
+            TriggerEvent::UpStateChanged {
+                entity: 4,
+                uid: "12345".into(),
+                kind: UpStateKind::Silenced
+            }
+        );
+        center.close();
     }
 
     #[tokio::test]

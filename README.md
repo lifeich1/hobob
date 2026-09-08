@@ -50,7 +50,7 @@ cross build --bin hobob -r --target aarch64-unknown-linux-gnu
 
 ## 架构速览
 
-- 单进程四部分：`www`（warp HTTP + SSE + tera 模板）、`systems::fetch_loop`（后台抓取循环，消费 commands 抓取 bilibili 数据；含动态 system 框架 `builtin.tick`）、`db`（`WeiYuanHui` 数据中枢：内存 ECS world + im 索引 + mpsc/watch/broadcast 通道 + `#SYSEV#` 事件通道）、`store`（redb + bincode 持久化：启动全量加载、运行期直写/stage、close 强刷，稳态零读）。
+- 单进程四部分：`www`（warp HTTP + SSE + tera 模板）、`systems::fetch_loop`（后台抓取循环，消费 commands 抓取 bilibili 数据；动态 system 框架 native→lua 两段式分发，lua 侧 mlua 沙箱 + `lib.` oneshot 共享库）、`db`（`WeiYuanHui` 数据中枢：内存 ECS world + im 索引 + mpsc/watch/broadcast 通道 + `#SYSEV#` 事件通道）、`store`（redb + bincode 持久化：启动全量加载、运行期直写/stage、close 强刷，稳态零读）。
 - **M1 起数据层 = 内存 ECS world（`db/mod.rs`）+ redb 持久化（`store.rs`）**：`~/bench.json` 不再读写；`state.redb` 是唯一持久化来源。
 - 前端页面（`/`、`/card/*`）与操作 API（`/op/*`）数据均经 JSON schema 校验（boon），schema 从远程加载。
 - 详细数据流、路由表、模块地图见 [hobob/README.md](hobob/README.md) 与 [hobob/src/README.md](hobob/src/README.md)。

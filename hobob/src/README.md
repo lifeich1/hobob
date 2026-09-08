@@ -30,22 +30,22 @@
 - SSE：`/ev/engine` 用 `BroadcastStream` 转发 events，`Lagged` 时发 comment 提示。
 - tests：warp::test 全路由端到端测试（`test_op_*`、`test_card_*`、`test_sse`）。
 
-## `libcall.rs` — libcall 接口（mlua 桥，M3 T2，~870 行）
+## `libcall.rs` — libcall 接口（mlua 桥，M3 T2/T3，~980 行）
 
 lua 与 Rust 能力的桥梁，两组注册进每次 call 新建的 `ctx` 表（不进 `_G`，计划 D14）。
 
 - 沙箱：`new_sandbox()` = `StdLib::ALL_SAFE ^ (IO|OS|PACKAGE)`（DEBUG 本就不在 `ALL_SAFE`；`^` 等价差集的前提由 `test_sandbox_stdlib_mask_premise` 钉住，mlua 未实现 `Not`/`Sub`）+ 全局 `json.encode/decode`。
-- admin（直接改 `&mut Snapshot`，失败返回 `false`/`nil` + `ctx.admin.last_error()`）：`follow`/`unfollow`/`toggle_group`/`new_group`/`refresh`/`get_state`/`set_silent`/`register_system`。负 uid/gid 由 `valid_arg` 在 libcall 层拦截（schema 侧 `minimum: 0` 兜底）；`set_silent` 依赖的 `Snapshot::force_silence` 仍是 stub，故当前恒返回 false。
+- admin（直接改 `&mut Snapshot`，失败返回 `false`/`nil` + `ctx.admin.last_error()`）：`follow`/`unfollow`/`toggle_group`/`new_group`/`refresh`/`get_state`/`set_silent`/`register_system`/`unregister_system`/`reload_system`/`reload_all`。负 uid/gid 由 `valid_arg` 在 libcall 层拦截（schema 侧 `minimum: 0` 兜底）；`register_system` 经 registry 句柄编译注册 + 落盘（`lib.` 前缀 = oneshot、condition 校验在 registry 侧）；`set_silent` 恒返回 false——`force_silence` 目前只上报 Silenced 事件，真实静音语义待 T6。
 - bapi（`spawn_blocking` + 新 current-thread runtime 同步桥，`BAPI_TIMEOUT` 本地 5s 兜底，失败返回 `nil, err_msg`）：`info`/`latest_videos`/`recent_posts`/`card`/`live_info`/`xlive_recommend`。
-- 缺口（T3 接线）：`register_system` 只落盘不注册 registry；缺 `unregister_system`/`reload_system`/`reload_all`；dispatch 侧超时隔离未接（D6 ② 与 mlua `!Send` 冲突，见计划文档执行偏差节）。
-- tests：19 个（admin 操作/负参数拒绝/set_silent 未实现/json 编解码/沙箱拒绝与掩码前提/标准库可用/bapi 签名与同步桥三例）。
+- 执行模型（T3）：`build_ctx_table(lua, scope, snap, Option<&Store>, Option<DynSystemRegistry>)`，两个 `None` 时对应能力拒绝并写 `last_error`（不给假成功）；lua 回调**同步跑在 hub 线程**（不开 mlua `send`），超时靠 registry 侧 `set_hook` 指令上限（D6 ② 已按决议弃用，见 `.plans/m3-mlua-dynsys.md`）。
+- tests：19 个（admin 操作/负参数拒绝/set_silent 未实现/json 编解码/沙箱拒绝与掩码前提/标准库可用/bapi 签名与同步桥三例/register_system 编译注册与 oneshot 校验）。
 
-## `systems.rs` — 基础 system（491 行，原 `engine.rs`）
+## `systems.rs` — 基础 system（~1310 行，原 `engine.rs`）
 
 - `fetch_loop`：`while let Ok(bench) = runner.recv()` → 有命令则 `take_cmds`（带长度校验的原子取走）逐个 `exec_cmd`；无命令则发 `Tick` 事件（hub 分发内置 `builtin.tick` 补抓，见下）。之后按 `bucket_duration_to_next` 设 deadline 睡眠等待 `runner.changed()`。
 - `exec_cmd`：目前仅实现 `fetch`（`livelist` 是 `todo!()`）。
 - `do_fetch`：`bilibili-api-rs` 的 `user(uid).info()` + `latest_videos()`；失败时 `bucket_double_gap` + 上报 `FetchFailed` 事件；成功时 `apply_fetch` 组件写回 + `bucket_good` + 上报 `FetchDone` 事件（组件字段 → `db` 组件，`raw` 内存 only）。
-- 动态 system 框架：`TriggerEvent`（Tick/FetchDone/FetchFailed/UpStateChanged）、`DynSystemRegistry`（hub 持有，按名序分发、handler 报错记日志继续）、内置 `builtin.tick`（原 `exec_timers`：commands 空时取 `up_index.ctime` 最旧 uid 补 `fetch` + `bucket_hang`）。store `systems` 表不加载（lua/condition 语法 M3 定）。
+- 动态 system 框架（M3 T3）：`TriggerEvent`（Tick/FetchDone/FetchFailed/UpStateChanged，含 `uid`）、`DynSystemRegistry`（`Rc<RefCell<DynInner>>` 句柄，hub 持有；**两段式** native→lua 分发，各自名序、handler 报错记日志继续）。lua system 在 `WeiYuanHui::open` 从 store `systems` 表加载（D3）：`lib.` 前缀 = oneshot（加载期执行一次、返回 table 存 `_lib.<短名>`，D16），其余 = 事件响应型（`condition` 预编译为 `function(event) return (<expr>) end`，`""`/`"always"` 恒真，D15）。超时靠 `set_hook` 指令上限（`LUA_INSTRUCTION_LIMIT` 1M ≈ 50ms；condition 100K）；回调报错/中断后探针实例可用性（D13：可复用则仅记日志，不可用且有 store 则全量重建）。内置 `builtin.tick`（原 `exec_timers`：commands 空时取 `up_index.ctime` 最旧 uid 补 `fetch` + `bucket_hang`）。
 - 注意：`Client::new()` 直接使用 bilibili-api-rs 默认凭据，无持久化登录态。
 
 ## `store.rs` — redb 持久化（1880 行）

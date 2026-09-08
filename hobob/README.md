@@ -3,7 +3,7 @@
 B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程内四部分协作：
 
 - **`www`**（`src/www.rs`）：warp HTTP 服务，渲染页面（tera 模板）+ 操作 API + SSE 事件推送
-- **`systems`**（`src/systems.rs`，原 `engine.rs`）：后台抓取循环 `fetch_loop`，消费 `commands` 队列，用 `bilibili-api-rs` 抓取 UP 主数据；动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/内置 `builtin.tick`）
+- **`systems`**（`src/systems.rs`，原 `engine.rs`）：后台抓取循环 `fetch_loop`，消费 `commands` 队列，用 `bilibili-api-rs` 抓取 UP 主数据；动态 system 框架（`TriggerEvent`/`DynSystemRegistry`，native→lua 两段式分发 + `lib.` oneshot + 内置 `builtin.tick`）
 - **`db`**（`src/db/`，核心）：数据中枢 `WeiYuanHui`/`WeiYuan`，持权威 `Snapshot`（ECS `world` + 内存索引 `res`），全部修改经 chair 通道提交（`ptr_eq` 冲突校验）、watch/broadcast 发布、`#SYSEV#` 事件通道分发动态 system（详见 `src/db/README.md`）
 - **`store`**（`src/store.rs`）：redb + bincode 持久化（详见下）
 
@@ -16,18 +16,15 @@ B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程�
 | `src/ecs.rs` | 轻量 ECS 内核（`Entity`/`Component`/`Storage`/`World`：spawn/insert/remove/get/iter + `ptr_eq` 结构共享判定；无外部依赖） |
 | `src/store.rs` | redb + bincode 持久化：9 张表（meta/systems/ec:* + `kv:log`）、typed CRUD、`VersionedRecord` 版本信封 + 迁移钩子（Brick V1→V2）、`VolatileBuffer` 批量 flush、布局升级链（M2 升 3）；**M1 起接管数据路径**（brick/group 直写、video/live/comment/runtime 批量 flush、close 强刷，稳态零读） |
 | `src/logkv.rs` | M2 日志 KV 镜像：自定义 log4rs appender（`hobob_kv` kind，target 黑名单挡 `hobob::store`/`hobob::logkv`）+ 全局 sync_channel + hub drain 编排（`run()` 每轮/`close()` last-drain）+ seq 续号 + 条数裁剪（`--log-kv-max` 默认 20_000） |
-| `src/systems.rs` | 基础 system：`fetch_loop` 抓取循环、动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/`builtin.tick` 补抓）；原 `engine.rs` 迁入（已删） |
+| `src/systems.rs` | 基础 system：`fetch_loop` 抓取循环、动态 system 框架（`TriggerEvent`/`DynSystemRegistry`：native→lua 两段式分发、`lib.` oneshot 库函数、condition 预编译、`set_hook` 指令上限超时；`builtin.tick` 补抓）；原 `engine.rs` 迁入（已删） |
+| `src/libcall.rs` | M3 libcall（lua↔Rust 桥）：mlua 沙箱（禁 IO/OS/PACKAGE）+ 全局 `json` + `ctx.admin`（改 `&mut Snapshot`，含 `register/unregister/reload_system/reload_all`）/`ctx.bapi`（同步桥） |
 | `src/www.rs` | warp 路由、tera 渲染、SSE、boon schema 校验 |
 | `src/data_schema.rs` | JSON schema 编译（boon），schema 从 `https://lintd.xyz/hobob/` 远程加载 |
-| `src/chunk.rs` + `src/chunkir.lalrpop` | Chunk AST 类型 + lalrpop 解析器（build.rs 生成，见 `src/README.md`） |
-| `src/vm.rs`、`src/bench.rs` | 未完成的设计实验（含 `todo!()`，勿依赖） |
 | `src/bin/perf_smoke.rs` | M1 性能冒烟 bin（200 up × 10 轮 fetch 突发，release 运行，见 `.plans/m1-ecs-core.md` §7） |
 | `src/bin/show_expect_value.rs` | 辅助 bin：打印 Chunk AST 示例 JSON |
-| `src/test_data/` | chunk 解析器测试用例（`in.txt` + `expect.json` 配对） |
 | `templates/` | tera HTML 模板；debug 从磁盘加载，release 编译期 `include_str!` 内嵌（`src/www.rs` `TERA`） |
 | `static/` | 前端静态资源（`index.js` 用 jQuery 加载卡片/筛选/标签页，`favicon.ico`） |
 | `assets/` | `log4rs.yml`（日志配置模板，含 `hobob_kv` appender；首启复制到 `~/log4rs.yml`，M2 旧模板缺 `hobob_kv` 时 prepare_log 会 `log::warn` 提示，自动降级不阻止启动）、`db_init.sql`（**遗留**，当前不用 SQLite） |
-| `build.rs` | lalrpop 解析器生成 |
 
 ## 数据流
 
@@ -80,10 +77,9 @@ cargo test -p hobob
 ```
 
 - `www.rs` tests：warp::test 对每个路由做端到端断言（follow 后 bench 状态、SSE 推送等）
-- `src/db/`（`mod.rs`）tests：通道/持久化 roundtrip/排序/动态 system 事件分发逻辑
-- `src/systems.rs` tests：fetch 循环（取命令/关闭/补抓 deadline）、`pick_*` 纯函数
+- `src/db/`（`mod.rs`）tests：通道/持久化 roundtrip/排序/动态 system 事件分发逻辑、lua system 加载与热加载/分组持久化/Silenced 事件
+- `src/systems.rs` tests：fetch 循环（取命令/关闭/补抓 deadline）、`pick_*` 纯函数、lua 动态 system（加载/oneshot/condition/指令上限斩杀/热加载/native 先于 lua）
 - `src/ecs.rs` tests：ECS 内核（spawn/insert/CoW/iter/ptr_eq）
-- `chunk.rs` tests：解析器对 `test_data/chunk_*.in.txt` 的 AST 与 `*.expect.json` 比对
 - `store.rs` tests：空库初始化/样例 roundtrip/错文件守卫/codec/迁移链（含 brick V1→V2）/版本过高拒绝/entity id/直写/批量 flush 四路径/group CRUD/布局 1→2 升级/list_* 全量（T1–T16）/kv:log 追加/裁剪/查询/升级到 3（T17–T22）
 - `logkv.rs` tests：自定义 appender 结构/黑名单/满丢弃/模板检查/业务级别映射/drain 批写裁剪（T2–T3，含 `logkv_global` 集成测试）
 - `tests/logkv_e2e.rs`：M2 T4 端到端——真实 log4rs logger + hub 业务镜像 → kv:log 查询（N4 防递归/N5 双写同源/N7 业务镜像，独立进程）
@@ -95,4 +91,3 @@ cargo test -p hobob
 - **vendor 子模块**：`bilibili-api-rs` 是 path 依赖，位于 `vendor/bilibili-api-rs`（git 子模块，锁 commit）；新 clone 后需 `git submodule update --init`，升级 SOP 见 `vendor/UPGRADE.md`。
 - **state.redb**：启动 `Store::open_or_create` + `WeiYuanHui::open` 全量加载，**失败即退出**（取代 M0 探针的仅日志）。`serde_json::Value` 不能参与 bincode 反序列化，store 类型中「未类型化 JSON」字段一律存 JSON 字符串（M1 校准语义）。
 - **log4rs.yml 陈旧**：M2 起 `assets/log4rs.yml` 模板新增 `hobob_kv` appender（KV 日志镜像）；部署机已有 `~/log4rs.yml` 不会自动更新，`prepare_log` 检测缺 `hobob_kv` 时 `log::warn` 提示（KV 静默降级，文件日志不受影响）。手动用模板更新 `~/log4rs.yml` 后重启即可启用 KV 日志。
-- `vm.rs`、`bench.rs` 是未完成的替代设计（`todo!()`），`db` 模块才是实际使用的数据层。

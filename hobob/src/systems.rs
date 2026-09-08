@@ -7,40 +7,65 @@
 //!   commands 为空时选 ctime 最小 up 补抓 + `bucket_hang`。触发路径：fetch_loop 在
 //!   commands 为空且 deadline 唤醒时发 `Tick` 事件 → hub 分发 → handler 在权威快照上
 //!   补抓（v1 节奏/语义逐行保留：bucket 速率控制仍在 fetch_loop `next_deadline`）。
-//! - **动态 system 框架**（M1 骨架，执行语义 M3）：`TriggerEvent` + `DynSystemRegistry`
-//!   （BTreeMap 按注册名序分发，handler 报错记日志继续）。M1 只注册内置 `builtin.tick`，
-//!   store `systems` 表不加载（lua/condition 语法 M3 定）。
+//! - **动态 system 框架**（M1 骨架 + M3 执行语义）：`TriggerEvent` + `DynSystemRegistry`。
+//!   M3 起 registry 两段式（D5）：`native_specs`（Rust 闭包，先执行）→ `lua_specs`
+//!   （mlua 沙箱回调，后执行），各自按名序；handler 报错记日志继续，不中断后续 handler。
+//!   store `systems` 表在 `WeiYuanHui::open` 时全量加载（D3），`lib.` 前缀 = oneshot
+//!   库函数提供型 system（D16），其余 = 事件响应型。
+//!
+//! lua 执行模型（M3 T3 决议 B，见 `.plans/m3-mlua-dynsys.md` 执行偏差节）：
+//! - **同步执行**在 hub 线程（不开 mlua `send` feature，`Lua` 为 `!Send`，与 libcall 的
+//!   `Rc<RefCell<&mut Snapshot>>` ctx 构建天然配套）；因此**没有** D6 ② 的
+//!   `spawn_blocking` + 5s 外层隔离。
+//! - 超时只靠 D6 ①：`set_hook` 按指令计数（`LUA_INSTRUCTION_LIMIT`）中断死循环
+//!   （1M 指令 ≈ 50ms）。回调内阻塞 Rust（bapi）由 libcall 自身 5s 兜底。
+//! - 中断/报错后按 D13 实测点探针实例可用性：可复用则仅记日志，不可用且有 store 时
+//!   全量重建 lua system（`load_from_store` 语义）。
 //!
 //! 与方案文档的偏差（实现备注）：
 //! - fetch 系统保留**独立循环**（hub 串行执行会以网络等待阻塞 patch 处理，违背 v1
 //!   解耦语义与 D13）；hub 仍是唯一分发点（try_push 尾），事件经 patch 通道上传。
 //! - `DynSystemRegistry` 由 hub（`WeiYuanHui`）持有、不进 `Resources`（分发点唯一在
 //!   hub，随快照传播只增 clone 成本且 chair 无用途）。
+//! - registry 内部用 `Rc<RefCell<DynInner>>` 共享句柄（非 `Arc<Mutex>`）：dispatch 先把
+//!   待执行 spec 收集成 `Vec` 再逐个调用，lua 回调内 `ctx.admin.register_system` 等可
+//!   安全改写注册表（不持借用地重入）。句柄可克隆进 libcall ctx。
 
 use crate::db::{Commands, Snapshot, WeiYuan};
+use crate::libcall;
+use crate::store::{Store, SystemSpecV1};
 use anyhow::Context;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use bilibili_api_rs::Client;
 use chrono::{DateTime, Utc};
+use mlua::{Function, HookTriggers, Lua, LuaSerdeExt, Table, Value as LuaValue, VmState};
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
 // ============================== 动态 system 框架 ==============================
 
-/// 触发事件（M1 骨架枚举；M3 定 condition 语法与 lua 回调时扩展）。
+/// 触发事件（M1 骨架；M3 为 lua 回调补 `uid`——lua 侧 `event.uid` 是主键）。
 #[derive(Clone, Debug, PartialEq)]
 pub enum TriggerEvent {
     /// hub 或 fetch 循环的节拍（v1 `exec_timers` 由 engine 每轮 deadline 唤醒触发）。
     Tick { at: DateTime<Utc> },
     FetchDone { entity: u64, uid: String },
     FetchFailed { entity: u64, uid: String, error: String },
-    UpStateChanged { entity: u64, kind: UpStateKind },
+    UpStateChanged {
+        entity: u64,
+        uid: String,
+        kind: UpStateKind,
+    },
 }
 
-/// up 管理状态变化类别（M1 只发 Followed/Unfollowed/GroupToggled；Silenced 留 M3）。
+/// up 管理状态变化类别（M1 只发 Followed/Unfollowed/GroupToggled；M3 起 `force_silence`
+/// 发 Silenced——静音语义本身仍待 T6）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpStateKind {
     Followed,
@@ -49,12 +74,14 @@ pub enum UpStateKind {
     Silenced,
 }
 
-/// 回调：`(&TriggerEvent, &mut Snapshot)`。错误由 registry 记日志继续（不中断后续 handler）。
+/// Rust 原生回调：`(&TriggerEvent, &mut Snapshot)`。错误由 registry 记日志继续。
 pub type DynCallback = Arc<dyn Fn(&TriggerEvent, &mut Snapshot) -> Result<()> + Send + Sync>;
 
+/// 原生（Rust）动态 system 描述。`condition` 对 native 无意义（M1 占位恒 `"always"`）。
+#[derive(Clone)]
 pub struct DynSystemSpec {
     pub name: String,
-    /// M1 恒 `"always"`（占位）；condition 语法与求值 M3。
+    /// M1 恒 `"always"`（占位）；condition 求值只对 lua system 生效（D15）。
     pub condition: String,
     pub callback: DynCallback,
 }
@@ -68,38 +95,498 @@ impl std::fmt::Debug for DynSystemSpec {
     }
 }
 
-/// 动态 system 注册表（hub 持有）。按注册名（BTreeMap key）升序分发，串行执行。
-#[derive(Debug, Default)]
+/// lua 回调指令上限（D6 ①，≈50ms 纯计算）。
+pub const LUA_INSTRUCTION_LIMIT: u64 = 1_000_000;
+/// condition 求值指令上限（D15：condition 不该有循环）。
+pub const LUA_CONDITION_INSTRUCTION_LIMIT: u64 = 100_000;
+/// lua debug hook 采样间隔（指令数）：每 N 条指令回一次 Rust。
+const LUA_HOOK_INTERVAL: u32 = 1_000;
+/// oneshot（库函数提供型）system 的 name 前缀（D16）。
+pub const ONESHOT_PREFIX: &str = "lib.";
+/// 共享库表全局名（D16；所有 lua system 可读写，`load_from_store` 整表重置）。
+pub const LIB_GLOBAL: &str = "_lib";
+
+/// name 是否为 oneshot（`lib.` 前缀，D16）。
+#[must_use]
+pub fn is_oneshot(name: &str) -> bool {
+    name.starts_with(ONESHOT_PREFIX)
+}
+
+/// lua 动态 system 编译产物（D1/D15/D16）。
+///
+/// `condition: None` = 恒真（`""`/`"always"`）；`Function` 是 mlua 的注册表引用句柄，
+/// 与 `Lua` 实例同生命周期（无需再持有 `Arc<Lua>`，见模块文档执行偏差）。
+#[derive(Clone)]
+pub struct LuaSystemSpec {
+    pub name: String,
+    pub condition: Option<Function>,
+    pub callback: Function,
+}
+
+impl std::fmt::Debug for LuaSystemSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LuaSystemSpec")
+            .field("name", &self.name)
+            .field("has_condition", &self.condition.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// registry 可变状态（`Rc<RefCell<_>>` 共享句柄，见模块文档）。
+struct DynInner {
+    native_specs: BTreeMap<String, DynSystemSpec>,
+    lua_specs: BTreeMap<String, LuaSystemSpec>,
+    /// 共享库表 `_lib`（D16）。
+    lib: Table,
+}
+
+/// 动态 system 注册表（hub 持有）。**两段式**：native（名序）→ lua（名序），串行执行。
+///
+/// 句柄可克隆（同一份 `DynInner` + 同一 Lua 实例），libcall ctx 借此支持 lua 内
+/// `register_system`/`unregister_system`/`reload_system`/`reload_all`。
+#[derive(Clone)]
 pub struct DynSystemRegistry {
-    specs: BTreeMap<String, DynSystemSpec>,
+    inner: Rc<RefCell<DynInner>>,
+    /// 共享沙箱 Lua 实例（所有 lua system 共用 `_G`，D14）。
+    lua: Lua,
+}
+
+impl std::fmt::Debug for DynSystemRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner = self.inner.borrow();
+        f.debug_struct("DynSystemRegistry")
+            .field("native_specs", &inner.native_specs.keys().collect::<Vec<_>>())
+            .field("lua_specs", &inner.lua_specs.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for DynSystemRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DynSystemRegistry {
+    /// 创建注册表：沙箱 Lua 实例（`libcall::new_sandbox`，D7）+ 空 `_lib` 表（D16）。
+    ///
+    /// # Panics
+    /// Panic if the sandbox Lua instance / `_lib` table cannot be created (OOM).
     pub fn new() -> Self {
-        Self::default()
+        let lua = libcall::new_sandbox().expect("create lua sandbox (out of memory?)");
+        let lib = lua.create_table().expect("create _lib table");
+        lua.globals().set(LIB_GLOBAL, &lib).expect("set _lib global");
+        Self {
+            inner: Rc::new(RefCell::new(DynInner {
+                native_specs: BTreeMap::new(),
+                lua_specs: BTreeMap::new(),
+                lib,
+            })),
+            lua,
+        }
     }
 
-    /// 注册/覆盖（同名替换）。注册名即分发顺序 key。
-    pub fn register(&mut self, spec: DynSystemSpec) {
-        self.specs.insert(spec.name.clone(), spec);
+    /// 共享 Lua 沙箱实例（测试/诊断用；D14 共享 `_G`）。
+    #[must_use]
+    pub fn lua(&self) -> &Lua {
+        &self.lua
+    }
+
+    /// 注册/覆盖 native spec（同名替换）。注册名即分发顺序 key。
+    pub fn register(&self, spec: DynSystemSpec) {
+        self.inner
+            .borrow_mut()
+            .native_specs
+            .insert(spec.name.clone(), spec);
     }
 
     pub fn len(&self) -> usize {
-        self.specs.len()
+        let i = self.inner.borrow();
+        i.native_specs.len() + i.lua_specs.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.specs.is_empty()
+        let i = self.inner.borrow();
+        i.native_specs.is_empty() && i.lua_specs.is_empty()
     }
 
-    /// 按注册名升序分发；单个 handler 报错只记日志，不中断后续 handler。
-    pub fn dispatch(&self, ev: &TriggerEvent, snap: &mut Snapshot) {
-        for spec in self.specs.values() {
+    /// 已注册 lua system 数（观测/测试）。
+    #[must_use]
+    pub fn lua_len(&self) -> usize {
+        self.inner.borrow().lua_specs.len()
+    }
+
+    /// 是否已注册同名 lua system。
+    #[must_use]
+    pub fn contains_lua(&self, name: &str) -> bool {
+        self.inner.borrow().lua_specs.contains_key(name)
+    }
+
+    // ---------- 编译 ----------
+
+    /// 编译 lua 源码为可调用函数（沙箱环境；编译不执行用户代码）。
+    ///
+    /// 两种写法都接受（D1 示例与 §4.8 示例都用函数表达式）：
+    /// 1. 函数表达式：`function(event, ctx) ... end` → `return (src)` 取回内层函数
+    /// 2. 裸语句体：`ctx.admin.follow(event.uid, true)` → `return function(event, ctx) ... end`
+    ///
+    /// 注意：`lua.load("return (function ... end)").into_function()` 得到的是**外层 chunk**
+    /// （调用它只会返回内层函数，不执行回调体），必须在这里执行一次 chunk 取出 `Function`。
+    fn compile_callback(&self, src: &str) -> Result<Function> {
+        let as_expr = format!("return ({src})");
+        if let Ok(chunk) = self.lua.load(as_expr.as_str()).into_function() {
+            match chunk.call::<LuaValue>(()) {
+                Ok(LuaValue::Function(f)) => return Ok(f),
+                // 表达式不是函数：按裸语句体再试
+                Ok(_) => {}
+                Err(e) => bail!("lua 回调求值失败：{e}"),
+            }
+        }
+        let as_body = format!("return function(event, ctx)\n{src}\nend");
+        let chunk = self
+            .lua
+            .load(as_body.as_str())
+            .into_function()
+            .map_err(|e| anyhow!("lua 回调编译失败（函数表达式/函数体两种写法均失败）：{e}"))?;
+        match chunk.call::<LuaValue>(()) {
+            Ok(LuaValue::Function(f)) => Ok(f),
+            Ok(other) => bail!("lua 回调编译结果不是函数：{}", other.type_name()),
+            Err(e) => bail!("lua 回调求值失败：{e}"),
+        }
+    }
+
+    /// condition 编译（D15）：`""`/`"always"` → `None`（恒真），其余按**表达式**编译为
+    /// `function(event) return (<expr>) end`——表达式内以形参 `event` 引用事件表。
+    fn compile_condition(&self, cond: &str) -> Result<Option<Function>> {
+        let c = cond.trim();
+        if c.is_empty() || c == "always" {
+            return Ok(None);
+        }
+        let src = format!("return function(event) return ({c}) end");
+        let chunk = self
+            .lua
+            .load(src.as_str())
+            .into_function()
+            .map_err(|e| anyhow!("lua condition 编译失败（须是表达式）：{e}"))?;
+        match chunk.call::<LuaValue>(()) {
+            Ok(LuaValue::Function(f)) => Ok(Some(f)),
+            Ok(other) => bail!("lua condition 编译结果不是函数：{}", other.type_name()),
+            Err(e) => bail!("lua condition 求值失败：{e}"),
+        }
+    }
+
+    // ---------- 注册 ----------
+
+    /// 按 name 前缀分派注册（libcall `register_system` / 热加载共用入口，D16）。
+    pub fn register_from_source(&self, name: &str, src: &str, condition: &str) -> Result<()> {
+        if name.trim().is_empty() {
+            bail!("system name 不能为空");
+        }
+        if is_oneshot(name) {
+            self.register_oneshot(name, src, condition)
+        } else {
+            self.register_lua(name, src, condition)
+        }
+    }
+
+    /// 注册/覆盖事件响应型 lua system：编译回调 + 预编译 condition（D15）。
+    pub fn register_lua(&self, name: &str, src: &str, condition: &str) -> Result<()> {
+        if is_oneshot(name) {
+            bail!("lua system 名不能以 {ONESHOT_PREFIX:?} 开头（那是 oneshot 前缀，D16）");
+        }
+        let callback = self.compile_callback(src)?;
+        let condition = self.compile_condition(condition)?;
+        self.inner.borrow_mut().lua_specs.insert(
+            name.to_string(),
+            LuaSystemSpec {
+                name: name.to_string(),
+                condition,
+                callback,
+            },
+        );
+        Ok(())
+    }
+
+    /// 注册 oneshot（D16）：编译后**立即执行一次**，返回 table 存入 `_lib.<name 去前缀>`。
+    ///
+    /// `condition` 对 oneshot 无意义，非空即拒绝（§4.8）。
+    pub fn register_oneshot(&self, name: &str, src: &str, condition: &str) -> Result<()> {
+        if !is_oneshot(name) {
+            bail!("oneshot system 名必须以 {ONESHOT_PREFIX:?} 开头（D16）：{name:?}");
+        }
+        let short = &name[ONESHOT_PREFIX.len()..];
+        if short.is_empty() {
+            bail!("oneshot system 名缺少库名：{name:?}");
+        }
+        if !condition.trim().is_empty() {
+            bail!("oneshot system 不支持 condition（须为空）：{name:?}");
+        }
+        let chunk = self
+            .lua
+            .load(src)
+            .into_function()
+            .map_err(|e| anyhow!("oneshot {name:?} 编译失败：{e}"))?;
+        let ret: LuaValue = guarded_call(&self.lua, &chunk, (), LUA_INSTRUCTION_LIMIT)
+            .map_err(|e| anyhow!("oneshot {name:?} 执行失败：{e}"))?;
+        match ret {
+            LuaValue::Table(t) => {
+                self.inner
+                    .borrow()
+                    .lib
+                    .set(short, t)
+                    .map_err(|e| anyhow!("oneshot {name:?} 写入 _lib.{short} 失败：{e}"))?;
+            }
+            LuaValue::Nil => {
+                log::debug!("oneshot {name:?} 返回 nil（仅副作用，弃用风险自担）");
+            }
+            other => bail!("oneshot {name:?} 须返回 table 或 nil，得到 {}", other.type_name()),
+        }
+        Ok(())
+    }
+
+    /// 从注册表移除 lua system（native 不动）。返回是否真的移除了。
+    pub fn unregister_lua(&self, name: &str) -> bool {
+        self.inner.borrow_mut().lua_specs.remove(name).is_some()
+    }
+
+    // ---------- 加载 / 热加载 ----------
+
+    /// D3：从 store 全量加载 systems 表并注册。
+    ///
+    /// 读取失败 = Err（调用方 `WeiYuanHui::open` 直接退出）；**单条 spec 编译/执行失败
+    /// 只记日志跳过**，不阻断启动。
+    pub fn load_from_store(&self, store: &Store) -> Result<()> {
+        let specs = store.list_systems().context("list_systems for dyn systems")?;
+        self.load_specs(&specs);
+        Ok(())
+    }
+
+    /// §4.3 三步骤加载：① 重置 `_lib` → ② 名序执行全部 oneshot → ③ 注册 event system。
+    ///
+    /// 幂等（`reload_all` 语义）：先清空 lua_specs 再重建，native spec 保留。
+    pub fn load_specs(&self, specs: &[SystemSpecV1]) {
+        self.reset_lib();
+        self.inner.borrow_mut().lua_specs.clear();
+        let mut sorted: Vec<&SystemSpecV1> = specs.iter().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        for spec in sorted.iter().filter(|s| is_oneshot(&s.name)) {
+            if let Err(e) = self.register_oneshot(&spec.name, &spec.lua, &spec.condition) {
+                log::error!("oneshot system {:?} 加载失败（跳过）：{e:#}", spec.name);
+            }
+        }
+        for spec in sorted.iter().filter(|s| !is_oneshot(&s.name)) {
+            if let Err(e) = self.register_lua(&spec.name, &spec.lua, &spec.condition) {
+                log::error!("lua system {:?} 加载失败（跳过）：{e:#}", spec.name);
+            }
+        }
+    }
+
+    /// D4 热加载单个 spec（从 store 读出的最新版本）：重编译替换。
+    ///
+    /// oneshot 只重跑该条并替换 `_lib.<短名>`，**不重置整表**（§4.8）。
+    pub fn reload_one(&self, spec: &SystemSpecV1) -> Result<()> {
+        self.register_from_source(&spec.name, &spec.lua, &spec.condition)
+    }
+
+    /// 重置共享库表 `_lib`（整表替换 + 更新全局，D16）。
+    fn reset_lib(&self) {
+        let lib = match self.lua.create_table() {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("reset _lib failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self.lua.globals().set(LIB_GLOBAL, &lib) {
+            log::error!("reset _lib global failed: {e}");
+            return;
+        }
+        self.inner.borrow_mut().lib = lib;
+    }
+
+    // ---------- 分发 ----------
+
+    /// D5 两段式分发：先全部 native（名序），再全部 lua（名序）；中间不清空事件。
+    ///
+    /// `store` 供 lua 侧 `ctx.admin.register_system`/`reload_*` 落盘（内存 hub 为 None）。
+    pub fn dispatch(&self, ev: &TriggerEvent, snap: &mut Snapshot, store: Option<&Store>) {
+        self.dispatch_native(ev, snap);
+        self.dispatch_lua(ev, snap, store);
+    }
+
+    /// Rust 原生 handler（名序；报错记日志继续）。
+    pub fn dispatch_native(&self, ev: &TriggerEvent, snap: &mut Snapshot) {
+        let specs: Vec<DynSystemSpec> = self
+            .inner
+            .borrow()
+            .native_specs
+            .values()
+            .cloned()
+            .collect();
+        for spec in specs {
             if let Err(e) = (spec.callback)(ev, snap) {
                 log::warn!("dyn system {:?} handler error: {e:#}", spec.name);
             }
         }
     }
+
+    /// lua handler（名序）：event table 序列化一次跨 spec 复用；condition 求值 → 回调执行。
+    pub fn dispatch_lua(&self, ev: &TriggerEvent, snap: &mut Snapshot, store: Option<&Store>) {
+        let specs: Vec<LuaSystemSpec> =
+            self.inner.borrow().lua_specs.values().cloned().collect();
+        if specs.is_empty() {
+            return;
+        }
+        let event_val = trigger_event_to_json(ev);
+        let event_tbl = match self.lua.to_value(&event_val) {
+            Ok(LuaValue::Table(t)) => t,
+            Ok(other) => {
+                log::error!(
+                    "lua event 序列化非 table（跳过全部 lua system）：{}",
+                    other.type_name()
+                );
+                return;
+            }
+            Err(e) => {
+                log::error!("lua event 序列化失败（跳过全部 lua system）：{e}");
+                return;
+            }
+        };
+        for spec in specs {
+            if let Some(cond) = &spec.condition {
+                // D15：恒真已在编译期折叠为 None；错误按「未通过」跳过，不阻断分发。
+                match guarded_call::<bool>(
+                    &self.lua,
+                    cond,
+                    event_tbl.clone(),
+                    LUA_CONDITION_INSTRUCTION_LIMIT,
+                ) {
+                    Ok(true) => {}
+                    Ok(_) => continue,
+                    Err(e) => {
+                        log::warn!(
+                            "lua system {:?} condition 求值失败（按未通过跳过）：{e}",
+                            spec.name
+                        );
+                        self.probe_after_error(&spec.name, store);
+                        continue;
+                    }
+                }
+            }
+            if let Err(e) = self.run_callback(&spec, &event_tbl, snap, store) {
+                log::warn!("lua system {:?} 回调失败：{e:#}", spec.name);
+                self.probe_after_error(&spec.name, store);
+            }
+        }
+    }
+
+    /// 单次 lua 回调：建 ctx（libcall）→ 指令上限保护下 call。
+    fn run_callback(
+        &self,
+        spec: &LuaSystemSpec,
+        event_tbl: &Table,
+        snap: &mut Snapshot,
+        store: Option<&Store>,
+    ) -> Result<()> {
+        let lua = &self.lua;
+        let me = self.clone();
+        let result = lua.scope(|scope| {
+            let ctx = libcall::build_ctx_table(lua, scope, snap, store, Some(me.clone()))?;
+            guarded_call::<()>(
+                lua,
+                &spec.callback,
+                (event_tbl.clone(), ctx),
+                LUA_INSTRUCTION_LIMIT,
+            )
+        });
+        result.map_err(|e| anyhow!("{e}"))
+    }
+
+    /// D13 实测点：lua 报错/中断后探针实例可用性。
+    ///
+    /// mlua 的 hook 中断是普通 Lua error（非 `AbortInto` 式实例失效），实测可复用；
+    /// 若探针失败且有 store 则按 §4.3 全量重建（`reload_all` 语义）。
+    fn probe_after_error(&self, name: &str, store: Option<&Store>) {
+        match self.lua.load("return 1").eval::<i64>() {
+            Ok(1) => log::debug!("lua instance probe ok after {name:?} error（实例可复用）"),
+            _ => {
+                log::error!("lua instance unusable after {name:?} error; rebuilding lua systems");
+                match store {
+                    Some(store) => {
+                        if let Err(e) = self.load_from_store(store) {
+                            log::error!("rebuild lua systems failed: {e:#}");
+                        }
+                    }
+                    None => log::error!("no store attached: cannot rebuild lua systems"),
+                }
+            }
+        }
+    }
+}
+
+/// 在指令上限保护下同步调用 lua 函数（D6 ①）。
+///
+/// `set_hook` 每 `LUA_HOOK_INTERVAL` 条指令回调一次；累计超过 `limit` 时返回 Lua error
+/// 中断当前执行（`Function::call` 把错误带回 Rust），随后移除 hook。
+fn guarded_call<R: mlua::FromLuaMulti>(
+    lua: &Lua,
+    f: &Function,
+    args: impl mlua::IntoLuaMulti,
+    limit: u64,
+) -> mlua::Result<R> {
+    let counter = Arc::new(AtomicU64::new(0));
+    let c = Arc::clone(&counter);
+    lua.set_hook(
+        HookTriggers::new().every_nth_instruction(LUA_HOOK_INTERVAL),
+        move |_, _| {
+            let n = c.fetch_add(u64::from(LUA_HOOK_INTERVAL), Ordering::Relaxed);
+            if n >= limit {
+                Err(mlua::Error::runtime(format!(
+                    "lua 指令数超限（> {limit}），已中断"
+                )))
+            } else {
+                Ok(VmState::Continue)
+            }
+        },
+    );
+    let r = f.call::<R>(args);
+    lua.remove_hook();
+    r
+}
+
+/// `TriggerEvent` → lua 侧 event table（D1：`kind` + 事件专有字段）。
+///
+/// `uid` 能解析为整数时给 lua 数值（`event.uid > 1000` 这类 condition 需要），否则给字符串。
+#[must_use]
+pub fn trigger_event_to_json(ev: &TriggerEvent) -> Value {
+    match ev {
+        TriggerEvent::Tick { at } => json!({ "kind": "tick", "at": at.to_rfc3339() }),
+        TriggerEvent::FetchDone { entity, uid } => {
+            json!({ "kind": "fetch_done", "entity": entity, "uid": uid_value(uid) })
+        }
+        TriggerEvent::FetchFailed { entity, uid, error } => json!({
+            "kind": "fetch_failed",
+            "entity": entity,
+            "uid": uid_value(uid),
+            "error": error,
+        }),
+        TriggerEvent::UpStateChanged { entity, uid, kind } => json!({
+            "kind": "up_state",
+            "entity": entity,
+            "uid": uid_value(uid),
+            "state": match kind {
+                UpStateKind::Followed => "followed",
+                UpStateKind::Unfollowed => "unfollowed",
+                UpStateKind::GroupToggled => "group_toggled",
+                UpStateKind::Silenced => "silenced",
+            },
+        }),
+    }
+}
+
+fn uid_value(uid: &str) -> Value {
+    uid.parse::<i64>()
+        .map_or_else(|_| Value::String(uid.to_string()), Value::from)
 }
 
 /// 内置 tick：v1 `exec_timers` 语义（M1 唯一注册的内置 system，condition 恒真）。
@@ -137,6 +624,7 @@ fn tick_impl(snap: &mut Snapshot) -> Result<()> {
     snap.bucket_hang();
     Ok(())
 }
+
 
 // ============================== fetch 系统（原 engine.rs 平移） ==============================
 
@@ -290,7 +778,7 @@ pub fn trigger_from_json(ev: &Value, snap: &Snapshot) -> Option<TriggerEvent> {
                 Some("silenced") => UpStateKind::Silenced,
                 _ => return None,
             };
-            Some(TriggerEvent::UpStateChanged { entity, kind })
+            Some(TriggerEvent::UpStateChanged { entity, uid, kind })
         }
         _ => None,
     }
@@ -487,5 +975,332 @@ mod tests {
             })
         );
     }
+    // ---------- M3 T3：lua 动态 system ----------
+
+    use crate::store::StoreConfig;
+    use tempfile::tempdir;
+
+    /// 临时 store + 写入 specs（`(name, lua, condition)`；TempDir 由调用方持有）。
+    fn store_with_specs(specs: &[(&str, &str, &str)]) -> anyhow::Result<(Store, tempfile::TempDir)> {
+        let dir = tempdir()?;
+        let cfg = StoreConfig::new(dir.path().join("state.redb"));
+        let store = Store::open_or_create(&cfg)?;
+        for (name, lua, cond) in specs {
+            store.put_system(&SystemSpecV1 {
+                name: (*name).into(),
+                lua: (*lua).into(),
+                condition: (*cond).into(),
+            })?;
+        }
+        Ok((store, dir))
+    }
+
+    /// 用户组 gid（>=2）列表，升序。
+    fn group_ids(snap: &Snapshot) -> Vec<u64> {
+        let mut v: Vec<u64> = snap
+            .res
+            .gid_index
+            .keys()
+            .copied()
+            .filter(|g| *g >= 2)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// D3/D16：oneshot（`lib.`）加载执行 → `_lib` 填充 → event system 复用其函数。
+    #[test]
+    fn test_load_from_store_oneshot_and_event() -> anyhow::Result<()> {
+        init();
+        let (store, _dir) = store_with_specs(&[
+            (
+                "lib.mylib",
+                "return { is_big = function(ev) return ev.uid and ev.uid > 1000 end }",
+                "",
+            ),
+            (
+                "on_fetch",
+                "function(event, ctx) \
+                 if event.kind == 'fetch_done' and _lib.mylib.is_big(event) then \
+                   ctx.admin.new_group('big', false) \
+                 end end",
+                "event.kind == 'fetch_done'",
+            ),
+        ])?;
+        let reg = DynSystemRegistry::new();
+        reg.load_from_store(&store)?;
+        assert!(reg.contains_lua("on_fetch"));
+        assert!(!reg.contains_lua("lib.mylib"), "oneshot 不参与 dispatch");
+        assert_eq!(reg.lua_len(), 1);
+        let lib_ok: bool = reg
+            .lua()
+            .load("return type(_lib.mylib) == 'table' and type(_lib.mylib.is_big) == 'function'")
+            .eval()
+            .map_err(|e| anyhow!("{e}"))?;
+        assert!(lib_ok, "oneshot 返回值应存入 _lib.mylib");
+
+        let mut snap = Snapshot::new();
+        reg.dispatch(
+            &TriggerEvent::FetchDone {
+                entity: 0,
+                uid: "12345".into(),
+            },
+            &mut snap,
+            Some(&store),
+        );
+        assert_eq!(group_ids(&snap), vec![2], "uid > 1000 → 建组");
+        let mut snap2 = Snapshot::new();
+        reg.dispatch(
+            &TriggerEvent::FetchDone {
+                entity: 0,
+                uid: "500".into(),
+            },
+            &mut snap2,
+            Some(&store),
+        );
+        assert!(group_ids(&snap2).is_empty(), "uid <= 1000 → 不建组");
+        Ok(())
+    }
+
+    /// 端到端核心：FetchDone → lua 回调 → `ctx.admin.toggle_group` 改分组。
+    #[test]
+    fn test_dispatch_lua_toggles_group() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        reg.register_lua(
+            "on_fetch",
+            "function(event, ctx) \
+             if event.kind == 'fetch_done' then ctx.admin.toggle_group(event.uid, 2) end end",
+            "",
+        )?;
+        let uid: i64 = 12345;
+        let mut snap = Snapshot::new();
+        snap.follow(&json!({"uid": uid, "enable": true}))?;
+        reg.dispatch(
+            &TriggerEvent::FetchDone {
+                entity: 0,
+                uid: uid.to_string(),
+            },
+            &mut snap,
+            None,
+        );
+        let eid = *snap.res.uid_index.get(&uid.to_string()).expect("uid traced");
+        let ge = *snap.res.gid_index.get(&2).expect("gid 2 placeholder");
+        let brick = snap
+            .world
+            .get::<crate::db::Brick>(crate::ecs::Entity(eid))
+            .expect("brick");
+        assert!(
+            brick.groups.contains(&ge),
+            "lua 回调应把 uid 加入分组实体 {ge}"
+        );
+        Ok(())
+    }
+
+    /// D15：condition 求值——表达式过滤 + `""`/`"always"` 恒真。
+    #[test]
+    fn test_condition_filters_lua_systems() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        reg.register_lua(
+            "a.tick_only",
+            "function(event, ctx) ctx.admin.new_group('a', false) end",
+            "event.kind == 'tick'",
+        )?;
+        reg.register_lua(
+            "b.empty",
+            "function(event, ctx) ctx.admin.new_group('b', false) end",
+            "",
+        )?;
+        reg.register_lua(
+            "c.always",
+            "function(event, ctx) ctx.admin.new_group('c', false) end",
+            "always",
+        )?;
+        let mut snap = Snapshot::new();
+        reg.dispatch(
+            &TriggerEvent::FetchDone {
+                entity: 0,
+                uid: "1".into(),
+            },
+            &mut snap,
+            None,
+        );
+        assert_eq!(group_ids(&snap), vec![2, 3], "fetch_done 只命中 b/c");
+        let mut snap2 = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap2, None);
+        assert_eq!(group_ids(&snap2), vec![2, 3, 4], "tick 命中 a/b/c");
+        Ok(())
+    }
+
+    /// D6 ①：死循环 lua 被指令上限斩杀（远早于 5s），后续 handler 正常执行。
+    #[test]
+    fn test_lua_instruction_limit_aborts_and_continues() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        // 名序 a.loop < b.mark：先跑死循环（被斩杀），b.mark 必须照常执行
+        reg.register_lua("a.loop", "function(event, ctx) while true do end end", "")?;
+        reg.register_lua(
+            "b.mark",
+            "function(event, ctx) ctx.admin.new_group('after', false) end",
+            "",
+        )?;
+        let mut snap = Snapshot::new();
+        let started = std::time::Instant::now();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap, None);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "指令上限应在 5s 内中断，实际 {elapsed:?}"
+        );
+        assert_eq!(group_ids(&snap), vec![2], "斩杀后后续 handler 仍执行");
+        Ok(())
+    }
+
+    /// D13 实测点：指令上限中断后 Lua 实例可复用（无需重建）。
+    #[test]
+    fn test_lua_instance_reusable_after_abort() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        reg.register_lua("a.loop", "function(event, ctx) while true do end end", "")?;
+        let mut snap = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap, None);
+        // 复用同一实例注册并执行新回调
+        reg.register_lua(
+            "b.mark",
+            "function(event, ctx) ctx.admin.new_group('reuse', false) end",
+            "",
+        )?;
+        let mut snap2 = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap2, None);
+        assert_eq!(group_ids(&snap2), vec![2], "中断后实例仍可用");
+        Ok(())
+    }
+
+    /// 加载健壮性：语法错误/非法 oneshot 跳过；`load_from_store` 重置 `_lib`（幂等）。
+    #[test]
+    fn test_load_from_store_resets_lib_and_skips_bad_specs() -> anyhow::Result<()> {
+        init();
+        let (store, _dir) = store_with_specs(&[
+            ("lib.mylib", "return { ping = function() return 1 end }", ""),
+            (
+                "a.ok",
+                "function(event, ctx) \
+                 if _lib.mylib.ping() == 1 then ctx.admin.new_group('ok', false) end end",
+                "",
+            ),
+            ("b.bad", "function(event, ctx) this is not lua end", ""),
+            ("lib.bad", "return {}", "always"),
+        ])?;
+        let reg = DynSystemRegistry::new();
+        reg.load_from_store(&store)?;
+        assert!(reg.contains_lua("a.ok"));
+        assert!(!reg.contains_lua("b.bad"), "语法错误 spec 应跳过");
+        assert!(!reg.contains_lua("lib.bad"), "带 condition 的 oneshot 应跳过");
+
+        let mut snap = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap, Some(&store));
+        assert_eq!(group_ids(&snap), vec![2], "oneshot 提供的函数可被 event system 调用");
+
+        // 重载：删掉 lib.mylib 后再 load_from_store → `_lib` 整表重置
+        store.delete_system("lib.mylib")?;
+        reg.load_from_store(&store)?;
+        let gone: bool = reg
+            .lua()
+            .load("return _lib.mylib == nil")
+            .eval()
+            .map_err(|e| anyhow!("{e}"))?;
+        assert!(gone, "load_from_store 应重置 _lib");
+        // 库函数缺失 → 回调报错只记日志（不 panic），后续分发照常
+        let mut snap2 = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap2, Some(&store));
+        assert!(group_ids(&snap2).is_empty(), "库函数缺失时回调跳过");
+        Ok(())
+    }
+
+    /// D4：单条热加载替换回调（oneshot 只替换自己的 `_lib` 条目）。
+    #[test]
+    fn test_reload_one_replaces_callback() -> anyhow::Result<()> {
+        init();
+        let (store, _dir) = store_with_specs(&[(
+            "a.reload",
+            "function(event, ctx) ctx.admin.new_group('v1', false) end",
+            "",
+        )])?;
+        let reg = DynSystemRegistry::new();
+        reg.load_from_store(&store)?;
+        let mut snap = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap, Some(&store));
+        assert_eq!(group_ids(&snap), vec![2], "v1 回调建组");
+
+        let spec = SystemSpecV1 {
+            name: "a.reload".into(),
+            lua: "function(event, ctx) ctx.admin.follow(999, true) end".into(),
+            condition: String::new(),
+        };
+        reg.reload_one(&spec)?;
+        let mut snap2 = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap2, Some(&store));
+        assert!(snap2.res.uid_index.contains_key("999"), "热加载后执行新回调");
+        assert!(group_ids(&snap2).is_empty(), "旧回调不再执行");
+        Ok(())
+    }
+
+    /// D5：native handler 先于 lua handler（与注册名序无关）。
+    #[test]
+    fn test_dispatch_native_before_lua() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        // 名序上 lua（a.lua）在前，但 native 必须先跑
+        reg.register(DynSystemSpec {
+            name: "z.native".into(),
+            condition: "always".into(),
+            callback: Arc::new(|_ev, snap| snap.follow(&json!({"uid": 1, "enable": true}))),
+        });
+        reg.register_lua(
+            "a.lua",
+            "function(event, ctx) native_seen = (ctx.admin.get_state(1) ~= nil) end",
+            "",
+        )?;
+        let mut snap = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap, None);
+        let seen: bool = reg
+            .lua()
+            .load("return native_seen")
+            .eval()
+            .map_err(|e| anyhow!("{e}"))?;
+        assert!(seen, "native handler 必须先于 lua handler 执行");
+        Ok(())
+    }
+
+    /// D16 命名规则：`lib.` 前缀与 condition 互斥，语法错误拒绝注册。
+    #[test]
+    fn test_oneshot_prefix_and_condition_validation() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        assert!(
+            reg.register_oneshot("a.plain", "return {}", "").is_err(),
+            "非 lib. 前缀不能当 oneshot"
+        );
+        assert!(
+            reg.register_oneshot("lib.x", "return {}", "always").is_err(),
+            "oneshot 不允许 condition"
+        );
+        assert!(
+            reg.register_lua("lib.x", "function(event, ctx) end", "").is_err(),
+            "event system 不允许 lib. 前缀"
+        );
+        assert!(
+            reg.register_lua("a.bad", "function(event, ctx) ] end", "").is_err(),
+            "语法错误应拒绝"
+        );
+        assert!(reg
+            .register_oneshot("lib.good", "return { f = function() return 1 end }", "")
+            .is_ok());
+        assert!(!reg.contains_lua("lib.good"), "oneshot 不入 lua_specs");
+        Ok(())
+    }
+
+
     // TODO test do_fetch（无网络；fetch mock 与事件分发在 db tests N10 覆盖）
 }
