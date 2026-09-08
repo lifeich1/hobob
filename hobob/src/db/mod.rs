@@ -1298,6 +1298,18 @@ fn ensure_spawn(world: &mut World, e: u64) -> Result<()> {
     Ok(())
 }
 
+// TODO(persist_diff 遗留优化方向，均以 T5 性能冒烟/对应阶段结论为准，勿在 M1 提前做；
+// 决策出处：.plans/m1-ecs-core.md D8/D9/§7 指标表):
+// 1. 直写粒度：brick/group 逐 op 一个写事务（put_ec 内 begin_write）。同 patch 多实体变更
+//    先评估「同 patch 合并为单写事务」（需 store 增 batch API），再评估 D9 备选「专用 writer
+//    线程 + ack」；触发条件：T5 冒烟 brick 直写 p99 > 100ms（§7 目标 p99 ≤ 50ms）。
+// 2. diff 全扫描：每 patch 全遍历 base world 重建 BTreeMap 做删除检测（O(up 数)）。up 规模
+//    大或热路径暴露后再上组件级脏追踪（dirty set）/per-entity 版本号比对，现阶段 200 up 无必要。
+// 3. flush 阈值：stage 批量 flush 的 MAX_RECORDS=256 / MAX_AGE=5s 为 D8 占位值，
+//    T5 冒烟定值（§7 flush 提交 p99 ≤ 200ms）。
+// 4. 失败语义：persist 失败仅记日志继续（无补偿/重试），与 v1 save_disk().ok() 同款宽松度；
+//    需要更强落盘保证时与 M4 停机强刷/强杀衔接一并评估。
+
 /// hub patch 落盘 diff（`try_push` 校验通过后执行；hub 主循环同步写、单写者，D9）。
 /// 直写（逐 op 一个写事务）：brick/group 变化；stage 批量 flush：video/live/comment/runtime。
 /// 纯 res 变更（logs/events/commands/索引增量）不落盘（D4）；world 组件未变直接短路。
