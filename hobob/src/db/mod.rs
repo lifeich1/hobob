@@ -20,6 +20,7 @@
 
 use crate::data_schema::ChairData;
 use crate::ecs::{Entity, World};
+use crate::logkv;
 use crate::store::{self, Store};
 use crate::systems::{builtin_tick, trigger_from_json, DynSystemRegistry};
 use anyhow::{anyhow, bail, Result};
@@ -28,6 +29,7 @@ use serde_json::json;
 use serde_json::{from_value, to_value, Value};
 use std::collections::BTreeMap;
 use std::ops::Not;
+use std::sync::mpsc::Receiver;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -436,6 +438,8 @@ impl Snapshot {
             "level": level,
             "msg": msg,
         }));
+        // M2（D2）：业务日志镜像 KV（target="op" 尽力而为，满丢弃不阻塞）。
+        crate::logkv::mirror_op(level, msg);
         if self.res.logs.len() > bufl {
             for _ in 0..=fitl {
                 self.res.logs.pop_front();
@@ -452,9 +456,7 @@ impl Snapshot {
     /// 动态 system 事件上报（T6）：payload 打 `#SYSEV#` tag 进 events；hub push 时提取
     /// 分发（SSE 不广播，`SYS_EVENT_TAG` 注释）。跨 hub 的发送方（fetch 循环）经此通道。
     pub(crate) fn push_sys_event(&mut self, payload: Value) {
-        self.res
-            .events
-            .push_back(json!({ SYS_EVENT_TAG: payload }));
+        self.res.events.push_back(json!({ SYS_EVENT_TAG: payload }));
     }
 
     pub fn inspect<'a, T>(&mut self, res: &'a Result<T>) -> &'a Result<T> {
@@ -1050,10 +1052,8 @@ impl VCounter {
 // - RuntimeCfg ↔ RuntimeV1.fields：v1 runtime JSON 对象文本 ↔ `im::HashMap<String, Value>`。
 
 fn runtime_cfg_to_fields(cfg: &im::HashMap<String, Value>) -> String {
-    let m: serde_json::Map<String, Value> = cfg
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let m: serde_json::Map<String, Value> =
+        cfg.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     serde_json::to_string(&m).unwrap_or_else(|_| "{}".into())
 }
 
@@ -1345,11 +1345,8 @@ fn persist_diff(store: &mut Store, base: &Snapshot, next: &Snapshot) -> Result<(
     }
 
     // brick：逐实体比较，新增/修改 put、删除 remove
-    let base_bricks: BTreeMap<u64, &Brick> = base
-        .world
-        .iter::<Brick>()
-        .map(|(e, b)| (e.0, b))
-        .collect();
+    let base_bricks: BTreeMap<u64, &Brick> =
+        base.world.iter::<Brick>().map(|(e, b)| (e.0, b)).collect();
     for (e, b) in next.world.iter::<Brick>() {
         match base_bricks.get(&e.0) {
             Some(bb) if *bb == b => continue,
@@ -1432,6 +1429,13 @@ pub struct WeiYuanHui {
     /// 持久化（T4 接轨）：`open(&store)` 时 Some；`close()` 强刷后 take 置 None。
     /// 默认/`From<Snapshot>` 构造为 None（纯内存 hub，测试/无盘场景）。
     store: Option<Store>,
+    /// M2 KV 日志镜像通道接收端（T3）：`attach_logkv()` 时从 logkv 全局 take 一次；
+    /// 纯内存 hub / 未 attach / KV 未配置（`~/log4rs.yml` 陈旧）为 None。
+    log_rx: Option<Receiver<logkv::LogEntry>>,
+    /// M2 日志 seq allocator（T3）：drain 时连续分配；`attach_logkv()` 从 `max_log_seq()+1` 续。
+    log_seq: u64,
+    /// M2 KV 日志留存上限（D5，条数）：CLI `--log-kv-max`/env 注入；0 = 不裁剪。
+    kv_max: u64,
     /// 动态 system 注册表（T6 §4.5）：hub 唯一分发点，不进快照（见 systems.rs 模块文档）。
     dynsys: DynSystemRegistry,
 }
@@ -1453,6 +1457,9 @@ impl Default for WeiYuanHui {
             bench: Snapshot::new(),
             counter: VCounter::default(),
             store: None,
+            log_rx: None,
+            log_seq: 1,
+            kv_max: logkv::DEFAULT_KV_LOG_MAX,
             dynsys,
         }
     }
@@ -1470,11 +1477,33 @@ impl From<Snapshot> for WeiYuanHui {
 impl WeiYuanHui {
     /// 从 state.redb 全量加载重建权威快照（T4 持久化接轨，取代 v1 bench.json load）。
     /// 加载失败返回 Err——调用方（lib.rs `main_loop`）失败即退出（M1 探针升级语义，D12）。
+    /// KV 日志留存上限取默认值（`logkv::DEFAULT_KV_LOG_MAX`）；不触碰 logkv 全局通道，
+    /// 日志镜像接线由调用方显式 `attach_logkv()`（main_loop）完成。
     pub fn open(store: Store) -> Result<Self> {
+        Self::open_with(store, logkv::DEFAULT_KV_LOG_MAX)
+    }
+
+    /// `open` 的配置化版本（M2 T3/D5）：额外注入 KV 日志留存上限（条数，0 = 不裁剪）。
+    /// 刻意**不** take logkv 全局 receiver：`open` 是纯加载路径（测试/工具多用），
+    /// 自动 take 会与 logkv 模块全局通道测试竞态（RX 只能被取一次）；生产接线走
+    /// `attach_logkv()`（lib.rs `main_loop`）。
+    pub fn open_with(store: Store, kv_max: u64) -> Result<Self> {
         let snap = load_snapshot(&store)?;
         let mut h: Self = snap.into();
+        h.kv_max = kv_max;
         h.store = Some(store);
         Ok(h)
+    }
+
+    /// 显式接入 KV 日志镜像（M2 T3，store 就绪后调用一次）：
+    /// take logkv 全局通道 receiver（陈旧 `~/log4rs.yml` 未挂 `hobob_kv` 时为 None →
+    /// 镜像静默降级，文件日志不受影响）+ seq allocator 从已提交 max +1 续号（空洞无害）。
+    pub fn attach_logkv(&mut self) -> Result<()> {
+        self.log_rx = logkv::take_receiver();
+        if let Some(store) = &self.store {
+            self.log_seq = store.max_log_seq()?.saturating_add(1);
+        }
+        Ok(())
     }
 
     /// T5 冒烟观测：当前 store 的写 commit 计数（direct, volatile）；无盘 hub 为 None。
@@ -1520,8 +1549,11 @@ impl WeiYuanHui {
     pub fn close(&mut self) {
         // T4（D8）停机强刷：易变缓冲 flush + store close，顺序在发布 closing 标志之前
         // （等价 v1 `save_disk` 位置）；失败记日志并继续退出（v1 save_disk().ok() 同款宽松度）。
-        if let Some(store) = self.store.take() {
-            let mut store = store;
+        if let Some(mut store) = self.store.take() {
+            // M2（D3）：last-drain 在 flush 前——channel 内残余日志全部落盘（不丢已入队项）。
+            if let Some(rx) = &mut self.log_rx {
+                logkv::drain_logs(rx, &mut store, &mut self.log_seq, self.kv_max);
+            }
             if let Err(e) = store.flush() {
                 log::error!("close: store final flush failed: {e:#}");
             }
@@ -1546,6 +1578,11 @@ impl WeiYuanHui {
     pub async fn run(&mut self) -> bool {
         if !self.try_update().await {
             return false;
+        }
+        // M2（D3）：日志镜像 drain 挂主循环轮询（与 maybe_flush 同点）。channel 有残余
+        // 时批量 append + trim；失败只计数丢弃（drain_logs 内部处理），不阻塞主循环。
+        if let (Some(rx), Some(store)) = (&mut self.log_rx, &mut self.store) {
+            logkv::drain_logs(rx, store, &mut self.log_seq, self.kv_max);
         }
         // T4：易变缓冲每轮兜底 flush（≥MAX_RECORDS 或距上次 ≥MAX_AGE 才真写，VolatileBuffer 内节流）。
         if let Some(store) = &mut self.store {
@@ -2346,8 +2383,7 @@ mod tests {
             "episodic_button": { "uri": "//www.bilibili.com/medialist/play/12345" },
         });
         // ---- 第一代：hub 经 chair ops 驱动 store 写入 ----
-        let mut center =
-            WeiYuanHui::open(Store::open_or_create(&cfg).unwrap()).unwrap();
+        let mut center = WeiYuanHui::open(Store::open_or_create(&cfg).unwrap()).unwrap();
         let mut chair = center.new_chair();
         apply_then_run(&mut center, &mut chair, |b| {
             b.follow(&json!({"uid": 12345, "enable": true}))
@@ -2381,17 +2417,22 @@ mod tests {
         center.close();
 
         // ---- 第二代：reopen 全量加载，世界/索引/顺序完全一致 ----
-        let mut center2 =
-            WeiYuanHui::open(Store::open_or_create(&cfg).unwrap()).unwrap();
+        let mut center2 = WeiYuanHui::open(Store::open_or_create(&cfg).unwrap()).unwrap();
         assert_reloaded_eq(&orig, center2.bench());
         // 行为级抽查：pending/fetch/ban 均正确恢复
         let s = center2.bench();
-        assert_eq!(s.pick_of(12345).unwrap()["basic"]["name"], json!("MKiiiiii"));
+        assert_eq!(
+            s.pick_of(12345).unwrap()["basic"]["name"],
+            json!("MKiiiiii")
+        );
         assert_eq!(
             s.pick_of(12345).unwrap()["video"]["url"],
             json!("https://www.bilibili.com/medialist/play/12345")
         );
-        assert!(s.pick_of(12345).unwrap().get("raw").is_none(), "raw 重启丢失（D13）");
+        assert!(
+            s.pick_of(12345).unwrap().get("raw").is_none(),
+            "raw 重启丢失（D13）"
+        );
         assert_eq!(s.pick_of(2233).unwrap()["basic"]["ban"], json!(true));
         assert_eq!(
             s.filter_options()["filters"].as_array().unwrap().len(),
@@ -2482,7 +2523,11 @@ mod tests {
             })
             .unwrap();
         assert!(center.run().await);
-        assert_eq!(center.bench().res.commands.len(), 1, "builtin.tick 补抓 1 条");
+        assert_eq!(
+            center.bench().res.commands.len(),
+            1,
+            "builtin.tick 补抓 1 条"
+        );
         // commands 非空时再 tick：builtin.tick 幂等（v1：commands 空才补抓）
         chair
             .apply(|b| {
@@ -2499,12 +2544,34 @@ mod tests {
         // 事件按序送达（broken 报错不中断 spy）
         let got = seen.lock().unwrap().clone();
         assert_eq!(got.len(), 6);
-        assert_eq!(got[0], TriggerEvent::UpStateChanged { entity: 4, kind: UpStateKind::Followed });
-        assert_eq!(got[1], TriggerEvent::UpStateChanged { entity: 4, kind: UpStateKind::GroupToggled });
-        assert_eq!(got[2], TriggerEvent::FetchDone { entity: 4, uid: "12345".into() });
+        assert_eq!(
+            got[0],
+            TriggerEvent::UpStateChanged {
+                entity: 4,
+                kind: UpStateKind::Followed
+            }
+        );
+        assert_eq!(
+            got[1],
+            TriggerEvent::UpStateChanged {
+                entity: 4,
+                kind: UpStateKind::GroupToggled
+            }
+        );
+        assert_eq!(
+            got[2],
+            TriggerEvent::FetchDone {
+                entity: 4,
+                uid: "12345".into()
+            }
+        );
         assert_eq!(
             got[3],
-            TriggerEvent::FetchFailed { entity: 4, uid: "12345".into(), error: "e".into() }
+            TriggerEvent::FetchFailed {
+                entity: 4,
+                uid: "12345".into(),
+                error: "e".into()
+            }
         );
         match &got[4] {
             TriggerEvent::Tick { at } => assert!(at.timestamp() > 0),
@@ -2528,5 +2595,90 @@ mod tests {
         let r = tokio::time::timeout(Dur::from_millis(50), rx.recv()).await;
         assert!(r.is_err(), "SSE 通道不应收到 sys 事件: {:?}", r.ok());
         center.close();
+    }
+
+    // ---- M2 T3：hub 接线（注入通道，不触碰 logkv 全局静态，避免跨模块竞态） ----
+
+    fn hub_with_injected_log_channel(
+        store: Store,
+        kv_max: u64,
+    ) -> (WeiYuanHui, std::sync::mpsc::SyncSender<logkv::LogEntry>) {
+        let mut center = WeiYuanHui::open(store).unwrap();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<logkv::LogEntry>(16);
+        center.log_rx = Some(rx);
+        center.log_seq = 1;
+        center.kv_max = kv_max;
+        (center, tx)
+    }
+
+    #[tokio::test]
+    async fn test_logkv_hub_drain_and_trim() {
+        init();
+        let dir = tempdir().unwrap();
+        let cfg = StoreConfig::new(dir.path().join("state.redb"));
+        let store = Store::open_or_create(&cfg).unwrap();
+        let (mut center, tx) = hub_with_injected_log_channel(store, 3);
+        // 推 5 条（比上限 3 多 2）
+        for i in 0..5 {
+            tx.send(logkv::LogEntry {
+                ts_ms: 1000 + i,
+                level: 3,
+                target: "op".to_owned(),
+                msg: format!("msg-{i}"),
+                loc: None,
+                ctx: String::new(),
+            })
+            .unwrap();
+        }
+        // 触发一轮 run（no-op apply 驱动 try_update → drain）
+        let mut chair = center.new_chair();
+        chair.apply(|_| Ok(())).unwrap();
+        assert!(center.run().await);
+        let store = center.store.as_ref().unwrap();
+        assert_eq!(store.log_len().unwrap(), 3, "5 条写入后按 kv_max=3 裁剪");
+        let all = store.query_logs(&store::LogQuery::default()).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].0, 5, "最新 seq=5 保留");
+        assert_eq!(all[2].0, 3, "最旧保留 seq=3（1,2 被裁）");
+        center.close();
+    }
+
+    #[tokio::test]
+    async fn test_logkv_hub_last_drain_on_close() {
+        init();
+        let dir = tempdir().unwrap();
+        let cfg = StoreConfig::new(dir.path().join("state.redb"));
+        let store = Store::open_or_create(&cfg).unwrap();
+        let (mut center, tx) = hub_with_injected_log_channel(store, 0);
+        // 推 2 条残余，不 drain 直接 close（last-drain 应落盘）
+        tx.send(logkv::LogEntry {
+            ts_ms: 1,
+            level: 2,
+            target: "op".to_owned(),
+            msg: "r1".to_owned(),
+            loc: None,
+            ctx: String::new(),
+        })
+        .unwrap();
+        tx.send(logkv::LogEntry {
+            ts_ms: 2,
+            level: 3,
+            target: "op".to_owned(),
+            msg: "r2".to_owned(),
+            loc: None,
+            ctx: String::new(),
+        })
+        .unwrap();
+        center.close();
+        // reopen 验证 last-drain 已落盘
+        let store2 = Store::open_or_create(&cfg).unwrap();
+        assert_eq!(
+            store2.log_len().unwrap(),
+            2,
+            "close last-drain 残余全部落盘"
+        );
+        let all = store2.query_logs(&store::LogQuery::default()).unwrap();
+        assert_eq!(all[0].1.msg, "r2");
+        assert_eq!(all[1].1.msg, "r1");
     }
 }

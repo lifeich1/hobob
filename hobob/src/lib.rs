@@ -110,6 +110,9 @@ struct Flags {
     /// redb 状态文件路径；未指定时依次取 $HOBOB_STATE、$HOME/.hobob/state.redb
     #[arg(long, env = "HOBOB_STATE")]
     state: Option<PathBuf>,
+    /// KV 日志留存上限（条数，超限裁剪最旧）；0 = 不裁剪
+    #[arg(long, env = "HOBOB_LOG_KV_MAX", default_value_t = logkv::DEFAULT_KV_LOG_MAX)]
+    log_kv_max: u64,
 }
 
 /// # Errors
@@ -122,7 +125,10 @@ pub async fn main_loop() -> Result<()> {
     // T4（D12 / M1 探针升级）：store 打开失败即退出（取代 M0 non-fatal probe 日志）；
     // WeiYuanHui::open 全量加载失败同样即退出。
     let store = store::Store::open_or_create(&state_cfg)?;
-    let mut center = WeiYuanHui::open(store)?;
+    // M2（T3/D5）：KV 日志留存上限经 `--log-kv-max`/`HOBOB_LOG_KV_MAX` 注入 hub drain 点，
+    // 随后显式接入日志镜像通道（store 已就绪；陈旧 ~/log4rs.yml 时静默降级）。
+    let mut center = WeiYuanHui::open_with(store, flags.log_kv_max)?;
+    center.attach_logkv()?;
     {
         let chair = center.new_chair();
         let app = www::build_app(&mut center);

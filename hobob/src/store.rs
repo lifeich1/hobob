@@ -1258,6 +1258,19 @@ impl Store {
             dropped: LOG_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
+
+    /// 返回 `kv:log` 表最大 key（最新 seq）；表不存在或为空返回 0。
+    /// T3 供 seq allocator 初始化：起始 seq = max + 1（重启续号，空洞无害）。
+    pub fn max_log_seq(&self) -> Result<u64> {
+        let read = self.db.begin_read().context("begin read for max_log_seq")?;
+        let table = match read.open_table(KV_LOG) {
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+            Err(e) => return Err(anyhow!("open kv:log: {e}")),
+            Ok(t) => t,
+        };
+        let last = table.last().map_err(|e| anyhow!("kv:log last: {e}"))?;
+        Ok(last.map(|(k, _)| k.value()).unwrap_or(0))
+    }
 }
 
 fn ec_table_def(tid: TableId) -> Result<TableDefinition<'static, u64, &'static [u8]>> {
@@ -2408,5 +2421,29 @@ mod tests {
             assert!(read.open_table(EC_GROUP).is_ok());
             assert!(read.open_table(KV_LOG).is_ok());
         }
+    }
+
+    // ---------- T22 max_log_seq（T3 seq allocator 初始化） ----------
+
+    #[test]
+    fn t22_max_log_seq_empty_and_after_append() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        let store = Store::open_or_create(&cfg).unwrap();
+        // 空表 → 0
+        assert_eq!(store.max_log_seq().unwrap(), 0, "empty table → 0");
+        // 追加 3 条 → max = 2
+        let batch: Vec<_> = (0..3)
+            .map(|i| sample_log(i, &format!("msg-{i}"), 3, "test"))
+            .collect();
+        store.append_logs(&batch).unwrap();
+        assert_eq!(store.max_log_seq().unwrap(), 2, "max after seq 0..2");
+        // 追加 seq 100..102 → max = 101
+        let batch2: Vec<_> = (100..102)
+            .map(|i| sample_log(i, &format!("msg-{i}"), 3, "test"))
+            .collect();
+        store.append_logs(&batch2).unwrap();
+        assert_eq!(store.max_log_seq().unwrap(), 101, "max after seq 100..101");
+        store.close().unwrap();
     }
 }
