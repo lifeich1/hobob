@@ -1447,6 +1447,12 @@ impl WeiYuanHui {
         Ok(h)
     }
 
+    /// T5 冒烟观测：当前 store 的写 commit 计数（direct, volatile）；无盘 hub 为 None。
+    #[must_use]
+    pub fn store_stats(&self) -> Option<(u64, u64)> {
+        self.store.as_ref().map(|s| s.stats.get())
+    }
+
     #[must_use]
     pub fn listen_events(&self) -> broadcast::Receiver<Events> {
         self.ev_rx.resubscribe()

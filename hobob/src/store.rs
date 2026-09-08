@@ -14,6 +14,7 @@ use redb::{
     TableHandle, WriteTransaction,
 };
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -526,6 +527,33 @@ impl Default for VolatileBuffer {
 pub struct Store {
     db: Database,
     buffer: VolatileBuffer,
+    /// 冒烟/观测埋点（T5 §7）：直写与批量 flush 的 commit 计数，进程内单调累加。
+    /// 写方法多为 `&self`，计数用 `Cell`（Store 单写者持有，hub 独占线程）。
+    pub stats: StoreStats,
+}
+
+/// 写路径 commit 统计（`fsync` 频率指标采集用，M1 T5 / M6 设备冒烟）。
+#[derive(Debug, Default, Clone)]
+pub struct StoreStats {
+    /// 直写（brick/group 等 put/remove）事务 commit 次数。
+    pub direct_commits: Cell<u64>,
+    /// 易变批量 flush 事务 commit 次数（仅阈值/间隔/显式触发时 +1）。
+    pub volatile_commits: Cell<u64>,
+}
+
+impl StoreStats {
+    /// (直写 commits, 批量 flush commits)。
+    pub fn get(&self) -> (u64, u64) {
+        (self.direct_commits.get(), self.volatile_commits.get())
+    }
+
+    fn count_direct(&self, n: u64) {
+        self.direct_commits.set(self.direct_commits.get() + n);
+    }
+
+    fn count_volatile(&self, n: u64) {
+        self.volatile_commits.set(self.volatile_commits.get() + n);
+    }
 }
 
 impl std::fmt::Debug for Store {
@@ -545,6 +573,7 @@ impl Store {
             Ok(Self {
                 db,
                 buffer: VolatileBuffer::new(),
+                stats: StoreStats::default(),
             })
         } else {
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -557,6 +586,7 @@ impl Store {
             Ok(Self {
                 db,
                 buffer: VolatileBuffer::new(),
+                stats: StoreStats::default(),
             })
         }
     }
@@ -806,7 +836,7 @@ impl Store {
         let payload = encode_bincode(v)?;
         let raw = encode_record(TableId::VideoPost.schema().current_version, payload)?;
         self.buffer.stage(TableId::VideoPost, entity, raw);
-        self.buffer.maybe_flush(&self.db).map(|_| ())
+        self.note_stage_flush()
     }
 
     pub fn stage_live_post(&mut self, entity: u64, v: &LivePostV1) -> Result<()> {
@@ -814,7 +844,7 @@ impl Store {
         let payload = encode_bincode(v)?;
         let raw = encode_record(TableId::LivePost.schema().current_version, payload)?;
         self.buffer.stage(TableId::LivePost, entity, raw);
-        self.buffer.maybe_flush(&self.db).map(|_| ())
+        self.note_stage_flush()
     }
 
     pub fn stage_comment_post(&mut self, entity: u64, v: &CommentPostV1) -> Result<()> {
@@ -822,7 +852,7 @@ impl Store {
         let payload = encode_bincode(v)?;
         let raw = encode_record(TableId::CommentPost.schema().current_version, payload)?;
         self.buffer.stage(TableId::CommentPost, entity, raw);
-        self.buffer.maybe_flush(&self.db).map(|_| ())
+        self.note_stage_flush()
     }
 
     pub fn stage_runtime(&mut self, entity: u64, v: &RuntimeV1) -> Result<()> {
@@ -830,17 +860,34 @@ impl Store {
         let payload = encode_bincode(v)?;
         let raw = encode_record(TableId::Runtime.schema().current_version, payload)?;
         self.buffer.stage(TableId::Runtime, entity, raw);
-        self.buffer.maybe_flush(&self.db).map(|_| ())
+        self.note_stage_flush()
+    }
+
+    /// stage 后按阈值/间隔触发 flush；真 flush 时计 volatile_commits（1 次 commit）。
+    fn note_stage_flush(&mut self) -> Result<()> {
+        let n = self.buffer.maybe_flush(&self.db)?;
+        if n > 0 {
+            self.stats.count_volatile(1);
+        }
+        Ok(())
     }
 
     /// 显式强刷易变表缓冲。
     pub fn flush(&mut self) -> Result<()> {
-        self.buffer.flush(&self.db).map(|_| ())
+        let n = self.buffer.flush(&self.db)?;
+        if n > 0 {
+            self.stats.count_volatile(1);
+        }
+        Ok(())
     }
 
     /// 阈值/间隔触发条件满足才 flush（run 循环每轮兜底；不满足为 no-op）。
     pub fn maybe_flush(&mut self) -> Result<usize> {
-        self.buffer.maybe_flush(&self.db)
+        let n = self.buffer.maybe_flush(&self.db)?;
+        if n > 0 {
+            self.stats.count_volatile(1);
+        }
+        Ok(n)
     }
 
     /// 调参入口（测试/后续性能冒烟用）。
@@ -864,6 +911,7 @@ impl Store {
                 .map_err(|e| anyhow!("insert {} key {key}: {e}", def.name()))?;
         }
         txn.commit().context("commit put_ec")?;
+        self.stats.count_direct(1);
         Ok(())
     }
 
@@ -879,6 +927,7 @@ impl Store {
                 .map_err(|e| anyhow!("remove {} key {key}: {e}", def.name()))?;
         }
         txn.commit().context("commit remove_ec")?;
+        self.stats.count_direct(1);
         Ok(())
     }
 
