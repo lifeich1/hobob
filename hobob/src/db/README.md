@@ -8,7 +8,7 @@ v1 **实际使用的数据层**（v2 `../store.rs` 尚未接管）。本页是�
 
 - v1 `FullBench`（9 个 im 字段）已演进为 `Snapshot { world, res }`（ECS 见 `../ecs.rs`）：
   - **world**（组件）：up 实体 = `Brick`/`LivePost`/`VideoPost`/`CommentPost`/`RawInfo`；group 实体 = `GroupInfo`/`Members`；entity 1 = runtime（`RuntimeCfg`）。实体号：1 = runtime，2/3 = 内置组「全部/特殊关注」，≥4 普通实体（与 store `INITIAL_ENTITY_ID` 衔接）。
-  - **res**（`Resources`，内存索引/队列，随快照传播、不落 redb）：`up_index`（排序索引）、`up_by_fid`/`uid_index`/`gid_index`、`events`/`logs`/`commands`、`closing`。
+  - **res**（`Resources`，内存索引/队列，随快照传播、不落 redb）：`up_index`（排序索引）、`up_by_fid`/`uid_index`/`gid_index`、`events`/`logs`/`commands`、`closing`。其中 `logs` 权威内存（环形缓冲），**M2 起经 `logkv::mirror_op` 镜像入 `kv:log` 表**（`target="op"`，尽力而为，满丢弃不阻塞）——见 `../logkv.rs` 与 `.plans/m2-log-kv-appender.md`。
 - **hub/chair**：`WeiYuanHui` 持权威 `Snapshot` + 三通道（`updates` mpsc 提交 / `publish` watch 发布 / `ev` broadcast 事件）；`WeiYuan` 是可 Clone 的 chair 句柄。提交 `(base, next)` 由 hub 用 `ptr_eq` 校验 base 仍是权威值，不匹配即 abort——**所有修改必须走 chair `update`/`apply`**。
 
 ## 关键符号

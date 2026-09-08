@@ -6,6 +6,8 @@
 //! - 业务表 value 为 `VersionedRecord` 信封；每表独立版本链 + 迁移钩子；
 //!   旧版本结构体永久保留在 `legacy` 子模块。
 //! - `ec:brick`/`ec:group` 直写；易变表（video/live/comment/runtime）走 `VolatileBuffer` 批量 flush。
+//! - `kv:log`（M2，布局 3）：追加日志表（key = 全局单调 seq，跨重启续号），不走版本信封与
+//!   `VolatileBuffer`——`append_logs`/`trim_logs`/`query_logs` 独立 CRUD（见 `../logkv.rs` 编排）。
 //! - entity id：`0` 非法、`1` 预留给全局 runtime 实体（M1 确认），分配从 `2` 开始。
 
 use anyhow::{anyhow, bail, Context, Result};

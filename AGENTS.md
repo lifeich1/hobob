@@ -21,7 +21,8 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 
 - `hobob/src/db/`（`db/mod.rs`）：数据中枢 `WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world` + `res` 内存索引；mpsc/watch/broadcast 通道 + `#SYSEV#` 动态 system 事件通道）。**实际使用的数据层（精炼导读见 `hobob/src/db/README.md`）。**
 - `hobob/src/ecs.rs`：轻量 ECS 内核（`World`/`Storage`/`ptr_eq` 结构共享判定，im::HashMap 底层），无 tokio/store 依赖。
-- `hobob/src/store.rs`：v2 持久化（redb + bincode，`state.redb`）：8 张表（meta/systems/ec:*）+ typed CRUD + `VersionedRecord` 版本信封/迁移钩子 + `VolatileBuffer` 批量 flush + 布局升级链；**M1 起已接管数据路径**（`WeiYuanHui::open` 全量加载、`persist_diff` 直写/stage、close 强刷；稳态零读）。
+- `hobob/src/store.rs`：v2 持久化（redb + bincode，`state.redb`）：9 张表（meta/systems/ec:* + `kv:log`）+ typed CRUD + `VersionedRecord` 版本信封/迁移钩子 + `VolatileBuffer` 批量 flush + 布局升级链；**M1 起已接管数据路径**（`WeiYuanHui::open` 全量加载、`persist_diff` 直写/stage、close 强刷；稳态零读）。
+- `hobob/src/logkv.rs`：M2 起**日志双写**（文件 + `kv:log` KV 镜像，布局升级 2→3）：自定义 log4rs appender（`hobob_kv` kind，target 黑名单挡 `hobob::store`/`hobob::logkv`）+ 全局 sync_channel + hub drain（`run()` 每轮/`close()` last-drain）+ seq 续号 + 条数裁剪（上限 CLI `--log-kv-max`/`HOBOB_LOG_KV_MAX`，默认 20_000）。详见 `.plans/m2-log-kv-appender.md`。
 - `vendor/bilibili-api-rs`：git 子模块（上游 `git@github.com:lifeich1/bilibili-api-rs.git`，锁 `7df423a`）；升级 SOP 见 `vendor/UPGRADE.md`。
 - `hobob/src/www.rs`：warp 路由（`/op/*` 操作、`/card/*` 渲染、`/ev/engine` SSE）、tera 渲染、boon schema 校验。
 - `hobob/src/systems.rs`：基础 system（原 `engine.rs` 迁入）：`fetch_loop` 抓取循环 + 动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/内置 `builtin.tick`）；事件经 db `#SYSEV#` 通道上报，hub 分发。

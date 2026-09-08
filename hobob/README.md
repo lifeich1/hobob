@@ -11,10 +11,11 @@ B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程�
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/lib.rs` | crate 入口：日志初始化 `prepare_log`、启动主循环 `main_loop`（hub 循环 + spawn www/fetch_loop）、`vpath!`/`schema_uri!` 宏、CLI `Flags`（`--port` 默认 3731、`--state`/`HOBOB_STATE` 指定状态文件）、`Store::open_or_create` 失败即退出 |
+| `src/lib.rs` | crate 入口：日志初始化 `prepare_log`（`~/log4rs.yml` 陈旧检测 warn）、启动主循环 `main_loop`（hub 循环 + spawn www/fetch_loop）、`vpath!`/`schema_uri!` 宏、CLI `Flags`（`--port` 默认 3731、`--state`/`HOBOB_STATE` 指定状态文件、`--log-kv-max`/`HOBOB_LOG_KV_MAX` 默认 20_000）、`Store::open_or_create` 失败即退出 |
 | `src/db/`（`mod.rs`） | 数据层（详见 `src/db/README.md`）：`WeiYuanHui`/`WeiYuan` + `Snapshot`（ECS `world`：Brick/LivePost/VideoPost/GroupInfo 等组件 + entity 1 runtime；`res` 内存索引/队列），通道提交 + 快照发布 + 持久化桥接（`open` 全量加载、`persist_diff` 直写/stage） |
 | `src/ecs.rs` | 轻量 ECS 内核（`Entity`/`Component`/`Storage`/`World`：spawn/insert/remove/get/iter + `ptr_eq` 结构共享判定；无外部依赖） |
-| `src/store.rs` | redb + bincode 持久化：8 张表（meta/systems/ec:*）、typed CRUD、`VersionedRecord` 版本信封 + 迁移钩子（Brick V1→V2）、`VolatileBuffer` 批量 flush、布局升级链；**M1 起接管数据路径**（brick/group 直写、video/live/comment/runtime 批量 flush、close 强刷，稳态零读） |
+| `src/store.rs` | redb + bincode 持久化：9 张表（meta/systems/ec:* + `kv:log`）、typed CRUD、`VersionedRecord` 版本信封 + 迁移钩子（Brick V1→V2）、`VolatileBuffer` 批量 flush、布局升级链（M2 升 3）；**M1 起接管数据路径**（brick/group 直写、video/live/comment/runtime 批量 flush、close 强刷，稳态零读） |
+| `src/logkv.rs` | M2 日志 KV 镜像：自定义 log4rs appender（`hobob_kv` kind，target 黑名单挡 `hobob::store`/`hobob::logkv`）+ 全局 sync_channel + hub drain 编排（`run()` 每轮/`close()` last-drain）+ seq 续号 + 条数裁剪（`--log-kv-max` 默认 20_000） |
 | `src/systems.rs` | 基础 system：`fetch_loop` 抓取循环、动态 system 框架（`TriggerEvent`/`DynSystemRegistry`/`builtin.tick` 补抓）；原 `engine.rs` 迁入（已删） |
 | `src/www.rs` | warp 路由、tera 渲染、SSE、boon schema 校验 |
 | `src/data_schema.rs` | JSON schema 编译（boon），schema 从 `https://lintd.xyz/hobob/` 远程加载 |
@@ -25,7 +26,7 @@ B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程�
 | `src/test_data/` | chunk 解析器测试用例（`in.txt` + `expect.json` 配对） |
 | `templates/` | tera HTML 模板；debug 从磁盘加载，release 编译期 `include_str!` 内嵌（`src/www.rs` `TERA`） |
 | `static/` | 前端静态资源（`index.js` 用 jQuery 加载卡片/筛选/标签页，`favicon.ico`） |
-| `assets/` | `log4rs.yml`（日志配置模板，首启复制到 `~/log4rs.yml`）、`db_init.sql`（**遗留**，当前不用 SQLite） |
+| `assets/` | `log4rs.yml`（日志配置模板，含 `hobob_kv` appender；首启复制到 `~/log4rs.yml`，M2 旧模板缺 `hobob_kv` 时 prepare_log 会 `log::warn` 提示，自动降级不阻止启动）、`db_init.sql`（**遗留**，当前不用 SQLite） |
 | `build.rs` | lalrpop 解析器生成 |
 
 ## 数据流
@@ -83,7 +84,9 @@ cargo test -p hobob
 - `src/systems.rs` tests：fetch 循环（取命令/关闭/补抓 deadline）、`pick_*` 纯函数
 - `src/ecs.rs` tests：ECS 内核（spawn/insert/CoW/iter/ptr_eq）
 - `chunk.rs` tests：解析器对 `test_data/chunk_*.in.txt` 的 AST 与 `*.expect.json` 比对
-- `store.rs` tests：空库初始化/样例 roundtrip/错文件守卫/codec/迁移链（含 brick V1→V2）/版本过高拒绝/entity id/直写/批量 flush 四路径/group CRUD/布局 1→2 升级/list_* 全量（T1–T16）
+- `store.rs` tests：空库初始化/样例 roundtrip/错文件守卫/codec/迁移链（含 brick V1→V2）/版本过高拒绝/entity id/直写/批量 flush 四路径/group CRUD/布局 1→2 升级/list_* 全量（T1–T16）/kv:log 追加/裁剪/查询/升级到 3（T17–T22）
+- `logkv.rs` tests：自定义 appender 结构/黑名单/满丢弃/模板检查/业务级别映射/drain 批写裁剪（T2–T3，含 `logkv_global` 集成测试）
+- `tests/logkv_e2e.rs`：M2 T4 端到端——真实 log4rs logger + hub 业务镜像 → kv:log 查询（N4 防递归/N5 双写同源/N7 业务镜像，独立进程）
 
 ## 已知坑
 
@@ -91,4 +94,5 @@ cargo test -p hobob
 - **模板加载差异**：debug 从 `templates/` 磁盘目录读（工作目录必须是 crate 根），release 内嵌编译期模板。
 - **vendor 子模块**：`bilibili-api-rs` 是 path 依赖，位于 `vendor/bilibili-api-rs`（git 子模块，锁 commit）；新 clone 后需 `git submodule update --init`，升级 SOP 见 `vendor/UPGRADE.md`。
 - **state.redb**：启动 `Store::open_or_create` + `WeiYuanHui::open` 全量加载，**失败即退出**（取代 M0 探针的仅日志）。`serde_json::Value` 不能参与 bincode 反序列化，store 类型中「未类型化 JSON」字段一律存 JSON 字符串（M1 校准语义）。
+- **log4rs.yml 陈旧**：M2 起 `assets/log4rs.yml` 模板新增 `hobob_kv` appender（KV 日志镜像）；部署机已有 `~/log4rs.yml` 不会自动更新，`prepare_log` 检测缺 `hobob_kv` 时 `log::warn` 提示（KV 静默降级，文件日志不受影响）。手动用模板更新 `~/log4rs.yml` 后重启即可启用 KV 日志。
 - `vm.rs`、`bench.rs` 是未完成的替代设计（`todo!()`），`db` 模块才是实际使用的数据层。
