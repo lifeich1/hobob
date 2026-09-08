@@ -48,6 +48,7 @@ pub mod bench;
 mod data_schema;
 pub mod db;
 pub mod ecs;
+pub mod logkv;
 pub mod store;
 pub mod systems;
 pub mod vm;
@@ -77,7 +78,19 @@ pub fn prepare_log() -> Result<()> {
         w.write_all(cf.as_bytes())
             .with_context(|| format!("failed write file {log_cf:?}"))?;
     }
-    log4rs::init_file(log_cf, Deserializers::default()).context("failed init log config file")?;
+    // M2（D11）：init 前读用户配置文本做陈旧检测（缺 hobob_kv 则 init 后 warn，不自动改写）
+    let has_kv_appender = std::fs::read_to_string(log_cf)
+        .map(|s| s.contains("hobob_kv"))
+        .unwrap_or(false);
+    // M2（D10）：注册自定义 appender kind `hobob_kv`（保留内置 kinds 的 Deserializers::new）
+    let mut deserializers = Deserializers::new();
+    deserializers.insert("hobob_kv", logkv::KvAppenderDeserializer);
+    log4rs::init_file(log_cf, deserializers).context("failed init log config file")?;
+    if !has_kv_appender {
+        log::warn!(
+            "{log_cf:?} 缺 hobob_kv appender，KV 日志镜像未启用；请按 hobob/assets/log4rs.yml 模板更新"
+        );
+    }
 
     log::info!(
         "{} version {}; logger prepared",

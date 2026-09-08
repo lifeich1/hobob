@@ -13,6 +13,12 @@ appenders:
     encoder:
       pattern: "{d(%+)} #{l}#{M}#{P}:{I} >> {m}{n}"
 
+  # M2：日志 KV 镜像 appender（自定义 kind，logkv.rs 注册）
+  # 只挂 hobob logger（additive: false），root 不动；store/logkv 自身日志由 target 黑名单排除
+  hobob_kv:
+    kind: hobob_kv
+    capacity: 8192
+
 # Set the default logging level to "warn" and attach the "stdout" appender to the root
 root:
   level: warn
@@ -25,4 +31,5 @@ loggers:
     appenders:
       - fall
       - stdout
+      - hobob_kv
     additive: false
