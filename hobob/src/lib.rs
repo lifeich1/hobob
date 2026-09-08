@@ -46,6 +46,7 @@ macro_rules! schema_uri {
 mod data_schema;
 pub mod db;
 pub mod ecs;
+pub mod libcall;
 pub mod logkv;
 pub mod store;
 pub mod systems;
