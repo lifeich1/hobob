@@ -513,7 +513,8 @@ impl DynSystemRegistry {
         }
     }
 
-    /// lua handler（名序）：event table 序列化一次跨 spec 复用；condition 求值 → 回调执行。
+    /// lua handler（名序）：event 序列化一次为**只读源**，每个 spec 取独立只读副本
+    /// （D5 修复：共享一份会被上游 spec 改写污染）；condition 求值 → 回调执行。
     pub fn dispatch_lua(&self, ev: &TriggerEvent, snap: &mut Snapshot, store: Option<&Store>) {
         let specs: Vec<LuaSystemSpec> =
             self.inner.borrow().lua_specs.values().cloned().collect();
@@ -521,7 +522,7 @@ impl DynSystemRegistry {
             return;
         }
         let event_val = trigger_event_to_json(ev);
-        let event_tbl = match self.lua.to_value(&event_val) {
+        let event_src = match self.lua.to_value(&event_val) {
             Ok(LuaValue::Table(t)) => t,
             Ok(other) => {
                 log::error!(
@@ -536,6 +537,15 @@ impl DynSystemRegistry {
             }
         };
         for spec in specs {
+            // D5 修复：每个 spec 一份只读副本——共享同一 table 时，任一 system 改写
+            // `event.*` 会污染名序在后的 system。
+            let event_tbl = match readonly_event_copy(&self.lua, &event_src) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::error!("构造只读 event 副本失败（跳过 {:?}）：{e}", spec.name);
+                    continue;
+                }
+            };
             if let Some(cond) = &spec.condition {
                 // D15：恒真已在编译期折叠为 None；错误按「未通过」跳过，不阻断分发。
                 match self.guarded_call::<bool>(
@@ -658,6 +668,36 @@ impl Drop for HookGuard<'_> {
         self.lua.remove_hook();
         self.active.set(false);
     }
+}
+
+/// 为单个 spec 构造只读 event 副本（D5 修复：跨 spec 共享一份会被上游改写污染）。
+///
+/// lua54 下 mlua 的 `Table::set_readonly` 不可用（仅 `luau` feature，见 mlua
+/// `src/table.rs`），故用元方法实现：
+/// - 字段浅拷贝到副本（读取 / `pairs` / `json.encode` 行为不变；字段均为标量）
+/// - `__newindex` 拒绝**新增**键
+/// - `__metatable` 锁住元表，防 lua 侧 `setmetatable(event, {})` 绕过
+///
+/// 已知边界：Lua 语义下改写**已有**字段（`event.kind = ...`）不触发 `__newindex`，
+/// 该改写只落在本 spec 的副本上、不污染其他 spec；完全不可写需 luau 的 readonly 属性。
+fn readonly_event_copy(lua: &Lua, src: &Table) -> mlua::Result<Table> {
+    let copy = lua.create_table()?;
+    for pair in src.pairs::<LuaValue, LuaValue>() {
+        let (k, v) = pair?;
+        copy.raw_set(k, v)?;
+    }
+    let meta = lua.create_table()?;
+    meta.raw_set(
+        "__newindex",
+        lua.create_function(|_, _: mlua::MultiValue| -> mlua::Result<()> {
+            Err(mlua::Error::runtime(
+                "event 表只读（D5 跨 spec 复用）：禁止新增字段",
+            ))
+        })?,
+    )?;
+    meta.raw_set("__metatable", "event(readonly)")?;
+    copy.set_metatable(Some(meta));
+    Ok(copy)
 }
 
 /// `TriggerEvent` → lua 侧 event table（D1：`kind` + 事件专有字段）。
@@ -1518,6 +1558,42 @@ mod tests {
             .eval()
             .map_err(|e| anyhow!("{e}"))?;
         assert!(gone, "原本无 _lib 条目 → 回滚即删除");
+        Ok(())
+    }
+
+    /// T3 修复：event 表只读 + 每 spec 独立副本——上游 spec 不得污染后续 spec。
+    #[test]
+    fn test_event_table_readonly_and_isolated() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        // a：新增字段应被 `__newindex` 拒绝（pcall 捕获）；改写已有字段只落在自己副本上
+        reg.register_lua(
+            "a.hack",
+            "function(event, ctx) \
+             local ok = pcall(function() event.hacked = true end) \
+             if ok then ctx.admin.follow(999, true) end \
+             event.kind = 'hacked' end",
+            "",
+        )?;
+        // b：应看到原始 event（kind=tick、无 hacked）
+        reg.register_lua(
+            "b.read",
+            "function(event, ctx) \
+             if event.kind == 'tick' and event.hacked == nil then \
+               ctx.admin.new_group('clean', false) end end",
+            "",
+        )?;
+        let mut snap = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap, None);
+        assert!(
+            !snap.res.uid_index.contains_key("999"),
+            "新增字段应被 __newindex 拒绝（否则 a 会 follow 999）"
+        );
+        assert_eq!(
+            group_ids(&snap),
+            vec![2],
+            "b 应看到未被污染的 event 并建组（共享一份时 kind 已被 a 改写）"
+        );
         Ok(())
     }
 
