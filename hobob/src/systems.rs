@@ -40,7 +40,7 @@ use bilibili_api_rs::Client;
 use chrono::{DateTime, Utc};
 use mlua::{Function, HookTriggers, Lua, LuaSerdeExt, Table, Value as LuaValue, VmState};
 use serde_json::{json, Value};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -149,6 +149,11 @@ pub struct DynSystemRegistry {
     inner: Rc<RefCell<DynInner>>,
     /// 共享沙箱 Lua 实例（所有 lua system 共用 `_G`，D14）。
     lua: Lua,
+    /// 指令上限 hook 是否已激活（T3 修复）：mlua 的 hook 挂在 Lua 实例上是**全局唯一**
+    /// 的，lua 回调内再调 `guarded_call`（`register_system`/`reload_*` → oneshot）若
+    /// 无条件 `set_hook`/`remove_hook`，内层退出会把外层的 hook 一并拆掉，外层随后的
+    /// 死循环就再也拦不住。故嵌套时**复用外层 hook 与预算**（见 `guarded_call`）。
+    hook_active: Rc<Cell<bool>>,
 }
 
 impl std::fmt::Debug for DynSystemRegistry {
@@ -183,6 +188,7 @@ impl DynSystemRegistry {
                 lib,
             })),
             lua,
+            hook_active: Rc::new(Cell::new(false)),
         }
     }
 
@@ -326,7 +332,8 @@ impl DynSystemRegistry {
             .load(src)
             .into_function()
             .map_err(|e| anyhow!("oneshot {name:?} 编译失败：{e}"))?;
-        let ret: LuaValue = guarded_call(&self.lua, &chunk, (), LUA_INSTRUCTION_LIMIT)
+        let ret: LuaValue = self
+            .guarded_call(&chunk, (), LUA_INSTRUCTION_LIMIT)
             .map_err(|e| anyhow!("oneshot {name:?} 执行失败：{e}"))?;
         match ret {
             LuaValue::Table(t) => {
@@ -455,8 +462,7 @@ impl DynSystemRegistry {
         for spec in specs {
             if let Some(cond) = &spec.condition {
                 // D15：恒真已在编译期折叠为 None；错误按「未通过」跳过，不阻断分发。
-                match guarded_call::<bool>(
-                    &self.lua,
+                match self.guarded_call::<bool>(
                     cond,
                     event_tbl.clone(),
                     LUA_CONDITION_INSTRUCTION_LIMIT,
@@ -492,8 +498,7 @@ impl DynSystemRegistry {
         let me = self.clone();
         let result = lua.scope(|scope| {
             let ctx = libcall::build_ctx_table(lua, scope, snap, store, Some(me.clone()))?;
-            guarded_call::<()>(
-                lua,
+            self.guarded_call::<()>(
                 &spec.callback,
                 (event_tbl.clone(), ctx),
                 LUA_INSTRUCTION_LIMIT,
@@ -522,36 +527,61 @@ impl DynSystemRegistry {
             }
         }
     }
+
+    /// 在指令上限保护下同步调用 lua 函数（D6 ①）。
+    ///
+    /// `set_hook` 每 `LUA_HOOK_INTERVAL` 条指令回调一次；累计超过 `limit` 时返回 Lua error
+    /// 中断当前执行（`Function::call` 把错误带回 Rust），随后移除 hook。
+    ///
+    /// **嵌套复用**（T3 修复）：mlua 的 hook 挂在 Lua 实例上是全局唯一的，若外层已在保护
+    /// 中（`hook_active`），本次调用直接执行、沿用外层 hook 与预算——绝不 `set_hook`/
+    /// `remove_hook`，否则内层退出会拆掉外层保护（外层随后的死循环将永久卡死 hub 线程）。
+    /// 代价：内层指令计入外层预算（lua 回调内 `register_system`/`reload_*` 触发的 oneshot
+    /// 执行量算在外层 `LUA_INSTRUCTION_LIMIT` 里）。
+    fn guarded_call<R: mlua::FromLuaMulti>(
+        &self,
+        f: &Function,
+        args: impl mlua::IntoLuaMulti,
+        limit: u64,
+    ) -> mlua::Result<R> {
+        if self.hook_active.get() {
+            return f.call::<R>(args);
+        }
+        let counter = Arc::new(AtomicU64::new(0));
+        let c = Arc::clone(&counter);
+        self.lua.set_hook(
+            HookTriggers::new().every_nth_instruction(LUA_HOOK_INTERVAL),
+            move |_, _| {
+                let n = c.fetch_add(u64::from(LUA_HOOK_INTERVAL), Ordering::Relaxed);
+                if n >= limit {
+                    Err(mlua::Error::runtime(format!(
+                        "lua 指令数超限（> {limit}），已中断"
+                    )))
+                } else {
+                    Ok(VmState::Continue)
+                }
+            },
+        );
+        self.hook_active.set(true);
+        let _guard = HookGuard {
+            lua: &self.lua,
+            active: &self.hook_active,
+        };
+        f.call::<R>(args)
+    }
 }
 
-/// 在指令上限保护下同步调用 lua 函数（D6 ①）。
-///
-/// `set_hook` 每 `LUA_HOOK_INTERVAL` 条指令回调一次；累计超过 `limit` 时返回 Lua error
-/// 中断当前执行（`Function::call` 把错误带回 Rust），随后移除 hook。
-fn guarded_call<R: mlua::FromLuaMulti>(
-    lua: &Lua,
-    f: &Function,
-    args: impl mlua::IntoLuaMulti,
-    limit: u64,
-) -> mlua::Result<R> {
-    let counter = Arc::new(AtomicU64::new(0));
-    let c = Arc::clone(&counter);
-    lua.set_hook(
-        HookTriggers::new().every_nth_instruction(LUA_HOOK_INTERVAL),
-        move |_, _| {
-            let n = c.fetch_add(u64::from(LUA_HOOK_INTERVAL), Ordering::Relaxed);
-            if n >= limit {
-                Err(mlua::Error::runtime(format!(
-                    "lua 指令数超限（> {limit}），已中断"
-                )))
-            } else {
-                Ok(VmState::Continue)
-            }
-        },
-    );
-    let r = f.call::<R>(args);
-    lua.remove_hook();
-    r
+/// `guarded_call` 的 hook 清理守卫：正常返回与 panic 展开都保证移除 hook + 复位标志。
+struct HookGuard<'a> {
+    lua: &'a Lua,
+    active: &'a Cell<bool>,
+}
+
+impl Drop for HookGuard<'_> {
+    fn drop(&mut self) {
+        self.lua.remove_hook();
+        self.active.set(false);
+    }
 }
 
 /// `TriggerEvent` → lua 侧 event table（D1：`kind` + 事件专有字段）。
@@ -1154,6 +1184,45 @@ mod tests {
             "指令上限应在 5s 内中断，实际 {elapsed:?}"
         );
         assert_eq!(group_ids(&snap), vec![2], "斩杀后后续 handler 仍执行");
+        Ok(())
+    }
+
+    /// T3 修复：lua 回调内 `register_system`（→ 嵌套 `guarded_call`）不得拆掉外层指令上限。
+    ///
+    /// mlua 的 hook 是 Lua 实例全局唯一的：若内层 `guarded_call` 无条件
+    /// `set_hook`/`remove_hook`，退出时会连带清掉外层 hook，外层随后的死循环便永久卡死。
+    #[test]
+    fn test_nested_guarded_call_keeps_outer_limit() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        // 名序 a < b：a 先注册 oneshot（嵌套调用来源）再死循环，b 必须照常执行
+        reg.register_lua(
+            "a.nested_loop",
+            "function(event, ctx) \
+             ctx.admin.register_system('lib.h', 'return {}', '') \
+             while true do end end",
+            "",
+        )?;
+        reg.register_lua(
+            "b.mark",
+            "function(event, ctx) ctx.admin.new_group('after', false) end",
+            "",
+        )?;
+        let mut snap = Snapshot::new();
+        let started = std::time::Instant::now();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap, None);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "嵌套 register_system 后外层仍应被指令上限斩杀，实际 {elapsed:?}"
+        );
+        assert_eq!(group_ids(&snap), vec![2], "斩杀后后续 handler 仍执行");
+        let lib_ok: bool = reg
+            .lua()
+            .load("return type(_lib.h) == 'table'")
+            .eval()
+            .map_err(|e| anyhow!("{e}"))?;
+        assert!(lib_ok, "内层 oneshot 确已执行（嵌套路径被覆盖）");
         Ok(())
     }
 
