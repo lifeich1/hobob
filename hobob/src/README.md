@@ -47,6 +47,7 @@ lua 与 Rust 能力的桥梁，两组注册进每次 call 新建的 `ctx` 表（
 - `do_fetch`：`bilibili-api-rs` 的 `user(uid).info()` + `latest_videos()`；失败时 `bucket_double_gap` + 上报 `FetchFailed` 事件；成功时 `apply_fetch` 组件写回 + `bucket_good` + 上报 `FetchDone` 事件（组件字段 → `db` 组件，`raw` 内存 only）。
 - 动态 system 框架（M3 T3）：`TriggerEvent`（Tick/FetchDone/FetchFailed/UpStateChanged，含 `uid`）、`DynSystemRegistry`（`Rc<RefCell<DynInner>>` 句柄，hub 持有；**两段式** native→lua 分发，各自名序、handler 报错记日志继续）。lua system 在 `WeiYuanHui::open` 从 store `systems` 表加载（D3）：`lib.` 前缀 = oneshot（加载期执行一次、返回 table 存 `_lib.<短名>`，D16），其余 = 事件响应型（`condition` 预编译为 `function(event) return (<expr>) end`，`""`/`"always"` 恒真，D15）。超时靠 `set_hook` 指令上限（`LUA_INSTRUCTION_LIMIT` 1M ≈ 50ms；condition 100K）；回调报错/中断后探针实例可用性（D13：可复用则仅记日志，不可用且有 store 则全量重建）。内置 `builtin.tick`（原 `exec_timers`：commands 空时取 `up_index.ctime` 最旧 uid 补 `fetch` + `bucket_hang`）。
 - 注意：`Client::new()` 直接使用 bilibili-api-rs 默认凭据，无持久化登录态。
+- 分发语义：dispatch 先收集 spec 再执行，故**本事件中途注册/注销/热加载的 system 从下一个事件起生效**（同一事件的 condition/回调看不到中途变更）。
 
 ## `store.rs` — redb 持久化（1880 行）
 

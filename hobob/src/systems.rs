@@ -30,6 +30,9 @@
 //! - registry 内部用 `Rc<RefCell<DynInner>>` 共享句柄（非 `Arc<Mutex>`）：dispatch 先把
 //!   待执行 spec 收集成 `Vec` 再逐个调用，lua 回调内 `ctx.admin.register_system` 等可
 //!   安全改写注册表（不持借用地重入）。句柄可克隆进 libcall ctx。
+//! - **分发期新注册的 system 不参与当前事件**：先收集后执行意味着本事件的执行列表已固定，
+//!   回调内 `register_system`/`unregister_system`/`reload_*` 从**下一个事件**起生效
+//!   （同一事件的 condition/回调不会看到中途注册的 system）。
 
 use crate::db::{Commands, Snapshot, WeiYuan};
 use crate::libcall;
