@@ -1458,7 +1458,8 @@ impl Default for WeiYuanHui {
         let (ev_tx, ev_rx) = broadcast::channel(64);
         let (publish, publish_dst) = watch::channel(Snapshot::new());
         let dynsys = DynSystemRegistry::new();
-        dynsys.register(builtin_tick());        Self {
+        dynsys.register(builtin_tick());
+        Self {
             updates,
             updates_src: Some(updates_src),
             publish,
@@ -2707,16 +2708,17 @@ mod tests {
         )
         .unwrap();
         let mut center = WeiYuanHui::open(store).unwrap();
-        assert!(center.has_lua_system("on_fetch"), "open 应加载 store systems");
+        assert!(
+            center.has_lua_system("on_fetch"),
+            "open 应加载 store systems"
+        );
         assert_eq!(
             center.dynsys_len(),
             2,
             "builtin.tick + on_fetch（oneshot 不参与 dispatch）"
         );
         let mut chair = center.new_chair();
-        chair
-            .apply(|b| b.follow(&json!({"uid": 12345})))
-            .unwrap();
+        chair.apply(|b| b.follow(&json!({"uid": 12345}))).unwrap();
         assert!(center.run().await);
         assert!(
             group_gids_of(center.bench(), 12345).is_empty(),
@@ -2762,7 +2764,10 @@ mod tests {
         )
         .unwrap();
         let mut center = WeiYuanHui::open(store).unwrap();
-        assert!(!center.reload_system("no.such").unwrap(), "未知 name → false");
+        assert!(
+            !center.reload_system("no.such").unwrap(),
+            "未知 name → false"
+        );
         // 直接改 store（hub 持同一 redb 文件句柄），再热加载
         center
             .store
@@ -2800,12 +2805,16 @@ mod tests {
         init();
         let dir = tempdir().unwrap();
         let path = dir.path().join("state.redb");
-        let store = store_with_lua_systems(&path, &[("a.x", "function(event, ctx) end", "")]).unwrap();
+        let store =
+            store_with_lua_systems(&path, &[("a.x", "function(event, ctx) end", "")]).unwrap();
         let mut center = WeiYuanHui::open(store).unwrap();
         assert!(center.has_lua_system("a.x"));
         center.store.as_ref().unwrap().delete_system("a.x").unwrap();
         center.reload_all().unwrap();
-        assert!(!center.has_lua_system("a.x"), "reload_all 清掉已删除的 system");
+        assert!(
+            !center.has_lua_system("a.x"),
+            "reload_all 清掉已删除的 system"
+        );
         assert_eq!(center.dynsys_len(), 1, "native builtin.tick 保留");
         center.close();
     }
@@ -2826,9 +2835,7 @@ mod tests {
             }),
         });
         let mut chair = center.new_chair();
-        chair
-            .apply(|b| b.follow(&json!({"uid": 12345})))
-            .unwrap();
+        chair.apply(|b| b.follow(&json!({"uid": 12345}))).unwrap();
         assert!(center.run().await);
         chair
             .apply(|b| b.force_silence(&json!({"uid": 12345})))
