@@ -117,8 +117,9 @@ const KV_LOG: TableDefinition<u64, &[u8]> = TableDefinition::new("kv:log");
 pub const FORMAT_MAGIC: u64 = 0x484F4242;
 /// 布局级版本：表集合/键编码变化才 bump（与每表记录版本是两个维度）。
 /// M0 = 1；M1 = 2（新增 `ec:group` 表，升级钩子见 `upgrade_layout_1_to_2`）；
-/// M2 = 3（新增 `kv:log` 表，升级钩子见 `upgrade_layout_2_to_3`）。
-pub const SCHEMA_VERSION: u64 = 3;
+/// M2 = 3（新增 `kv:log` 表，升级钩子见 `upgrade_layout_2_to_3`）；
+/// M3 = 4（无新表，仅标记 + `systems` 表兼容性校验，升级钩子见 `upgrade_layout_3_to_4`）。
+pub const SCHEMA_VERSION: u64 = 4;
 const META_FORMAT_MAGIC: &str = "format_magic";
 const META_SCHEMA_VERSION: &str = "schema_version";
 const META_NEXT_ENTITY_ID: &str = "next_entity_id";
@@ -454,6 +455,7 @@ fn validate_and_repair_meta(db: &Database, path: &std::path::Path) -> Result<()>
             match cur {
                 1 => upgrade_layout_1_to_2(&txn)?,
                 2 => upgrade_layout_2_to_3(&txn)?,
+                3 => upgrade_layout_3_to_4(&txn)?,
                 _ => bail!("missing layout upgrade hook from {cur}"),
             }
             cur += 1;
@@ -485,6 +487,14 @@ fn upgrade_layout_1_to_2(txn: &WriteTransaction) -> Result<()> {
 fn upgrade_layout_2_to_3(txn: &WriteTransaction) -> Result<()> {
     txn.open_table(KV_LOG)
         .map_err(|e| anyhow!("upgrade layout 2 -> 3: open kv:log table: {e}"))?;
+    Ok(())
+}
+
+/// 布局 3 → 4：M3 无新增表，仅校验 `systems` 表可打开（D10 轻量 bump——标记 M3 布局已部署，
+/// `SystemSpecV1` 结构本身不 bump，见 D11）。幂等：已升到 4 的库不会走到这里。
+fn upgrade_layout_3_to_4(txn: &WriteTransaction) -> Result<()> {
+    txn.open_table(SYSTEMS)
+        .map_err(|e| anyhow!("upgrade layout 3 -> 4: open systems table: {e}"))?;
     Ok(())
 }
 
@@ -788,8 +798,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_systems(&self) -> Result<Vec<SystemSpecV1>> {
-        let read = self.db.begin_read().context("begin read for list_systems")?;
+    /// M3 T4（D3/D10）：hub 启动/热加载全量读取动态 system——`WeiYuanHui::open_with` 与
+    /// `reload_all` 的唯一入口（systems 表无运行期查询用途，故不叫 `list_*`）。
+    /// migrate-on-read 由 `decode_envelope_to_current` 承担（`TableId::Systems` 当前 v1，
+    /// 无迁移钩子；`SystemSpecV1` 结构不 bump，见 D11）。
+    pub fn load_systems(&self) -> Result<Vec<SystemSpecV1>> {
+        let read = self
+            .db
+            .begin_read()
+            .context("begin read for load_systems")?;
         let table = match read.open_table(SYSTEMS) {
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
             Err(e) => return Err(anyhow!("open systems table: {e}")),
@@ -1488,7 +1505,7 @@ mod tests {
             .unwrap();
         let runtime: RuntimeV1 = decode_bincode(&runtime).unwrap();
         assert_eq!(runtime.fields, json!({"bucket": {"left": 5}}).to_string());
-        assert_eq!(store.list_systems().unwrap().len(), 1);
+        assert_eq!(store.load_systems().unwrap().len(), 1);
     }
 
     // ---------- T3 错误文件守卫 ----------
@@ -1871,11 +1888,11 @@ mod tests {
             ..spec.clone()
         })
         .is_err());
-        assert_eq!(store.list_systems().unwrap(), vec![spec]);
+        assert_eq!(store.load_systems().unwrap(), vec![spec]);
         assert_eq!(store.get_system("a").unwrap().unwrap().name, "a");
         store.delete_system("a").unwrap();
         assert!(store.get_system("a").unwrap().is_none());
-        assert!(store.list_systems().unwrap().is_empty());
+        assert!(store.load_systems().unwrap().is_empty());
 
         // 通过 raw 制造 key 与 value.name 不一致
         let mismatched = SystemSpecV1 {
@@ -2338,7 +2355,7 @@ mod tests {
     // ---------- T20 布局 2→3 升级（N9） ----------
 
     #[test]
-    fn t20_layout_v2_db_auto_upgrade_to_v3_idempotent() {
+    fn t20_layout_v2_db_auto_upgrade_to_current_idempotent() {
         let dir = tempdir().unwrap();
         let cfg = cfg_in(dir.path());
         // 手工构造 v2 布局库（M1：magic + schema_version=2 + next_entity_id，有 ec:group 表，无 kv:log 表）
@@ -2355,7 +2372,7 @@ mod tests {
             txn.open_table(EC_GROUP).unwrap();
             txn.commit().unwrap();
         }
-        // 首次 open：自动升到 SCHEMA_VERSION=3 且 kv:log 表可开（空表）
+        // 首次 open：自动升到当前 SCHEMA_VERSION 且 kv:log 表可开（空表）
         let store = Store::open_or_create(&cfg).unwrap();
         store.close().unwrap();
         {
@@ -2377,7 +2394,7 @@ mod tests {
         assert_eq!(store.log_len().unwrap(), 1);
         store.close().unwrap();
 
-        // 版本过高（schema > 3）仍拒开
+        // 版本过高（schema > SCHEMA_VERSION）仍拒开
         {
             let db = Database::open(&cfg.path).unwrap();
             let txn = db.begin_write().unwrap();
@@ -2391,10 +2408,10 @@ mod tests {
         assert!(format!("{err:#}").contains("数据文件比二进制新"));
     }
 
-    // ---------- T21 v1 库升到 v3（跨两级升级） ----------
+    // ---------- T21 v1 库升到当前版本（跨多级升级） ----------
 
     #[test]
-    fn t21_layout_v1_db_upgrades_to_v3() {
+    fn t21_layout_v1_db_upgrades_to_current() {
         let dir = tempdir().unwrap();
         let cfg = cfg_in(dir.path());
         {
@@ -2409,7 +2426,7 @@ mod tests {
             txn.commit().unwrap();
         }
         let store = Store::open_or_create(&cfg).unwrap();
-        // 两级升级：1→2→3，ec:group 和 kv:log 表都存在
+        // 逐级升级 1→2→3→4，ec:group 和 kv:log 表都存在
         store.close().unwrap();
         {
             let db = Database::open(&cfg.path).unwrap();
@@ -2423,6 +2440,52 @@ mod tests {
             assert!(read.open_table(EC_GROUP).is_ok());
             assert!(read.open_table(KV_LOG).is_ok());
         }
+    }
+
+    // ---------- T23 M3 布局 3 → 4（轻量 bump） ----------
+
+    #[test]
+    fn t23_layout_v3_db_auto_upgrade_to_v4_idempotent() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_in(dir.path());
+        let spec = SystemSpecV1 {
+            name: "a.upgraded".into(),
+            lua: "function(event, ctx) end".into(),
+            condition: String::new(),
+        };
+        // 手工构造 v3 布局库（M2：magic + schema_version=3 + next_entity_id + ec:group/kv:log；
+        // 刻意**不**建 systems 表——由 `upgrade_layout_3_to_4` 的 open_table 建立并校验）
+        {
+            let db = Database::create(&cfg.path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                meta.insert(META_FORMAT_MAGIC, FORMAT_MAGIC).unwrap();
+                meta.insert(META_SCHEMA_VERSION, 3).unwrap();
+                meta.insert(META_NEXT_ENTITY_ID, 2).unwrap();
+            }
+            txn.open_table(EC_GROUP).unwrap();
+            txn.open_table(KV_LOG).unwrap();
+            txn.commit().unwrap();
+        }
+        // 首次 open：3 → 4（缺升级钩子会 bail「missing layout upgrade hook from 3」）
+        let store = Store::open_or_create(&cfg).unwrap();
+        store.put_system(&spec).unwrap();
+        store.close().unwrap();
+        {
+            let db = Database::open(&cfg.path).unwrap();
+            let read = db.begin_read().unwrap();
+            let meta = read.open_table(META).unwrap();
+            assert_eq!(
+                meta.get(META_SCHEMA_VERSION).unwrap().unwrap().value(),
+                SCHEMA_VERSION
+            );
+            assert_eq!(read.open_table(SYSTEMS).unwrap().len().unwrap(), 1);
+        }
+        // 幂等：二次 open 不再升级，system 记录保留
+        let store = Store::open_or_create(&cfg).unwrap();
+        assert_eq!(store.load_systems().unwrap(), vec![spec]);
+        store.close().unwrap();
     }
 
     // ---------- T22 max_log_seq（T3 seq allocator 初始化） ----------

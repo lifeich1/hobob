@@ -184,6 +184,19 @@ pub struct Snapshot {
 /// 简易运行时错误日志（fetch/外部 apply 闭包外用）。
 pub struct BenchUpdate(Snapshot, Snapshot);
 
+/// T4 管理请求：www `/op/reload_system`、`/op/reload_all` → hub 线程。
+///
+/// `DynSystemRegistry` 持 `Rc<RefCell<_>>` + `Lua`（`!Send`），warp 工作线程不能直接调
+/// `WeiYuanHui::reload_system`；故 www 侧只投递请求（`WeiYuan::reload_*`），hub 在
+/// `run()` 每轮 drain 执行并记日志。
+#[derive(Debug)]
+pub enum AdminReq {
+    /// D4 热加载单个 system（store 中无此 spec 时记 warn）。
+    ReloadSystem(String),
+    /// D4 全量热加载（`_lib` 重置 + 全部 oneshot 重跑 + event 重编译，native 保留）。
+    ReloadAll,
+}
+
 impl Default for Snapshot {
     fn default() -> Self {
         let mut world = World::default();
@@ -1432,6 +1445,9 @@ fn persist_diff(store: &mut Store, base: &Snapshot, next: &Snapshot) -> Result<(
 pub struct WeiYuanHui {
     updates: mpsc::Receiver<BenchUpdate>,
     updates_src: Option<mpsc::Sender<BenchUpdate>>,
+    /// T4 管理请求（reload）接收端；hub `run()` 每轮 drain。
+    admin_rx: mpsc::Receiver<AdminReq>,
+    admin_tx: Option<mpsc::Sender<AdminReq>>,
     publish: watch::Sender<Snapshot>,
     publish_dst: Option<watch::Receiver<Snapshot>>,
     ev_tx: Option<broadcast::Sender<Events>>,
@@ -1455,6 +1471,7 @@ pub struct WeiYuanHui {
 impl Default for WeiYuanHui {
     fn default() -> Self {
         let (updates_src, updates) = mpsc::channel(64);
+        let (admin_tx, admin_rx) = mpsc::channel(16);
         let (ev_tx, ev_rx) = broadcast::channel(64);
         let (publish, publish_dst) = watch::channel(Snapshot::new());
         let dynsys = DynSystemRegistry::new();
@@ -1462,6 +1479,8 @@ impl Default for WeiYuanHui {
         Self {
             updates,
             updates_src: Some(updates_src),
+            admin_rx,
+            admin_tx: Some(admin_tx),
             publish,
             publish_dst: Some(publish_dst),
             ev_tx: Some(ev_tx),
@@ -1504,7 +1523,7 @@ impl WeiYuanHui {
         let mut h: Self = snap.into();
         h.kv_max = kv_max;
         // M3 T3（D3）：systems 表全量加载 + 编译注册（oneshot → event 三步骤）。
-        // list_systems 读取失败 = Err（调用方退出）；单条 spec 失败只记日志跳过。
+        // load_systems 读取失败 = Err（调用方退出）；单条 spec 失败只记日志跳过。
         h.dynsys.load_from_store(&store)?;
         h.store = Some(store);
         Ok(h)
@@ -1562,6 +1581,32 @@ impl WeiYuanHui {
         self.dynsys.load_from_store(store)
     }
 
+    /// T4：执行排队的 admin 请求（www `/op/reload_system`、`/op/reload_all`）。
+    ///
+    /// 非阻塞 drain：每轮 `run()` 清空队列；失败只记日志（HTTP 侧返回的是**投递**结果，
+    /// 与 v1 op 路由同为 fire-and-forget 风格）。
+    fn drain_admin(&mut self) {
+        loop {
+            let req = match self.admin_rx.try_recv() {
+                Ok(req) => req,
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                    return
+                }
+            };
+            match req {
+                AdminReq::ReloadSystem(name) => match self.reload_system(&name) {
+                    Ok(true) => log::info!("admin reload_system {name:?}: ok"),
+                    Ok(false) => log::warn!("admin reload_system {name:?}: not in store"),
+                    Err(e) => log::error!("admin reload_system {name:?} failed: {e:#}"),
+                },
+                AdminReq::ReloadAll => match self.reload_all() {
+                    Ok(()) => log::info!("admin reload_all: ok"),
+                    Err(e) => log::error!("admin reload_all failed: {e:#}"),
+                },
+            }
+        }
+    }
+
     /// 已注册动态 system 数（native + lua；观测/测试）。
     #[must_use]
     pub fn dynsys_len(&self) -> usize {
@@ -1594,6 +1639,7 @@ impl WeiYuanHui {
                 .as_ref()
                 .expect("new_chair in closing")
                 .clone(),
+            admin: self.admin_tx.clone(),
             bench: self.bench.clone(),
         }
     }
@@ -1601,6 +1647,12 @@ impl WeiYuanHui {
     #[must_use]
     pub const fn bench(&self) -> &Snapshot {
         &self.bench
+    }
+
+    /// 测试用：可变借用底层 store（`open` 后 `Some`）；生产路径不通过它读写。
+    #[cfg(test)]
+    pub(crate) fn store_mut(&mut self) -> Option<&mut Store> {
+        self.store.as_mut()
     }
 
     pub fn close(&mut self) {
@@ -1619,6 +1671,7 @@ impl WeiYuanHui {
             }
         }
         self.updates_src = None;
+        self.admin_tx = None;
         self.publish_dst = None;
         self.ev_tx = None;
         let mut next = self.bench.clone();
@@ -1636,6 +1689,8 @@ impl WeiYuanHui {
         if !self.try_update().await {
             return false;
         }
+        // T4：管理请求 drain（`/op/reload_*`）——registry 是 `!Send`，只能在 hub 线程执行。
+        self.drain_admin();
         // M2（D3）：日志镜像 drain 挂主循环轮询（与 maybe_flush 同点）。channel 有残余
         // 时批量 append + trim；失败只计数丢弃（drain_logs 内部处理），不阻塞主循环。
         if let (Some(rx), Some(store)) = (&mut self.log_rx, &mut self.store) {
@@ -1748,6 +1803,8 @@ impl WeiYuanHui {
 pub struct WeiYuan {
     update: Option<mpsc::Sender<BenchUpdate>>,
     fetch: watch::Receiver<Snapshot>,
+    /// T4 管理请求通道（reload）；`readonly()` / 关闭后为 None。
+    admin: Option<mpsc::Sender<AdminReq>>,
     bench: Snapshot,
 }
 
@@ -1756,6 +1813,7 @@ impl WeiYuan {
     pub fn readonly(&self) -> Self {
         Self {
             update: None,
+            admin: None,
             ..Clone::clone(self)
         }
     }
@@ -1845,6 +1903,34 @@ impl WeiYuan {
     pub fn log<S: ToString + ?Sized>(&mut self, level: i32, msg: &S) {
         self.update(|b| Ok(b.with_log(level, &msg.to_string())))
             .ok();
+    }
+
+    /// T4：请求 hub 热加载单个 system（D4，`/op/reload_system`）。
+    ///
+    /// 只投递——`DynSystemRegistry`（`Rc<RefCell<_>>` + `Lua`）是 `!Send`，warp 工作线程
+    /// 不能直接调 `WeiYuanHui::reload_system`；hub 在下一轮 `run()` 执行并记日志。
+    ///
+    /// # Errors
+    /// Throw if hub is closing / readonly chair / admin queue is full.
+    pub fn reload_system(&self, name: impl Into<String>) -> Result<()> {
+        self.admin_send(AdminReq::ReloadSystem(name.into()))
+    }
+
+    /// T4：请求 hub 全量热加载（D4，`/op/reload_all`）。语义同 `reload_system`。
+    ///
+    /// # Errors
+    /// Throw if hub is closing / readonly chair / admin queue is full.
+    pub fn reload_all(&self) -> Result<()> {
+        self.admin_send(AdminReq::ReloadAll)
+    }
+
+    fn admin_send(&self, req: AdminReq) -> Result<()> {
+        let tx = self
+            .admin
+            .as_ref()
+            .ok_or_else(|| anyhow!("admin request rejected: hub closing or readonly chair"))?;
+        tx.try_send(req)
+            .map_err(|e| anyhow!("admin request enqueue failed: {e}"))
     }
 
     pub fn count<S: ToString + ?Sized>(&mut self, msg: &S) {

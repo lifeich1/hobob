@@ -107,13 +107,42 @@ fn route_op(runner: &WeiYuan) -> BoxedFilter<(impl warp::Reply,)> {
     let op_toggle_group =
         warp::path!("toggle" / "group").and(create_op(runner, Snapshot::toggle_group));
     let op_new_group = warp::path!("touch" / "group").and(create_op(runner, Snapshot::touch_group));
+    // T4：热加载路由（D4）——不落快照，只向 hub 投递 `AdminReq`（registry 是 !Send），
+    // hub 下一轮 `run()` 执行；HTTP 返回的是投递结果（与其余 op 同为 fire-and-forget）。
+    let op_reload_system = {
+        let hdl = runner.clone();
+        warp::path!("reload_system")
+            .and(simpleapi())
+            .map(move |opt: Value| {
+                let r: Result<()> = opt["name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("reload_system: missing string field `name`"))
+                    .and_then(|name| hdl.reload_system(name));
+                reply::json(
+                    &r.map_or_else(|e| json!({"err": e.to_string()}), |()| json!("success")),
+                )
+            })
+    };
+    let op_reload_all = {
+        let hdl = runner.clone();
+        warp::path!("reload_all")
+            .and(simpleapi())
+            .map(move |_opt: Value| {
+                let r = hdl.reload_all();
+                reply::json(
+                    &r.map_or_else(|e| json!({"err": e.to_string()}), |()| json!("success")),
+                )
+            })
+    };
     warp::path("op")
         .and(
             op_follow
                 .or(op_refresh)
                 .or(op_silence)
                 .or(op_toggle_group)
-                .or(op_new_group),
+                .or(op_new_group)
+                .or(op_reload_system)
+                .or(op_reload_all),
         )
         .boxed()
 }
@@ -526,6 +555,111 @@ mod tests {
                 "removable": false,
             })
         );
+    }
+
+    /// T4：`/op/reload_system`、`/op/reload_all` 投递 → hub `run()` drain 执行（D4）。
+    #[tokio::test]
+    async fn test_op_reload_system_and_all() {
+        use crate::store::{Store, StoreConfig, SystemSpecV1};
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.redb");
+        let spec = |lua: &str| SystemSpecV1 {
+            name: "a.reload".into(),
+            lua: lua.into(),
+            condition: String::new(),
+        };
+        let store = Store::open_or_create(&StoreConfig::new(path)).unwrap();
+        store
+            .put_system(&spec(
+                "function(event, ctx) ctx.admin.follow(111, true) end",
+            ))
+            .unwrap();
+        let mut center = WeiYuanHui::open(store).unwrap();
+        assert!(center.has_lua_system("a.reload"), "open 加载 store systems");
+
+        // 运维改库（v2 回调），再经路由投递 reload
+        center
+            .store_mut()
+            .unwrap()
+            .put_system(&spec(
+                "function(event, ctx) ctx.admin.follow(222, true) end",
+            ))
+            .unwrap();
+        let mut init_chair = center.new_chair();
+        init_chair.log(0, "warm up");
+        assert!(center.run().await);
+        let app = build_app(&mut center);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/op/reload_system")
+            .json(&json!({"name": "a.reload"}))
+            .filter(&app)
+            .await
+            .unwrap()
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        assert_eq!(serde_json::from_str(&s).ok(), Some(json!("success")));
+        // `run()` 会阻塞等 updates 队列，而 reload 请求走独立 admin 通道 → 先 poke 一条
+        let mut poke = center.new_chair();
+        poke.log(0, "poke");
+        assert!(center.run().await, "hub drain admin 请求并执行 reload");
+
+        let mut chair = center.new_chair();
+        chair
+            .apply(|b| {
+                b.push_sys_event(json!({"kind": "tick"}));
+                Ok(())
+            })
+            .unwrap();
+        assert!(center.run().await);
+        assert!(
+            center.bench().res.uid_index.contains_key("222"),
+            "reload 后执行新回调"
+        );
+        assert!(!center.bench().res.uid_index.contains_key("111"));
+
+        // 缺 name：不投递，返回 err（路由层校验）
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/op/reload_system")
+            .json(&json!({}))
+            .filter(&app)
+            .await
+            .unwrap()
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = resp_to_st(resp).await;
+        assert!(
+            s.contains("missing string field"),
+            "缺 name 应返回 err: {s}"
+        );
+
+        // /op/reload_all：store 删除 spec 后全量重载 → registry 清空
+        center
+            .store_mut()
+            .unwrap()
+            .delete_system("a.reload")
+            .unwrap();
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/op/reload_all")
+            .json(&json!({}))
+            .filter(&app)
+            .await
+            .unwrap()
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let mut poke = center.new_chair();
+        poke.log(0, "poke");
+        assert!(center.run().await);
+        assert!(
+            !center.has_lua_system("a.reload"),
+            "reload_all 清掉已删除的 system"
+        );
+        center.close();
     }
 
     #[tokio::test]

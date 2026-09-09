@@ -442,7 +442,7 @@ impl DynSystemRegistry {
     /// 读取失败 = Err（调用方 `WeiYuanHui::open` 直接退出）；**单条 spec 编译/执行失败
     /// 只记日志跳过**，不阻断启动。
     pub fn load_from_store(&self, store: &Store) -> Result<()> {
-        let specs = store.list_systems().context("list_systems for dyn systems")?;
+        let specs = store.load_systems().context("load_systems for dyn systems")?;
         self.load_specs(&specs);
         Ok(())
     }
