@@ -540,6 +540,8 @@ impl DynSystemRegistry {
             }
         };
         for spec in specs {
+            // `specs` 是循环前克隆的快照：回调内 register/unregister/reload 以及
+            // `probe_after_error` 的全量重建都不影响本轮剩余 spec（仍按旧编译产物执行）。
             // D5 修复：每个 spec 一份只读副本——共享同一 table 时，任一 system 改写
             // `event.*` 会污染名序在后的 system。
             let event_tbl = match readonly_event_copy(&self.lua, &event_src) {
