@@ -12,7 +12,7 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 
 - 首次 clone 后：`git submodule update --init`（vendor/bilibili-api-rs 子模块）
 - 运行：`cargo run -p hobob -- --port 3731`（默认端口 3731；`--state <PATH>`/`HOBOB_STATE` 指定 v2 状态文件）
-- 测试：`cargo test -p hobob`（www.rs 路由 e2e、db 逻辑/持久化 roundtrip、systems fetch 循环、ecs 内核、chunk 解析器、store.rs redb 存储测试）
+- 测试：`cargo test -p hobob`（www.rs 路由 e2e、db 逻辑/持久化 roundtrip、systems fetch 循环与 lua 动态 system、ecs 内核、store.rs redb 存储测试、logkv 日志镜像、libcall lua 桥）
 - 交叉编译（部署 ARM 设备）：`cross build --bin hobob -r --target aarch64-unknown-linux-gnu`（容器配置见 `etc/`，需 podman/docker + cross；先确保子模块已 init）
 - 部署：scp 产物到 `opi:/lintd/`，用 `hobob_dbgconn restart` 重启
 - ⚠️ 以上 cargo/cross 命令须在 `nix develop` 的 devShell 内执行：本机直接 shell 无 `cargo`，`flake.nix` 自带 cargo/rustc/clippy/rustfmt；`nix develop -c` 可直接用（shellHook 已去 exec，自动开 `Session.vim` 仅限交互 tty，可 `HOBOB_NO_SESSION=1` 关闭）。工具链/依赖版本约束与坑详见 skill `hobob-nix`
@@ -28,8 +28,6 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 - `hobob/src/systems.rs`：基础 system（原 `engine.rs` 迁入）：`fetch_loop` 抓取循环 + 动态 system 框架（`TriggerEvent`/`DynSystemRegistry`：native→lua **两段式分发**、`lib.` 前缀 oneshot 库函数、condition 预编译求值、`set_hook` 指令上限超时；内置 `builtin.tick`）；事件经 db `#SYSEV#` 通道上报，hub 分发。
 - `hobob/src/libcall.rs`：lua↔Rust 桥（M3 T2/T3）：mlua 沙箱 + `ctx.admin`（直接改 `&mut Snapshot`，含 `register_system`/`unregister_system`/`reload_system`/`reload_all`）/`ctx.bapi`（`spawn_blocking` 同步桥 + 本地 5s 兜底超时）。lua 回调**同步跑在 hub 线程**（不开 mlua `send` feature，超时靠指令上限；D6 ② 的 `spawn_blocking` 隔离已按决议弃用，见 `.plans/m3-mlua-dynsys.md`）。
 - `hobob/src/data_schema.rs`：JSON schema 校验，schema 从远程 `https://lintd.xyz/hobob/*.json` 加载（离线 panic）。
-- `hobob/src/chunk.rs` + `chunkir.lalrpop`：Chunk AST + 解析器（测试用）。
-- `hobob/src/vm.rs`、`bench.rs`：未完成实验（`todo!()`），勿依赖。
 - `hobob_dbgconn/`：tarpc RPC 工具，远程 alive/restart hobob（端口 21321）。
 - `monkey/`：油猴脚本（已过时，调用的 `/get/user`、`/op/setliveurl` 路由当前不存在）。
 
@@ -45,7 +43,7 @@ B 站 UP 主关注管理 web app（Rust，*WIP*）。被 bibi&lili 踢出的 hob
 读（先索引、后深挖，按需加载）：
 - 4 层导航：本文件（常驻索引）→ 根 `README.md`（目录导航表 + 跨目录关键事实 + 构建运行）→ 各目录 `README.md`（模块导航：符号表/谁在用/坑/测试）→ `.agents/skills/hobob-*.md`（lib.rs 启动、nix 工具链专项，`run_skill` 按需加载，勿预读）。
 - 源码最后读、只读片段：按 README 符号表行号（如 `Snapshot` ~196）用 read_file offset/limit 定位；禁止通读大文件（`db/mod.rs` ~2.5k 行、`store.rs` ~1.9k 行、`www.rs` ~660 行——先读对应 README 小节）。
-- `target/` 勿读；标「已弃用/遗留」的（`xtask/`、`monkey/`、`assets/db_init.sql`）勿据此推断现状；坑与测试入口 README 已集中列，勿重读测试源码及 `vm.rs`/`bench.rs`。
+- `target/` 勿读；标「已弃用/遗留」的（`xtask/`、`monkey/`、`assets/db_init.sql`）勿据此推断现状；坑与测试入口 README 已集中列，勿重读测试源码。
 
 写（事实按层归属，不跨层复制）：
 - 跨目录 → 根 README「关键事实」；单模块 → 目录 README；深度背景 → skill；高频常驻 → 本文件。
