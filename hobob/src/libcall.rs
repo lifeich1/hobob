@@ -258,6 +258,7 @@ pub fn build_ctx_table<'scope>(
                 *err1.borrow_mut() = "register_system: 无 registry（内存 hub 不支持）".into();
                 return Ok(false);
             };
+            let saved = ds.saved_state(&name);
             if let Err(e) = ds.register_from_source(&name, &lua_src, &condition) {
                 *err1.borrow_mut() = format!("{e:#}");
                 return Ok(false);
@@ -269,8 +270,9 @@ pub fn build_ctx_table<'scope>(
                     condition,
                 };
                 if let Err(e) = store.put_system(&spec) {
-                    // 落盘失败回滚注册，避免内存/磁盘不一致（oneshot 一并清 `_lib.<短名>`）
-                    ds.unregister(&name);
+                    // 落盘失败回滚到**旧版本**：直接 unregister 会连带丢掉原本可用的 spec
+                    // （覆盖式注册已替换内存状态；oneshot 的旧 `_lib.<短名>` 一并回填）
+                    ds.restore_state(&name, saved);
                     *err1.borrow_mut() = format!("{e:#}");
                     return Ok(false);
                 }

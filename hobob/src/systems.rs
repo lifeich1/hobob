@@ -132,6 +132,19 @@ impl std::fmt::Debug for LuaSystemSpec {
     }
 }
 
+/// 单个 system 的内存注册状态快照（回滚用，见 `DynSystemRegistry::saved_state`）。
+///
+/// 落盘失败时 `restore_state` 据此**恢复旧版本**——直接 `unregister` 会把原本可用的
+/// 旧 spec 一并删掉（覆盖式注册已替换内存状态）。
+pub enum SavedState {
+    /// 原本无注册（回滚 = 删除）。
+    Absent,
+    /// event 型：旧编译产物。
+    Lua(LuaSystemSpec),
+    /// oneshot 型：`_lib.<短名>` 旧值（`Nil` = 原本无此条目）。
+    Oneshot(LuaValue),
+}
+
 /// registry 可变状态（`Rc<RefCell<_>>` 共享句柄，见模块文档）。
 struct DynInner {
     native_specs: BTreeMap<String, DynSystemSpec>,
@@ -375,6 +388,47 @@ impl DynSystemRegistry {
             }
         } else {
             self.inner.borrow_mut().lua_specs.remove(name).is_some()
+        }
+    }
+
+    /// 保存 `name` 当前的内存注册状态（供落盘失败回滚，libcall `register_system`）。
+    ///
+    /// 与 `unregister` 对偶：`Absent` 时回滚即删除，否则恢复旧编译产物 / 旧 `_lib` 值。
+    #[must_use]
+    pub fn saved_state(&self, name: &str) -> SavedState {
+        if is_oneshot(name) {
+            let short = &name[ONESHOT_PREFIX.len()..];
+            let inner = self.inner.borrow();
+            SavedState::Oneshot(inner.lib.raw_get(short).unwrap_or(LuaValue::Nil))
+        } else {
+            match self.inner.borrow().lua_specs.get(name) {
+                Some(spec) => SavedState::Lua(spec.clone()),
+                None => SavedState::Absent,
+            }
+        }
+    }
+
+    /// 回滚 `name` 到 `saved`（落盘失败时调用）。与 `unregister` 的差别：**恢复旧版本**
+    /// 而非删除——覆盖式注册已经替换了内存状态，删除会连带丢掉原本可用的 spec。
+    pub fn restore_state(&self, name: &str, saved: SavedState) {
+        match saved {
+            SavedState::Absent => {
+                self.unregister(name);
+            }
+            SavedState::Lua(spec) => {
+                self.inner.borrow_mut().lua_specs.insert(name.to_string(), spec);
+            }
+            SavedState::Oneshot(old) => {
+                let short = &name[ONESHOT_PREFIX.len()..];
+                let inner = self.inner.borrow();
+                let r = match old {
+                    LuaValue::Nil => inner.lib.raw_remove(short),
+                    other => inner.lib.set(short, other),
+                };
+                if let Err(e) = r {
+                    log::warn!("restore_state {name:?}: 回填 _lib.{short} 失败：{e}");
+                }
+            }
         }
     }
 
@@ -1411,6 +1465,59 @@ mod tests {
         reg.register_lua("a.x", "function(event, ctx) end", "")?;
         assert!(reg.unregister("a.x"), "event system 仍可注销");
         assert!(!reg.unregister("a.x"));
+        Ok(())
+    }
+
+    /// T3 修复：落盘失败的回滚须恢复**旧版本**，而不是把新注册删掉（那会连带丢掉旧 spec）。
+    #[test]
+    fn test_restore_state_rolls_back_to_previous() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+
+        // 1) event 型：v1 → v2 → 回滚到 v1
+        reg.register_lua(
+            "a.x",
+            "function(event, ctx) ctx.admin.follow(111, true) end",
+            "",
+        )?;
+        let saved = reg.saved_state("a.x");
+        reg.register_lua(
+            "a.x",
+            "function(event, ctx) ctx.admin.follow(222, true) end",
+            "",
+        )?;
+        reg.restore_state("a.x", saved);
+        let mut snap = Snapshot::new();
+        reg.dispatch(&TriggerEvent::Tick { at: Utc::now() }, &mut snap, None);
+        assert!(snap.res.uid_index.contains_key("111"), "回滚后执行旧回调");
+        assert!(!snap.res.uid_index.contains_key("222"), "新回调不再执行");
+
+        // 2) oneshot：`_lib.<短名>` 恢复旧值
+        reg.register_oneshot("lib.h", "return { tag = 1 }", "")?;
+        let saved = reg.saved_state("lib.h");
+        reg.register_oneshot("lib.h", "return { tag = 2 }", "")?;
+        reg.restore_state("lib.h", saved);
+        let tag: i64 = reg
+            .lua()
+            .load("return _lib.h.tag")
+            .eval()
+            .map_err(|e| anyhow!("{e}"))?;
+        assert_eq!(tag, 1, "oneshot 回滚应恢复旧 _lib 值");
+
+        // 3) 原本不存在（event / oneshot 两条路径）→ 回滚即删除
+        let absent = reg.saved_state("z.new");
+        reg.register_lua("z.new", "function(event, ctx) end", "")?;
+        reg.restore_state("z.new", absent);
+        assert!(!reg.contains_lua("z.new"), "原本无注册 → 回滚即删除");
+        let absent_lib = reg.saved_state("lib.none");
+        reg.register_oneshot("lib.none", "return {}", "")?;
+        reg.restore_state("lib.none", absent_lib);
+        let gone: bool = reg
+            .lua()
+            .load("return _lib.none == nil")
+            .eval()
+            .map_err(|e| anyhow!("{e}"))?;
+        assert!(gone, "原本无 _lib 条目 → 回滚即删除");
         Ok(())
     }
 
