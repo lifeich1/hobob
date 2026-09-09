@@ -269,8 +269,8 @@ pub fn build_ctx_table<'scope>(
                     condition,
                 };
                 if let Err(e) = store.put_system(&spec) {
-                    // 落盘失败回滚注册，避免内存/磁盘不一致
-                    ds.unregister_lua(&name);
+                    // 落盘失败回滚注册，避免内存/磁盘不一致（oneshot 一并清 `_lib.<短名>`）
+                    ds.unregister(&name);
                     *err1.borrow_mut() = format!("{e:#}");
                     return Ok(false);
                 }
@@ -288,7 +288,7 @@ pub fn build_ctx_table<'scope>(
             *err1.borrow_mut() = "unregister_system: 无 registry（内存 hub 不支持）".into();
             return Ok(false);
         };
-        let removed = ds.unregister_lua(&name);
+        let removed = ds.unregister(&name);
         if let Some(store) = store {
             if let Err(e) = store.delete_system(&name) {
                 *err1.borrow_mut() = format!("{e:#}");
@@ -737,6 +737,12 @@ mod tests {
                     local ok3 = ctx.admin.register_system("lib.bad", "return {}", "always")
                     assert(ok3 == false, "oneshot with condition must be rejected")
                     assert(#ctx.admin.last_error() > 0, "last_error should explain")
+                    -- oneshot 注销须清 `_lib.<短名>` 并删 store 记录（T3 修复）
+                    local ok4 = ctx.admin.unregister_system("lib.helper")
+                    assert(ok4, "oneshot unregister should succeed")
+                    -- 重复注销：false（store 删除幂等，不写 last_error）
+                    local ok5 = ctx.admin.unregister_system("lib.helper")
+                    assert(ok5 == false, "重复注销应返回 false")
                     "#,
                 )
                 .into_function()?;
@@ -749,7 +755,16 @@ mod tests {
         assert_eq!(spec.name, "test_sys");
         assert_eq!(spec.lua, "function(event, ctx) end");
         assert!(ds.contains_lua("test_sys"), "registry 应持有编译产物");
-        assert!(store.get_system("lib.helper")?.is_some(), "oneshot 落盘");
+        assert!(
+            store.get_system("lib.helper")?.is_none(),
+            "注销后 store 记录应删除"
+        );
+        let lib_gone: bool = ds
+            .lua()
+            .load("return _lib.helper == nil")
+            .eval()
+            .map_err(|e| anyhow!("{e}"))?;
+        assert!(lib_gone, "注销后 _lib.helper 应清除");
         assert!(store.get_system("lib.bad")?.is_none(), "非法 oneshot 不落盘");
         Ok(())
     }

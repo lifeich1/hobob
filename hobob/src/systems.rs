@@ -352,8 +352,30 @@ impl DynSystemRegistry {
     }
 
     /// 从注册表移除 lua system（native 不动）。返回是否真的移除了。
-    pub fn unregister_lua(&self, name: &str) -> bool {
-        self.inner.borrow_mut().lua_specs.remove(name).is_some()
+    ///
+    /// oneshot（`lib.` 前缀）不进 `lua_specs`，而是 `_lib.<短名>` 条目——必须一并清掉，
+    /// 否则 `unregister_system("lib.x")` 会「store 删了、内存还在」，落盘失败的回滚也成空操作。
+    pub fn unregister(&self, name: &str) -> bool {
+        if is_oneshot(name) {
+            let short = &name[ONESHOT_PREFIX.len()..];
+            let inner = self.inner.borrow();
+            match inner.lib.contains_key(short) {
+                Ok(false) => false,
+                Ok(true) => match inner.lib.raw_remove(short) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("unregister {name:?}: 清理 _lib.{short} 失败：{e}");
+                        false
+                    }
+                },
+                Err(e) => {
+                    log::warn!("unregister {name:?}: 探测 _lib.{short} 失败：{e}");
+                    false
+                }
+            }
+        } else {
+            self.inner.borrow_mut().lua_specs.remove(name).is_some()
+        }
     }
 
     // ---------- 加载 / 热加载 ----------
@@ -1367,6 +1389,28 @@ mod tests {
             .register_oneshot("lib.good", "return { f = function() return 1 end }", "")
             .is_ok());
         assert!(!reg.contains_lua("lib.good"), "oneshot 不入 lua_specs");
+        Ok(())
+    }
+
+    /// T3 修复：`unregister` 须同时覆盖 oneshot（它不在 `lua_specs`，而在 `_lib.<短名>`）。
+    #[test]
+    fn test_unregister_oneshot_clears_lib() -> anyhow::Result<()> {
+        init();
+        let reg = DynSystemRegistry::new();
+        reg.register_oneshot("lib.helper", "return { ping = function() return 1 end }", "")?;
+        assert!(reg.unregister("lib.helper"), "已注册的 oneshot 应报告移除成功");
+        let gone: bool = reg
+            .lua()
+            .load("return _lib.helper == nil")
+            .eval()
+            .map_err(|e| anyhow!("{e}"))?;
+        assert!(gone, "_lib.helper 应被清除");
+        assert!(!reg.unregister("lib.helper"), "重复注销返回 false");
+        assert!(!reg.unregister("lib.never"), "未注册的 oneshot 返回 false");
+        // event system 走原 lua_specs 路径
+        reg.register_lua("a.x", "function(event, ctx) end", "")?;
+        assert!(reg.unregister("a.x"), "event system 仍可注销");
+        assert!(!reg.unregister("a.x"));
         Ok(())
     }
 
