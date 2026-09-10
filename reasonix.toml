@@ -1,0 +1,5 @@
+# 项目级 Reasonix 配置（优先级高于 ~/.reasonix/config.toml）。
+# 声明本 repo 为 read/write safe：写操作无需逐次确认（全局默认 mode = "ask"）。
+# 如需收紧：mode 可改回 "ask"，或加 deny/ask 精确规则（deny > ask > allow > fallback）。
+[permissions]
+mode = "allow"
