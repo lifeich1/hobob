@@ -1,6 +1,6 @@
-# hobob/src/db — 数据中枢（`mod.rs` 1794 行，核心）
+# hobob/src/db — 数据中枢（`mod.rs` 3094 行，核心）
 
-v1 **实际使用的数据层**（v2 `../store.rs` 尚未接管）。本页是模块导航：先定位到符号/小节，再决定是否深挖源码，避免通读全文件。
+数据层：`Snapshot`（ECS `world` + `res` 内存索引）+ `WeiYuanHui`/`WeiYuan` 通道；持久化路径自 T4 起由 `../store.rs`（redb）接管。本页是模块导航：先定位到符号/小节，再决定是否深挖源码，避免通读全文件。
 
 ## 架构（M1 · 方案 `.plans/m1-ecs-core.md`）
 
@@ -15,10 +15,10 @@ v1 **实际使用的数据层**（v2 `../store.rs` 尚未接管）。本页是�
 
 | 符号 | 作用 |
 | --- | --- |
-| `Snapshot`（~172）`Resources`（~149） | 权威/视图数据单元 + 内存索引/队列 |
-| `Brick`/`LivePost`/`VideoPost`/`CommentPost`（~52–112） | up 实体组件（字段语义见方案 §4.3；`pick_*` 反投影回 v1 JSON 形状） |
-| `WeiYuanHui`（~1018） | hub：`load`/`new_chair`/`listen_events`/`close`（`From<Snapshot>` 构造） |
-| `WeiYuan`（~1187） | chair：`recv` 读快照、`update`/`apply` 提交闭包修改、`log`/`count` 记日志计数、`readonly` |
+| `Snapshot`（~179）`Resources`（~156） | 权威/视图数据单元 + 内存索引/队列 |
+| `Brick`/`LivePost`/`VideoPost`/`CommentPost`/`GroupInfo`（~59–156） | up/group 实体组件（字段语义见方案 §4.3；`pick_*` 反投影回 v1 JSON 形状） |
+| `WeiYuanHui`（~1440） | hub：`open`/`new_chair`/`listen_events`/`close`/`run`（`From<Snapshot>` 构造） |
+| `WeiYuan`（~1803） | chair：`recv` 读快照、`update`/`apply` 提交闭包修改、`log`/`count` 记日志计数、`readonly` |
 | `Snapshot` 方法（impl 自 ~203） | 业务：`follow`/`refresh`/`force_silence`/`toggle_group`/`touch_group`/`users_pick`/`filter_options`/`apply_fetch`；bucket 节奏：`bucket_duration_to_next`/`good`/`hang`/`double_gap`；查询：`runtime_get`/`runtime_set_field`/`pick_of` |
 | 自由函数（~941–995） | `now_timestamp`、`pick_basic`/`pick_live`/`pick_video`（engine 写回时精简字段） |
 
@@ -40,4 +40,4 @@ v1 **实际使用的数据层**（v2 `../store.rs` 尚未接管）。本页是�
 
 ## 测试
 
-`mod tests`（`mod.rs` ~1311–1794，约 480 行）：runtime dump 节流、通道提交/冲突 abort、排序与业务逻辑。入口：`cargo test -p hobob`。
+`mod tests`（`mod.rs` ~1958–3094）：runtime dump 节流、通道提交/冲突 abort、排序与业务逻辑、lua system 加载/热加载/分组持久化。入口：`cargo test -p hobob`。

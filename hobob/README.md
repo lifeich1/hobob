@@ -21,7 +21,6 @@ B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程�
 | `src/www.rs` | warp 路由、tera 渲染、SSE、boon schema 校验 |
 | `src/data_schema.rs` | JSON schema 编译（boon），schema 从 `https://lintd.xyz/hobob/` 远程加载 |
 | `src/bin/perf_smoke.rs` | M1 性能冒烟 bin（200 up × 10 轮 fetch 突发，release 运行，见 `.plans/m1-ecs-core.md` §7） |
-| `src/bin/show_expect_value.rs` | 辅助 bin：打印 Chunk AST 示例 JSON |
 | `templates/` | tera HTML 模板；debug 从磁盘加载，release 编译期 `include_str!` 内嵌（`src/www.rs` `TERA`） |
 | `static/` | 前端静态资源（`index.js` 用 jQuery 加载卡片/筛选/标签页，`favicon.ico`） |
 | `assets/` | `log4rs.yml`（日志配置模板，含 `hobob_kv` appender；首启复制到 `~/log4rs.yml`，M2 旧模板缺 `hobob_kv` 时 prepare_log 会 `log::warn` 提示，自动降级不阻止启动）、`db_init.sql`（**遗留**，当前不用 SQLite） |
@@ -58,6 +57,8 @@ B 站 UP 主关注管理 web app（workspace 唯一成员 crate）。单进程�
 | POST | `/op/silence` | 静默（bucket gap 翻倍） |
 | POST | `/op/toggle/group` | 把 UP 主移入/移出分组，body `{"uid", "gid"}` |
 | POST | `/op/touch/group` | 新建分组，body `{"gid", "pin", "name"}` |
+| POST | `/op/reload_system` | 热加载单个动态 system，body `{"name": "..."}`（投递到 hub，fire-and-forget） |
+| POST | `/op/reload_all` | 全量热加载动态 system（`_lib` 重置 + 全部 oneshot/event 重编译） |
 | GET | `/card/one/{uid}` | 单个 UP 主卡片 HTML |
 | GET | `/card/ulist/{gid}/{order}/{start}/{len}` | 分组内用户卡片列表 HTML（分页） |
 | GET | `/card/filter/options` | 分组筛选下拉选项 HTML |
@@ -83,6 +84,7 @@ cargo test -p hobob
 - `store.rs` tests：空库初始化/样例 roundtrip/错文件守卫/codec/迁移链（含 brick V1→V2）/版本过高拒绝/entity id/直写/批量 flush 四路径/group CRUD/布局 1→2 升级/list_* 全量（T1–T16）/kv:log 追加/裁剪/查询/升级到 3（T17–T22）
 - `logkv.rs` tests：自定义 appender 结构/黑名单/满丢弃/模板检查/业务级别映射/drain 批写裁剪（T2–T3，含 `logkv_global` 集成测试）
 - `tests/logkv_e2e.rs`：M2 T4 端到端——真实 log4rs logger + hub 业务镜像 → kv:log 查询（N4 防递归/N5 双写同源/N7 业务镜像，独立进程）
+- `tests/mlua_e2e.rs`：M3 T5 端到端（独立进程）——跨 store reopen 真实重启（systems 表重编译注册 + 分组持久化）、www 路由投递链路（`/op/reload_system`·`/op/reload_all`）、沙箱拒绝（os/io/require/loadfile/dofile/debug/package）
 
 ## 已知坑
 

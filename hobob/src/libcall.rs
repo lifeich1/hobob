@@ -42,6 +42,12 @@ pub fn new_sandbox() -> mlua::Result<Lua> {
     // mlua 未给 StdLib 实现 `Not`/`Sub`，写不出真正的差集。
     let libs = StdLib::ALL_SAFE ^ (StdLib::IO | StdLib::OS | StdLib::PACKAGE);
     let lua = Lua::new_with(libs, Default::default())?;
+    // D7 补漏：`loadfile`/`dofile` 属 base 库，`StdLib` 掩码去不掉，但它们**能读文件系统**
+    // （`loadfile(path)` 直接读盘），与「不提供文件系统访问」冲突 → 显式置 nil。
+    // `load`（纯字符串编译、无 FS 访问）保留。
+    let globals = lua.globals();
+    globals.set("loadfile", mlua::Value::Nil)?;
+    globals.set("dofile", mlua::Value::Nil)?;
     register_json_globals(&lua)?;
     Ok(lua)
 }
