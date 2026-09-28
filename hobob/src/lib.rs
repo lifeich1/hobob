@@ -6,6 +6,7 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 macro_rules! vpath {
     () => {
@@ -46,6 +47,7 @@ macro_rules! schema_uri {
 mod data_schema;
 pub mod db;
 pub mod ecs;
+pub mod keepalive;
 pub mod libcall;
 pub mod logkv;
 pub mod store;
@@ -104,6 +106,12 @@ struct Flags {
     /// KV 日志留存上限（条数，超限裁剪最旧）；0 = 不裁剪
     #[arg(long, env = "HOBOB_LOG_KV_MAX", default_value_t = logkv::DEFAULT_KV_LOG_MAX)]
     log_kv_max: u64,
+    /// 心跳周期（秒，M4/D8；发往 hobob_watchdog，见 keepalive.rs）；0 = 禁用心跳
+    #[arg(long, env = "HOBOB_HEARTBEAT_INTERVAL", default_value_t = 2)]
+    heartbeat_interval: u64,
+    /// 心跳/停机通知走哪个 D-Bus（M4/D3；开发调试用 session，须与 watchdog 侧一致）
+    #[arg(long, env = "HOBOB_BUS", value_enum, default_value_t = keepalive::Bus::default())]
+    bus: keepalive::Bus,
 }
 
 /// # Errors
@@ -146,12 +154,41 @@ pub async fn main_loop() -> Result<()> {
     }
 
     // hub 调度循环（M1 §4.5）：消费 chairs 提交（try_push 内含持久化 diff）→ 每轮 maybe_flush；
-    // Ctrl+C 在循环内 close()（closing 标志发布 → www/engine 优雅退出 → closed()）。
-    let mut shutdown = Box::pin(tokio::signal::ctrl_c());
+    // Ctrl+C/SIGTERM 在循环内 close()（closing 标志发布 → www/engine 优雅退出 → closed()）。
+    // M4/T1（D4/D8）：select! 新增 1s tick 分支 touch 活跃度计数器——hub 空闲时阻塞在
+    // updates.recv() 无轮次，tick 是「select! 循环存活」的直接证据；心跳任务独立 spawn，
+    // 只读计数器不碰 hub（§4.3）。SIGTERM 并入 shutdown：watchdog 拉起流程先发 SIGTERM，
+    // 不捕获会绕过停机强刷（§4.3 双信号问题）。
+    let liveness = keepalive::Liveness::new();
+    let heartbeat_interval = Duration::from_secs(flags.heartbeat_interval);
+    if keepalive::enabled(heartbeat_interval) {
+        tokio::spawn(keepalive::run_heartbeat(
+            liveness.clone(),
+            flags.bus,
+            heartbeat_interval,
+        ));
+    }
+    async fn shutdown_signal() {
+        use tokio::signal::unix::SignalKind;
+        let mut term =
+            tokio::signal::unix::signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => log::error!("Caught ^C, quiting"),
+            _ = term.recv() => log::error!("Caught SIGTERM, quiting"),
+        }
+    }
+    let mut shutdown = Box::pin(shutdown_signal());
+    let mut tick = tokio::time::interval(keepalive::protocol::TICK);
     loop {
         tokio::select! {
+            _ = tick.tick() => liveness.touch(),
             _ = &mut shutdown => {
-                log::error!("Caught ^C, quiting");
+                // M4/D7：进 shutdown 分支立即发 Bye，先于 close()——强刷期间 tick 已停、
+                // seq 冻结，close() 耗时接近 stall_timeout 时 watchdog 会对优雅停机中的
+                // hobob 发起拉起；发不出仅 log 不影响退出。interval=0 时跳过（心跳禁用）。
+                if keepalive::enabled(heartbeat_interval) {
+                    keepalive::send_bye(flags.bus, "graceful shutdown").await;
+                }
                 center.close();
                 break;
             }
