@@ -3,9 +3,10 @@
 //! - [`Liveness`]：单调毫秒计数器（进程启动 `Instant` 起 elapsed），由 `main_loop`
 //!   的 1s tick 分支 `touch`。**非墙钟**——NTP 回拨会让墙钟 seq 变小/持平，
 //!   无 RTC 的 ARM 设备会误判停滞（`.plans/m4-keepalive-watchdog.md` D4）。
-//! - [`run_heartbeat`]：独立 tokio 任务，按 interval 读计数器发 `Heartbeat(seq)`；
+//! - [`run_heartbeat`]：独立 tokio 任务，按 interval 读计数器发
+//!   `Heartbeat(hub_seq, fetch_seq)`（D13：fetch_loop 探活复用心跳消息）；
 //!   连不上 watchdog 仅告警退避重连，不 fatal（D2）；单轮调用外包
-//!   [`protocol::HEARTBEAT_TIMEOUT`]，卡死只影响单轮心跳。
+//!   [`protocol::RPC_TIMEOUT`]，卡死只影响单轮心跳。
 //! - [`send_bye`]：优雅停机通知。`main_loop` 进入 shutdown 分支**立即**发，先于
 //!   `close()`——强刷期间 tick 已停、seq 冻结，`close()` 耗时接近 `stall_timeout`
 //!   时 watchdog 会对优雅停机中的 hobob 发起拉起（D7）。
@@ -113,8 +114,9 @@ impl Liveness {
     default_path = "/xyz/lintd/hobob/Watchdog"
 )]
 trait Watchdog1 {
-    /// hobob 周期心跳；seq = 活跃度单调毫秒（D4）。
-    fn heartbeat(&self, seq: u64) -> zbus::Result<()>;
+    /// hobob 周期心跳；hub_seq = 主循环活跃度单调毫秒（D4），
+    /// fetch_seq = fetch_loop 活跃度单调毫秒（D13：fetch 探活复用心跳消息）。
+    fn heartbeat(&self, hub_seq: u64, fetch_seq: u64) -> zbus::Result<()>;
     /// 优雅停机通知；watchdog 置 Bye 不再拉起（D7）。
     fn bye(&self, reason: &str) -> zbus::Result<()>;
 }
@@ -130,12 +132,19 @@ async fn connect(bus: Bus) -> zbus::Result<Watchdog1Proxy<'static>> {
     Watchdog1Proxy::builder(&conn).build().await
 }
 
-/// 心跳发送循环（D2/D4/D8）：连接失败/调用失败均退避重连（1s→30s），不 fatal；
-/// 连接成功后按 interval 发 `Heartbeat(seq)`，seq 取自 [`Liveness`]。
+/// 心跳发送循环（D2/D4/D8/D13）：连接失败/调用失败均退避重连（1s→30s），不 fatal；
+/// 连接成功后按 interval 发 `Heartbeat(hub_seq, fetch_seq)`——hub_seq 取自 hub
+/// 主循环的 [`Liveness`]，fetch_seq 取自 fetch_loop 的 [`Liveness`]（D13：fetch
+/// 探活复用心跳消息，watchdog 对两路 seq 各自独立判停滞）。
 ///
 /// backoff 仅在 heartbeat 成功后重置——连接成功不算，避免 watchdog 已激活但
 /// 调用持续失败时以固定 1Hz hammer D-Bus。
-pub async fn run_heartbeat(liveness: Liveness, bus: Bus, interval: Duration) {
+pub async fn run_heartbeat(
+    liveness: Liveness,
+    fetch_liveness: Liveness,
+    bus: Bus,
+    interval: Duration,
+) {
     let mut backoff = protocol::RECONNECT_MIN;
     loop {
         let proxy = match connect(bus).await {
@@ -149,8 +158,14 @@ pub async fn run_heartbeat(liveness: Liveness, bus: Bus, interval: Duration) {
         };
         loop {
             tokio::time::sleep(interval).await;
-            let seq = liveness.get();
-            match tokio::time::timeout(protocol::RPC_TIMEOUT, proxy.heartbeat(seq)).await {
+            let hub_seq = liveness.get();
+            let fetch_seq = fetch_liveness.get();
+            match tokio::time::timeout(
+                protocol::RPC_TIMEOUT,
+                proxy.heartbeat(hub_seq, fetch_seq),
+            )
+            .await
+            {
                 Ok(Ok(())) => {
                     backoff = protocol::RECONNECT_MIN;
                     continue;
@@ -202,6 +217,17 @@ mod tests {
         let l2 = l.clone();
         l2.touch();
         assert_eq!(l.get(), l2.get(), "clone 共享同一计数器");
+    }
+
+    #[test]
+    fn liveness_instances_are_independent() {
+        // D13：hub 与 fetch_loop 各持一个 Liveness，touch 互不干扰。
+        let hub = Liveness::new();
+        let fetch = Liveness::new();
+        let hub_before = hub.get();
+        std::thread::sleep(Duration::from_millis(5));
+        fetch.touch();
+        assert_eq!(hub.get(), hub_before, "fetch touch 不影响 hub 计数器");
     }
 
     #[test]

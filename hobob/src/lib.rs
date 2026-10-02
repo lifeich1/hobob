@@ -145,11 +145,15 @@ pub async fn main_loop() -> Result<()> {
         });
     }
 
+    // M4/D13：fetch_loop 探活——独立 Liveness 随心跳上报（fetch_seq），
+    // fetch 卡死时 fetch_seq 冻结触发 watchdog 停滞拉起。
+    let fetch_liveness = keepalive::Liveness::new();
     {
         let chair = center.new_chair();
+        let fl = fetch_liveness.clone();
         tokio::spawn(async move {
             log::info!("engine starting");
-            systems::fetch_loop(chair).await;
+            systems::fetch_loop(chair, fl).await;
             log::info!("engine stopped");
         });
     }
@@ -165,6 +169,7 @@ pub async fn main_loop() -> Result<()> {
     if keepalive::enabled(heartbeat_interval) {
         tokio::spawn(keepalive::run_heartbeat(
             liveness.clone(),
+            fetch_liveness,
             flags.bus,
             heartbeat_interval,
         ));

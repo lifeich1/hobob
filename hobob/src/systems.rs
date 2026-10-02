@@ -867,9 +867,13 @@ fn next_deadline(runner: &mut WeiYuan) -> Instant {
 
 /// fetch 系统主循环（原 `engine::main_loop` 平移）：commands 有则执行，空则向 hub 发
 /// `Tick` 事件（builtin.tick 补抓）；bucket 节奏（deadline）由 v1 语义保留。
-pub async fn fetch_loop(mut runner: WeiYuan) {
+///
+/// M4/D13：每轮循环开头 `liveness.touch()`——fetch_loop 独立任务的活跃度证据，
+/// 随心跳消息上报 watchdog（fetch_seq）；fetch 卡死时 fetch_seq 冻结触发停滞拉起。
+pub async fn fetch_loop(mut runner: WeiYuan, liveness: crate::keepalive::Liveness) {
     let mut client = Client::new();
     while let Ok(bench) = runner.recv().cloned() {
+        liveness.touch();
         log::trace!("engine_loop wake");
         if bench.res.commands.is_empty() {
             // v1 exec_timers 语义移交 builtin.tick：仅请求节拍，补抓由 hub 分发完成
@@ -983,9 +987,14 @@ mod tests {
             async {
                 assert!(runner.recv().is_ok());
                 log::info!("start engine");
-                assert!(timeout(Duration::from_millis(400), fetch_loop(runner))
+                assert!(
+                    timeout(
+                        Duration::from_millis(400),
+                        fetch_loop(runner, crate::keepalive::Liveness::new())
+                    )
                     .await
-                    .is_ok());
+                    .is_ok()
+                );
             }
         );
     }

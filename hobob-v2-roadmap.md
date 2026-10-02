@@ -22,7 +22,7 @@
 2. **动态 system**：触发事件 = fetch 完成（成功/失败）、UP 主状态变更（关注/取关/静默/分组）、定时 tick（日志事件不入选）；执行注册的 lua 回调，先串行（带超时），后期按需并行；**定时 tick 接管 v1 `exec_timers` 的补抓调度，bucket 速率控制保留**。
 3. **KV 数据库**（redb）两类表：动态 system 表（k: name → v: lua callback + condition）；EC 数据表（k: entity id → `brick`（基础资料 + 管理状态）/ `videoPost` `livePost` `commentPost` `runtime`）。写入策略：brick 直写，易变表批量 flush（M1 细化）。
 4. **libcall** 两组：**admin**（增删 entity＝关注/取关、管理动态 system、管理 entity 分组）、**bapi**（info 拉取、video list、xlive 推荐；复用 bilibili-api-rs，缺失接口回补）。
-5. **保活**：zbus（D-Bus）向自研/既有 watchdog 守护进程发心跳；**心跳由独立 tokio 任务发送，携带主循环活跃度——主循环停滞超阈值时主动报障，watchdog 感知并拉起**；**`hobob_dbgconn` 与主进程内嵌 tarpc server（端口 21321）退役，远程 alive/restart 由 watchdog 承接**；接口协议在 M4 定义。
+5. **保活**：zbus（D-Bus）向自研/既有 watchdog 守护进程发心跳；**心跳由独立 tokio 任务发送，携带主循环与 fetch_loop 两路活跃度——任一停滞超阈值时主动报障，watchdog 感知并拉起**；**`hobob_dbgconn` 与主进程内嵌 tarpc server（端口 21321）退役，远程 alive/restart 由 watchdog 承接**；接口协议在 M4 定义。
 6. **mlua**：嵌入 Lua，实现"动态超控"（脚本化逻辑）。
 7. **日志系统**：log4rs appender 收集所有日志，附带写入 ECS-KV；**appender 与存储层自身日志只走文件，不入 KV（防递归）**。
 8. **界面**：leptos + axum，WebSocket server push（leptos websocket example 模式）；**渲染模式 CSR（默认），不做 SSR+hydration，服务端只做 API + WS + 静态资源**；SSE 保留为外部事件流，界面走 WS。
@@ -77,7 +77,7 @@
 
 ### M4 — 保活（zbus 心跳）（S）
 
-- [ ] 引入 `zbus`：**心跳由独立 tokio 任务发送（与 ECS 主循环解耦）；心跳携带主循环活跃度（循环序号/最后 tick 时间），停滞超阈值时主动报障，watchdog 感知并拉起**；定义 D-Bus service 名/接口与心跳间隔、超时协议（细化点）。
+- [ ] 引入 `zbus`：**心跳由独立 tokio 任务发送（与 ECS 主循环解耦）；心跳携带主循环与 fetch_loop 两路活跃度（循环序号/最后 tick 时间），任一停滞超阈值时主动报障，watchdog 感知并拉起**；定义 D-Bus service 名/接口与心跳间隔、超时协议（细化点）。
 - [ ] **`hobob_dbgconn` 退役**：移除主进程内嵌 tarpc server（端口 21321）与 `hobob_dbgconn/` crate；远程 alive/restart 由 watchdog 承接（人工运维走 SSH/systemd）。
 - [ ] 心跳停止/异常退出路径：优雅停机 vs watchdog 强杀；redb 崩溃恢复 + 易变表未 flush 数据兜底；误杀恢复演练。
 - [ ] 界面层 WS 断线重连与保活协同。
@@ -128,7 +128,7 @@
 | 14 | 日志防递归 | appender 与存储层自身日志只走文件，不入 KV | §2.7 |
 | 15 | 渲染模式 | CSR（默认），不做 SSR+hydration | §2.8 |
 | 16 | schema 时机 | 随 M5 API 重设计一并废弃远程 boon schema | §2.9 |
-| 17 | 心跳与故障感知 | 独立 tokio 任务发心跳 + 携带主循环活跃度，停滞超阈值主动报障 | §2.5 |
+| 17 | 心跳与故障感知 | 独立 tokio 任务发心跳 + 携带主循环与 fetch_loop 两路活跃度，任一停滞超阈值主动报障 | §2.5 |
 | 18 | bench.json 迁移 | 非生产数据，迁移工具暂缓（当前不讨论） | — |
 
 **剩余待细化点**（进入对应阶段时细化）：

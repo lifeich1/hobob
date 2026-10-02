@@ -19,9 +19,10 @@
 - **坑：seq 是单调毫秒非墙钟**——`Liveness` 值 = 进程启动 `Instant` 起 elapsed；NTP 回拨会让墙钟 seq 变小，无 RTC 的 ARM 设备会误判停滞（D4）。
 - **坑：SIGTERM 必须并入 shutdown**——`shutdown_signal()` 同时捕获 ctrl_c 与 SIGTERM；watchdog 拉起流程先发 SIGTERM，不捕获会绕过停机强刷（§4.3 双信号问题）。
 - **坑：Bye 先于 `close()`**——强刷期间 tick 已停、seq 冻结，若等 `close()` 返回再发，`close()` 耗时接近 `stall_timeout`(6s) 时 watchdog 会对优雅停机中的 hobob 拉起（D7）。
-- 符号：`Bus`（system/session，clap ValueEnum，默认 system，两侧必须一致）；`protocol`（`WATCHDOG_NAME`/`WATCHDOG_PATH`/`WATCHDOG_IFACE`、`DEFAULT_INTERVAL`=2s、`TICK`=1s、`RPC_TIMEOUT`=2s、`RECONNECT_MIN/MAX`=1s/30s——watchdog 侧（T2/T3）同名实现，以 M4 D3/D8 为准）；`Liveness`（`new`/`touch`/`get`，Arc&lt;AtomicU64&gt; 单调毫秒）；`enabled(interval)`（interval=0 禁用）；`run_heartbeat(liveness, bus, interval)`（连接/调用失败退避重连 1s→30s 不 fatal，backoff 仅 heartbeat 成功才重置，单轮调用包 RPC_TIMEOUT）；`send_bye(bus, reason)`（发不出仅 log，整包超时兜底）。
-- proxy：`Watchdog1` trait（`heartbeat(seq)`/`bye(reason)`），目标 `xyz.lintd.hobob.Watchdog` @ `/xyz/lintd/hobob/Watchdog`，interface `Watchdog1`。
-- 测试：`cargo test -p hobob keepalive`（Liveness 单调/clone 共享、bus 默认、interval=0 禁用）。
+- **坑：fetch_loop 独立探活（D13）**——fetch_loop 持独立 `Liveness` 每轮 `touch`，随心跳上报 fetch_seq；hub 与 fetch 两路 seq 各自独立判停滞，任一冻结即拉起。
+- 符号：`Bus`（system/session，clap ValueEnum，默认 system，两侧必须一致）；`protocol`（`WATCHDOG_NAME`/`WATCHDOG_PATH`/`WATCHDOG_IFACE`、`DEFAULT_INTERVAL`=2s、`TICK`=1s、`RPC_TIMEOUT`=2s、`RECONNECT_MIN/MAX`=1s/30s——watchdog 侧（T2/T3）同名实现，以 M4 D3/D8 为准）；`Liveness`（`new`/`touch`/`get`，Arc&lt;AtomicU64&gt; 单调毫秒）；`enabled(interval)`（interval=0 禁用）；`run_heartbeat(liveness, fetch_liveness, bus, interval)`（连接/调用失败退避重连 1s→30s 不 fatal，backoff 仅 heartbeat 成功才重置，单轮调用包 RPC_TIMEOUT）；`send_bye(bus, reason)`（发不出仅 log，整包超时兜底）。
+- proxy：`Watchdog1` trait（`heartbeat(hub_seq, fetch_seq)`（D13 双 seq）/`bye(reason)`），目标 `xyz.lintd.hobob.Watchdog` @ `/xyz/lintd/hobob/Watchdog`，interface `Watchdog1`。
+- 测试：`cargo test -p hobob keepalive`（Liveness 单调/clone 共享/实例独立、bus 默认、interval=0 禁用）。
 
 ## `db/` — 数据中枢（`db/mod.rs` 3094 行，核心）
 
