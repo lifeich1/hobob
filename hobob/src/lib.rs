@@ -106,8 +106,9 @@ struct Flags {
     /// KV 日志留存上限（条数，超限裁剪最旧）；0 = 不裁剪
     #[arg(long, env = "HOBOB_LOG_KV_MAX", default_value_t = logkv::DEFAULT_KV_LOG_MAX)]
     log_kv_max: u64,
-    /// 心跳周期（秒，M4/D8；发往 hobob_watchdog，见 keepalive.rs）；0 = 禁用心跳
-    #[arg(long, env = "HOBOB_HEARTBEAT_INTERVAL", default_value_t = 2)]
+    /// 心跳周期（秒，M4/D8；发往 hobob_watchdog，见 keepalive.rs）；0 = 禁用心跳。
+    /// watchdog（T2/T3）未落地前默认禁用，避免对空 bus 持续告警
+    #[arg(long, env = "HOBOB_HEARTBEAT_INTERVAL", default_value_t = 0)]
     heartbeat_interval: u64,
     /// 心跳/停机通知走哪个 D-Bus（M4/D3；开发调试用 session，须与 watchdog 侧一致）
     #[arg(long, env = "HOBOB_BUS", value_enum, default_value_t = keepalive::Bus::default())]

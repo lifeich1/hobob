@@ -5,7 +5,7 @@
 ## `lib.rs` — crate 入口（172 行）
 
 - `prepare_log()`：创建 `~/`（`home_dir`）下日志目录，若 `~/log4rs.yml` 不存在则从 `assets/log4rs.yml` 复制并初始化 log4rs。
-- `main_loop()`：解析 `Flags`（`--port` 默认 3731、`--state`/`HOBOB_STATE`、`--log-kv-max`、`--heartbeat-interval`/`HOBOB_HEARTBEAT_INTERVAL`（秒，0 = 禁用心跳）、`--bus`/`HOBOB_BUS`（D-Bus，默认 system））→ `Store::open_or_create` + `WeiYuanHui::open`（全量加载，失败即退出）→ 分派两个 chair 任务并跑 hub 主循环：
+- `main_loop()`：解析 `Flags`（`--port` 默认 3731、`--state`/`HOBOB_STATE`、`--log-kv-max`、`--heartbeat-interval`/`HOBOB_HEARTBEAT_INTERVAL`（秒，0 = 禁用心跳，**默认 0**——watchdog T2/T3 落地前默认禁用，避免对空 bus 持续告警）、`--bus`/`HOBOB_BUS`（D-Bus，默认 system））→ `Store::open_or_create` + `WeiYuanHui::open`（全量加载，失败即退出）→ 分派两个 chair 任务并跑 hub 主循环：
   - `www::build_app` 的 warp 服务（Ctrl+C / closing 标志触发 graceful shutdown）
   - `systems::fetch_loop`（后台抓取循环）
   - hub 主循环（tokio::select：1s tick touch 活跃度 / ctrl_c+SIGTERM / `center.run()`）消费 chair 提交 + 每轮 maybe_flush；Ctrl+C/SIGTERM **先发 D-Bus `Bye`（心跳启用时）再调 `center.close()`**（停机强刷 store）并最多等 30s 优雅退出。
@@ -19,7 +19,7 @@
 - **坑：seq 是单调毫秒非墙钟**——`Liveness` 值 = 进程启动 `Instant` 起 elapsed；NTP 回拨会让墙钟 seq 变小，无 RTC 的 ARM 设备会误判停滞（D4）。
 - **坑：SIGTERM 必须并入 shutdown**——`shutdown_signal()` 同时捕获 ctrl_c 与 SIGTERM；watchdog 拉起流程先发 SIGTERM，不捕获会绕过停机强刷（§4.3 双信号问题）。
 - **坑：Bye 先于 `close()`**——强刷期间 tick 已停、seq 冻结，若等 `close()` 返回再发，`close()` 耗时接近 `stall_timeout`(6s) 时 watchdog 会对优雅停机中的 hobob 拉起（D7）。
-- 符号：`Bus`（system/session，clap ValueEnum，默认 system，两侧必须一致）；`protocol`（`WATCHDOG_NAME`/`WATCHDOG_PATH`/`WATCHDOG_IFACE`、`DEFAULT_INTERVAL`=2s、`TICK`=1s、`RPC_TIMEOUT`=2s、`RECONNECT_MIN/MAX`=1s/30s——watchdog 侧（T2/T3）同名实现，以 M4 D3/D8 为准）；`Liveness`（`new`/`touch`/`get`，Arc&lt;AtomicU64&gt; 单调毫秒）；`enabled(interval)`（interval=0 禁用）；`run_heartbeat(liveness, bus, interval)`（连接失败退避重连 1s→30s 不 fatal，单轮调用包 RPC_TIMEOUT）；`send_bye(bus, reason)`（发不出仅 log，整包超时兜底）。
+- 符号：`Bus`（system/session，clap ValueEnum，默认 system，两侧必须一致）；`protocol`（`WATCHDOG_NAME`/`WATCHDOG_PATH`/`WATCHDOG_IFACE`、`DEFAULT_INTERVAL`=2s、`TICK`=1s、`RPC_TIMEOUT`=2s、`RECONNECT_MIN/MAX`=1s/30s——watchdog 侧（T2/T3）同名实现，以 M4 D3/D8 为准）；`Liveness`（`new`/`touch`/`get`，Arc&lt;AtomicU64&gt; 单调毫秒）；`enabled(interval)`（interval=0 禁用）；`run_heartbeat(liveness, bus, interval)`（连接/调用失败退避重连 1s→30s 不 fatal，backoff 仅 heartbeat 成功才重置，单轮调用包 RPC_TIMEOUT）；`send_bye(bus, reason)`（发不出仅 log，整包超时兜底）。
 - proxy：`Watchdog1` trait（`heartbeat(seq)`/`bye(reason)`），目标 `xyz.lintd.hobob.Watchdog` @ `/xyz/lintd/hobob/Watchdog`，interface `Watchdog1`。
 - 测试：`cargo test -p hobob keepalive`（Liveness 单调/clone 共享、bus 默认、interval=0 禁用）。
 

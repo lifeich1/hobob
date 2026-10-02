@@ -132,6 +132,9 @@ async fn connect(bus: Bus) -> zbus::Result<Watchdog1Proxy<'static>> {
 
 /// 心跳发送循环（D2/D4/D8）：连接失败/调用失败均退避重连（1s→30s），不 fatal；
 /// 连接成功后按 interval 发 `Heartbeat(seq)`，seq 取自 [`Liveness`]。
+///
+/// backoff 仅在 heartbeat 成功后重置——连接成功不算，避免 watchdog 已激活但
+/// 调用持续失败时以固定 1Hz hammer D-Bus。
 pub async fn run_heartbeat(liveness: Liveness, bus: Bus, interval: Duration) {
     let mut backoff = protocol::RECONNECT_MIN;
     loop {
@@ -144,12 +147,14 @@ pub async fn run_heartbeat(liveness: Liveness, bus: Bus, interval: Duration) {
                 continue;
             }
         };
-        backoff = protocol::RECONNECT_MIN;
         loop {
             tokio::time::sleep(interval).await;
             let seq = liveness.get();
             match tokio::time::timeout(protocol::RPC_TIMEOUT, proxy.heartbeat(seq)).await {
-                Ok(Ok(())) => continue,
+                Ok(Ok(())) => {
+                    backoff = protocol::RECONNECT_MIN;
+                    continue;
+                }
                 Ok(Err(e)) => log::warn!("keepalive: heartbeat failed ({e:#}); reconnect"),
                 Err(_) => log::warn!("keepalive: heartbeat timeout; reconnect"),
             }
